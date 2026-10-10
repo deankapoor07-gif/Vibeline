@@ -301,12 +301,28 @@ extension TransitionLabel on TransitionType {
 
 class Keyframe {
   final double t;
-  final double gain, low, mid, high, hpf, lpf, echo;
+  final double gain, low, mid, high, hpf, lpf, echo, verb;
   const Keyframe(this.t,
-      {this.gain = 1, this.low = 0, this.mid = 0, this.high = 0, this.hpf = 20, this.lpf = 20000, this.echo = 0});
+      {this.gain = 1,
+      this.low = 0,
+      this.mid = 0,
+      this.high = 0,
+      this.hpf = 20,
+      this.lpf = 20000,
+      this.echo = 0,
+      this.verb = 0});
 
-  Map<String, dynamic> toJson() =>
-      {'t': t, 'gain': gain, 'low': low, 'mid': mid, 'high': high, 'hpf': hpf, 'lpf': lpf, 'echo': echo};
+  Map<String, dynamic> toJson() => {
+        't': t,
+        'gain': gain,
+        'low': low,
+        'mid': mid,
+        'high': high,
+        'hpf': hpf,
+        'lpf': lpf,
+        'echo': echo,
+        if (verb != 0) 'verb': verb,
+      };
 }
 
 class PlannedTrack {

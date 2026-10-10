@@ -97,7 +97,7 @@ class SectionEngine {
         return s < end && _clipEnd(c) + 4 > t0 - preRoll;
       }).toList();
       final json = <String, dynamic>{
-        'format': 'alac1', // bump to re-render every section after an engine change
+        'format': 'alac2', // bump to re-render every section after an engine change
         'duration': end,
         'clips': used,
         if (plan['warmth'] != null) 'warmth': plan['warmth'],

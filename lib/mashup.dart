@@ -64,6 +64,7 @@ class Mashup {
   int beatStart = 0; // beat song bar the mashup starts on
   int vocalStart = 0; // vocal song bar the singing starts on
   int vocalBars = 32;
+  int vocalTailBeats = 0; // the last word ringing on past the section end
   static const introBars = 8;
   static const outroBars = 8;
 
@@ -228,7 +229,7 @@ class MashupSetPlan {
         'vocal': [
           for (final m in mashups)
             if (!m.beatOnly && (m.liveVocalCents != 0 || m.vocalDb != 0))
-              {'start': m.vocalIn - 4, 'end': m.vocalOut + 3, 'cents': m.liveVocalCents, 'db': m.vocalDb}
+              {'start': m.vocalIn - 4, 'end': m.vocalOut + 7, 'cents': m.liveVocalCents, 'db': m.vocalDb}
         ],
         'beat': [
           for (var i = 0; i < mashups.length; i++)
@@ -472,7 +473,14 @@ class MashupMaker {
         final first = _vocalAt(m, s);
         if (first < 0.35) continue;
         final fresh = _vocalAt(m, s - 1) < 0.45 ? 0.4 : 0.0; // a new line, not mid-sentence
-        final endsClean = _vocalAt(m, s + len) < 0.45 ? 0.4 : -0.3;
+        // End where the singer has finished the line (quiet for a moment
+        // after), so the vocal can leave smoothly rather than mid-word.
+        final after = _vocalAt(m, s + len), after2 = _vocalAt(m, s + len + 1);
+        final endsClean = after < 0.3 && after2 < 0.45
+            ? 0.9
+            : after < 0.45
+                ? 0.2
+                : -0.9;
         // Avoid sections with a long stretch of no singing (solos, breakdowns).
         var gap = 0, longest = 0;
         for (var b = s; b < s + len; b++) {
@@ -494,9 +502,39 @@ class MashupMaker {
     if (bestStart < 0) return false;
     m
       ..vocalStart = bestStart
-      ..vocalBars = bestLen;
+      ..vocalBars = bestLen
+      ..vocalTailBeats = _tailBeats(m, bestStart + bestLen);
     _placeBeat(m);
     return true;
+  }
+
+  /// How many beats the last word rings on past [endBar] (up to 6): the vocal
+  /// keeps playing until the singer has actually finished.
+  int _tailBeats(Mashup m, int endBar) {
+    final g = m.vocalGrid;
+    final base = g.beatIndexOfBar(endBar);
+    var n = 0;
+    while (n < 6 && base + n + 1 < g.beats.length) {
+      final v = m.vocal.stems!.vocalBetween(m.vocal.analysis!.beats, g.beats[base + n], g.beats[base + n + 1]);
+      if (v < 0.3) break;
+      n++;
+    }
+    return n;
+  }
+
+  /// How a featured vocal leaves: a smooth fade over about a bar (plus any
+  /// ringing last word), with an echo and a hall reverb carrying the end of
+  /// the line out over the beat — never a cut.
+  static List<Keyframe> vocalKeys(double outStart, double fadeInEnd, double vOut, int tailBeats, double beat) {
+    final fadeEnd = vOut + (tailBeats + 2) * beat;
+    return [
+      Keyframe(outStart, gain: 0),
+      Keyframe(fadeInEnd, gain: 1),
+      Keyframe(vOut - 2 * beat),
+      Keyframe(vOut, gain: 0.85, echo: 0.2, verb: 0.15),
+      Keyframe(fadeEnd - beat, gain: 0.35, echo: 0.35, verb: 0.35),
+      Keyframe(fadeEnd, gain: 0, echo: 0.4, verb: 0.45),
+    ];
   }
 
   /// The strongest groove of the beat song that fits, on an 8-bar phrase.
@@ -576,7 +614,7 @@ class MashupMaker {
       // beats of pre-roll catch pickup notes sung just before the line.
       final vEntryBeat = vg.beatIndexOfBar(m.vocalStart);
       final warp = <List<double>>[
-        for (var n = -2; n <= m.vocalBars * 4 + 2; n++)
+        for (var n = -2; n <= m.vocalBars * 4 + m.vocalTailBeats + 4; n++)
           [n + 32 >= 0 ? outT[n + 32] : start - (src(0) - bg.smoothBeat(bBase + n + 32)), vg.smoothBeat(vEntryBeat + n)]
       ];
       final vIn = barX(Mashup.introBars);
@@ -632,14 +670,8 @@ class MashupMaker {
 
         if (lane.fromVocalSong && !m.beatOnly) {
           final keys = lane.stem == 'vocals'
-              // The featured vocal: rides in over the groove, leaves with an echo.
-              ? [
-                  Keyframe(outStartV, gain: 0),
-                  Keyframe(outStartV + preRollOut * 0.5, gain: 1),
-                  Keyframe(vOut - vBeat),
-                  Keyframe(vOut - vBeat * 0.5, echo: 0.4),
-                  Keyframe(vOut, gain: 0, echo: 0.5),
-                ]
+              // The featured vocal: rides in over the groove, leaves smoothly.
+              ? vocalKeys(outStartV, outStartV + preRollOut * 0.5, vOut, m.vocalTailBeats, vBeat)
               // Vocal song's own backing stems (only when unmuted).
               : [Keyframe(outStartV, gain: 0), Keyframe(vIn, gain: 1), Keyframe(vOut - vBeat), Keyframe(vOut, gain: 0)];
           clips.add(_clip(path, srcStartV, srcEndV, outStartV, m.vocalRate, m.renderedVocalCents, group + li, vBeat * 0.75,
@@ -964,7 +996,7 @@ class MashupMaker {
       final vInT = bt(vIn[i]), vOutT = bt(vIn[i] + len);
       if (!m.beatOnly) {
         final warp = <List<double>>[
-          for (var n = -2; n <= len * 4 + 2; n++) [vInT + n * p, vg.smoothBeat(vEntry + n)]
+          for (var n = -2; n <= len * 4 + m.vocalTailBeats + 4; n++) [vInT + n * p, vg.smoothBeat(vEntry + n)]
         ];
         final outStartV = warp.first[0];
         for (var li = 0; li < m.lanes.length; li++) {
@@ -972,13 +1004,7 @@ class MashupMaker {
           if (!lane.fromVocalSong || !m.laneAudible(lane)) continue;
           final path = m.vocal.stems!.paths[lane.stem]!;
           final keys = lane.stem == 'vocals'
-              ? [
-                  Keyframe(outStartV, gain: 0),
-                  Keyframe(outStartV + p, gain: 1),
-                  Keyframe(vOutT - p),
-                  Keyframe(vOutT - p * 0.5, echo: 0.4),
-                  Keyframe(vOutT, gain: 0, echo: 0.5),
-                ]
+              ? vocalKeys(outStartV, outStartV + p, vOutT, m.vocalTailBeats, p)
               : [Keyframe(outStartV, gain: 0), Keyframe(vInT, gain: 1), Keyframe(vOutT - p), Keyframe(vOutT, gain: 0)];
           clips.add(_clip(path, math.max(0.0, warp.first[1]), warp.last[1] + 0.05, outStartV,
               (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]), m.renderedVocalCents, group + li, p * 0.75,

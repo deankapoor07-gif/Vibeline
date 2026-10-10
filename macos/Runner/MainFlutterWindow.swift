@@ -147,6 +147,7 @@ struct Keyframe: Decodable {
   let hpf: Double    // Hz (<= 25 = off)
   let lpf: Double    // Hz (>= 19000 = off)
   let echo: Double   // 0...1 wet
+  let verb: Double?  // 0...1 reverb wet (vocals: the tail as a line ends)
 
   static func lerp(_ a: Keyframe, _ b: Keyframe, _ x: Double) -> Keyframe {
     func l(_ p: Double, _ q: Double) -> Double { p + (q - p) * x }
@@ -154,7 +155,8 @@ struct Keyframe: Decodable {
     func lf(_ p: Double, _ q: Double) -> Double { exp(log(p) + (log(q) - log(p)) * x) }
     return Keyframe(
       t: l(a.t, b.t), gain: l(a.gain, b.gain), low: l(a.low, b.low), mid: l(a.mid, b.mid),
-      high: l(a.high, b.high), hpf: lf(a.hpf, b.hpf), lpf: lf(a.lpf, b.lpf), echo: l(a.echo, b.echo))
+      high: l(a.high, b.high), hpf: lf(a.hpf, b.hpf), lpf: lf(a.lpf, b.lpf), echo: l(a.echo, b.echo),
+      verb: l(a.verb ?? 0, b.verb ?? 0))
   }
 }
 
@@ -198,7 +200,7 @@ struct Clip: Decodable {
 
   func automation(at t: Double) -> Keyframe {
     guard let first = keys.first else {
-      return Keyframe(t: t, gain: 1, low: 0, mid: 0, high: 0, hpf: 20, lpf: 20000, echo: 0)
+      return Keyframe(t: t, gain: 1, low: 0, mid: 0, high: 0, hpf: 20, lpf: 20000, echo: 0, verb: 0)
     }
     if t <= first.t { return first }
     for i in 1..<keys.count where t < keys[i].t {
@@ -313,6 +315,8 @@ private final class Deck {
   let timePitch = AVAudioUnitTimePitch()
   let eq = AVAudioUnitEQ(numberOfBands: 5)
   let delay = AVAudioUnitDelay()
+  /// Only for clips that use it (vocals): a hall reverb for line endings.
+  var reverb: AVAudioUnitReverb?
   var clip: Clip?
 
   // AVAudioUnitTimePitch only plays at rates that are whole steps of 1/512
@@ -356,8 +360,16 @@ private final class Deck {
     }
   }
 
+  /// The clip's fixed level (dB); automation gain is added on top.
+  var baseGainDb: Double = 0
+
   func apply(_ k: Keyframe) {
-    player.volume = Float(min(1, max(0, k.gain)))
+    // Gain is applied in the EQ, BEFORE the echo and reverb: a player's own
+    // volume only takes effect at the mixer after the effects, which silenced
+    // the tails of vocals as they faded.
+    player.volume = 1
+    let g = max(1e-5, min(1, k.gain))
+    eq.globalGain = Float(max(-96, min(24, baseGainDb + 20 * log10(g))))
     let b = eq.bands
     b[0].gain = Float(k.low)
     b[1].gain = Float(k.mid)
@@ -367,6 +379,7 @@ private final class Deck {
     b[4].bypass = k.lpf >= 19000
     b[4].frequency = Float(max(40, min(20000, k.lpf)))
     delay.wetDryMix = Float(min(100, max(0, k.echo * 100)))
+    reverb?.wetDryMix = Float(min(100, max(0, (k.verb ?? 0) * 100)))
   }
 }
 
@@ -444,7 +457,17 @@ final class MixRenderer {
       engine.connect(d.player, to: d.timePitch, format: format)
       engine.connect(d.timePitch, to: d.eq, format: format)
       engine.connect(d.eq, to: d.delay, format: format)
-      engine.connect(d.delay, to: bus, format: format)
+      if clip.keys.contains(where: { ($0.verb ?? 0) > 0 }) {
+        let r = AVAudioUnitReverb()
+        r.loadFactoryPreset(.largeHall)
+        r.wetDryMix = 0
+        engine.attach(r)
+        engine.connect(d.delay, to: r, format: format)
+        engine.connect(r, to: bus, format: format)
+        d.reverb = r
+      } else {
+        engine.connect(d.delay, to: bus, format: format)
+      }
       try start(clip, on: d, at: t)
       decks.append(d)
     }
@@ -469,6 +492,7 @@ final class MixRenderer {
         guard let c = d.clip, now > c.outEnd + 4 else { return false }
         d.player.stop()
         [d.player, d.timePitch, d.eq, d.delay].forEach { engine.detach($0) }
+        if let r = d.reverb { engine.detach(r) }
         return true
       }
 
@@ -538,7 +562,7 @@ final class MixRenderer {
     deck.delay.reset()
     deck.timePitch.rate = Float((clip.rate * 512).rounded() / 512)
     deck.timePitch.pitch = Float(clip.pitchCents)
-    deck.eq.globalGain = Float(max(-24, min(24, clip.gainDb)))
+    deck.baseGainDb = max(-24, min(24, clip.gainDb))
     deck.delay.delayTime = max(0.05, min(2, clip.echoTime))
     deck.clip = clip
     let from = max(clip.srcStart, clip.sourceTime(at: t))
