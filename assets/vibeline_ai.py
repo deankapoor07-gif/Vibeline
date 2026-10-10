@@ -16,7 +16,7 @@ CACHE_DIR = os.path.expanduser("~/Library/Caches/Vibeline/analysis")
 STEM_DIR = os.path.expanduser("~/Library/Caches/Vibeline/stems")
 STEMS = ("vocals", "drums", "bass", "other")
 STEM_VERSION = 1
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 SR = 44100
 
 # Camelot wheel lookup: (key, scale) -> code
@@ -190,11 +190,38 @@ def _fit_grid(ticks):
     return float(period), float(first), float(np.std(resid) if len(resid) else 0.0)
 
 
-def analyze_file(path):
+def _beat_this(paths):
+    """Beats and downbeats from Beat This! (a modern AI beat tracker), run in
+    this process on the GPU. The older tracker got the start of the bar wrong
+    on about half of songs, which put vocal lines on the wrong beat."""
+    out = {}
+    if not paths:
+        return out
+    try:
+        import warnings
+        warnings.filterwarnings("ignore")
+        import torch
+        from beat_this.inference import File2Beats
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        f2b = File2Beats(checkpoint_path="final0", device=device, dbn=False)
+    except Exception:
+        return out
+    for p in paths:
+        try:
+            beats, downs = f2b(p)
+            out[p] = ([float(x) for x in beats], [float(x) for x in downs])
+        except Exception:
+            pass
+    return out
+
+
+def analyze_file(path, bt=None):
     cache = _cache_path(path)
     if os.path.exists(cache):
         with open(cache) as fh:
             return json.load(fh)
+    if bt is None:
+        bt = _beat_this([path]).get(path)
 
     import numpy as np
     import essentia
@@ -221,7 +248,12 @@ def analyze_file(path):
         result["error"] = "too short"
         return result
 
-    bpm, ticks, confidence, _, _ = es.RhythmExtractor2013(method="multifeature")(audio)
+    downbeats = []
+    if bt and len(bt[0]) >= 16:
+        ticks, downbeats = bt
+        confidence = 3.0
+    else:
+        _, ticks, confidence, _, _ = es.RhythmExtractor2013(method="multifeature")(audio)
     beats = _clean_beats(list(ticks))
     beats, phase_shift = _refine_phase(audio, beats)
     grid = _fit_grid(beats)
@@ -249,6 +281,16 @@ def analyze_file(path):
     rise = np.maximum(0, np.diff(beat_rms, prepend=beat_rms[0]))
     scores = [rise[p::4].sum() + 0.25 * beat_low[p::4].mean() for p in range(4)]
     phase = int(np.argmax(scores))
+    if downbeats:
+        # Where Beat This! hears each bar start, as a beat index; the most
+        # common position (mod 4) is the bar phase.
+        votes = [0, 0, 0, 0]
+        for d in downbeats:
+            i = int(np.argmin(np.abs(beats - d)))
+            if abs(beats[i] - d) < 0.08:
+                votes[i % 4] += 1
+        if sum(votes) >= 4:
+            phase = int(np.argmax(votes))
 
     # Per-bar energy (0..1 relative to the song's loudest bar).
     bars = [float(beat_rms[i:i + 4].mean()) for i in range(phase, n_beats - 3, 4)]
@@ -301,9 +343,9 @@ def analyze_file(path):
     return result
 
 
-def _safe_analyze(path):
+def _safe_analyze(path, bt=None):
     try:
-        return analyze_file(path)
+        return analyze_file(path, bt)
     except Exception as e:  # keep going on bad files
         return {"type": "analysis", "path": path, "ok": False, "error": str(e)}
 
@@ -311,8 +353,10 @@ def _safe_analyze(path):
 def cmd_analyze(paths):
     # Leave cores free for the app and the music.
     workers = max(1, min(4, (os.cpu_count() or 4) // 2))
+    misses = [p for p in paths if not os.path.exists(_cache_path(p))]
+    bts = _beat_this(misses)
     with ProcessPoolExecutor(max_workers=workers, initializer=_guard) as pool:
-        futures = {pool.submit(_safe_analyze, p): p for p in paths}
+        futures = {pool.submit(_safe_analyze, p, bts.get(p)): p for p in paths}
         for fut in as_completed(futures):
             emit(fut.result())
     emit({"type": "done"})
@@ -343,6 +387,10 @@ def separate_file(path):
             changed = True
         if "levels" not in meta:  # stems made before levels were measured
             meta["levels"] = _stem_levels(meta["stems"])
+            changed = True
+        if meta.get("beatsVersion") != CACHE_VERSION:  # analysis (beat grid) changed
+            meta.update(_vocal_beats(path, meta["stems"]))
+            meta["beatsVersion"] = CACHE_VERSION
             changed = True
         if changed:
             with open(meta_path, "w") as fh:
@@ -387,6 +435,7 @@ def separate_file(path):
         sf.write(f, sources[i].T, SR, subtype="PCM_16")
         result["stems"][name] = f
 
+    result["beatsVersion"] = CACHE_VERSION
     # How much singing there is on each beat (0..1), using the analysed grid.
     vocals = sources[list(_MODEL.sources).index("vocals")].mean(0)
     full = audio.mean(1)
@@ -408,6 +457,26 @@ def separate_file(path):
     with open(meta_path, "w") as fh:
         json.dump(result, fh)
     return result
+
+
+def _vocal_beats(path, stems):
+    """Singing level per analysed beat, recomputed from the saved vocal stem."""
+    import numpy as np
+    import soundfile as sf
+    out = {}
+    analysis = analyze_file(path)
+    if not analysis.get("ok"):
+        return out
+    v, _ = sf.read(stems["vocals"], dtype="float32")
+    v = v.mean(1) if v.ndim > 1 else v
+    beats = analysis["beats"]
+    rms = []
+    for a, b in zip(beats[:-1], beats[1:]):
+        i0, i1 = int(a * SR), int(b * SR)
+        rms.append(float(np.sqrt(np.mean(v[i0:i1] ** 2))) if i1 > i0 else 0.0)
+    r = np.asarray(rms)
+    out["vocalBeats"] = np.clip(r / (np.percentile(r, 95) + 1e-9), 0, 1).round(3).tolist()
+    return out
 
 
 def _stem_levels(stems):

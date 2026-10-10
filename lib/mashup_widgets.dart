@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'mashup.dart';
 import 'models.dart';
+import 'planner.dart' show shiftCamelot;
 import 'tuning.dart';
 
 const kMashupAccent = Colors.purpleAccent;
@@ -12,26 +13,35 @@ const kMashupAccent = Colors.purpleAccent;
 // MASHUP & SAMPLE LANE (the acapellas placed across the set)
 // ---------------------------------------------------------
 class MashupLaneHeader extends StatelessWidget {
-  const MashupLaneHeader({super.key});
+  final AnchorBeat? anchor;
+  const MashupLaneHeader({super.key, this.anchor});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       width: 150,
-      height: 54,
+      height: anchor != null ? 84 : 54,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF221A30),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: kMashupAccent.withValues(alpha: 0.5), width: 1.5),
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text("MASHUP & SAMPLE LANE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: kMashupAccent)),
+          const Text("MASHUP & SAMPLE LANE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: kMashupAccent)),
           SizedBox(height: 2),
-          Text("AI acapellas + your sounds, loops & acapellas", style: TextStyle(fontSize: 9, color: Colors.white38)),
+          const Text("AI acapellas + your sounds, loops & acapellas", style: TextStyle(fontSize: 9, color: Colors.white38)),
+          if (anchor != null) ...[
+            const SizedBox(height: 4),
+            Text('⚓ Anchor: ${anchor!.track.title}',
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amberAccent),
+                overflow: TextOverflow.ellipsis),
+            Text('${anchor!.tempo.toStringAsFixed(1)} BPM · key ${anchor!.camelot}',
+                style: const TextStyle(fontSize: 9, color: Colors.white38)),
+          ],
         ],
       ),
     );
@@ -108,6 +118,7 @@ class TrackStemLaneWidget extends StatelessWidget {
   final void Function(double db) onBeatDb;
   final void Function(double scale) onTempo;
   final void Function(LibraryTrack song, bool asVocal) onDrop;
+  final bool anchorMode;
 
   const TrackStemLaneWidget({
     super.key,
@@ -129,6 +140,7 @@ class TrackStemLaneWidget extends StatelessWidget {
     required this.onBeatDb,
     required this.onTempo,
     required this.onDrop,
+    this.anchorMode = false,
   });
 
   @override
@@ -198,7 +210,7 @@ class TrackStemLaneWidget extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 2, 12, 0),
             child: Text(
-              '${m.beatGrid.camelot} · ${m.playedBpm.toStringAsFixed(1)} BPM · keys ${m.keyMatch}${Tuning.use432 ? ' · 432 Hz' : ''}',
+              '${shiftCamelot(m.beatGrid.camelot, m.beatShift)} · ${m.playedBpm.toStringAsFixed(1)} BPM · keys ${m.keyMatch}${Tuning.use432 ? ' · 432 Hz' : ''}',
               style: const TextStyle(fontSize: 10, color: Colors.white38),
             ),
           ),
@@ -225,7 +237,13 @@ class TrackStemLaneWidget extends StatelessWidget {
           // Live volume faders
           if (!m.beatOnly) _faderRow('🎤 Vocal', m.vocalDb, Colors.pinkAccent, onVocalDb),
           _faderRow('🥁 Beat', m.beatDb, Colors.greenAccent, onBeatDb),
-          _tempoRow(),
+          if (anchorMode)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 2, 12, 4),
+              child: Text('⚓ Tempo and key follow the anchor beat', style: TextStyle(fontSize: 9, color: Colors.amberAccent)),
+            )
+          else
+            _tempoRow(),
 
           // Swap / shuffle
           Padding(

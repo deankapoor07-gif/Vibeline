@@ -78,6 +78,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   double? _progress;
   bool _scanned = false;
   bool _mashupMode = true;
+  bool _anchorOn = true; // anchor-beat mode (Dean's structure)
   bool _warmthOn = true;
   VibeProfile? _vibe;
 
@@ -242,7 +243,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
     });
     _set('Pairing vocals with beats…');
-    final session = MashupSession.start(maker, pool);
+    final session = MashupSession.start(maker, pool)..anchorMode = _anchorOn;
     setState(() {
       _session = session;
       _mashPlan = null;
@@ -490,6 +491,36 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     if (mounted) setState(() => _analyseStatus = null);
   }
 
+  Future<void> _toggleAnchor(bool on) async {
+    setState(() => _anchorOn = on);
+    final session = _session;
+    if (session == null) return;
+    if (on && session.anchor == null) {
+      final pick = session.maker.anchorCandidates(session.pool);
+      if (pick.isEmpty) return;
+      final err = await session.setAnchor(pick.first, _library, (s) => _set(s, phase: Phase.ready));
+      if (err != null) _set(err, phase: Phase.ready);
+    } else if (on) {
+      await session.setAnchor(session.anchor!.track, _library, (s) => _set(s, phase: Phase.ready));
+    } else {
+      session.anchorMode = false;
+    }
+    _scheduleRelayout();
+  }
+
+  Future<void> _makeAnchor(LibraryTrack t) async {
+    final session = _session;
+    if (session == null) return;
+    final err = await session.setAnchor(t, _library, (s) => _set(s, phase: Phase.ready));
+    if (err != null) {
+      _set(err, phase: Phase.ready);
+      return;
+    }
+    setState(() => _anchorOn = true);
+    _set('⚓ "${t.title}" is the anchor beat', phase: Phase.ready);
+    _scheduleRelayout();
+  }
+
   Future<void> _toggleWarmth(bool on) async {
     setState(() => _warmthOn = on);
     _rerenderAll();
@@ -719,6 +750,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _mashupMode ? Colors.white : Colors.white54),
                 ),
                 Switch(value: _mashupMode, activeColor: kMashupAccent, onChanged: _busy ? null : _setMode),
+                if (_mashupMode) ...[
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: 'Anchor beat: one steady groove the set comes home to. New vocals come in over it,\n'
+                        'the mashup\'s own beat takes over once the vocal settles, and it cuts back to the anchor now and then.',
+                    child: Row(children: [
+                      const Text('⚓', style: TextStyle(fontSize: 13)),
+                      const SizedBox(width: 4),
+                      const Text('Anchor beat', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      Switch(value: _anchorOn, activeThumbColor: kMashupAccent, onChanged: _busy ? null : _toggleAnchor),
+                    ]),
+                  ),
+                ],
                 const SizedBox(width: 16),
                 Tooltip(
                   message: 'Retune every song, beat and vocal to A = 432 Hz before it plays.\nOff: songs keep their own tuning.',
@@ -772,6 +816,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     onUse: (song, asVocal) =>
                         _replace((_libTarget ?? math.max(0, _currentIndex)).clamp(0, (_mashPlan?.mashups.length ?? 1) - 1), song, asVocal),
                     onAnalyseAll: _analyseAll,
+                    onAnchor: _makeAnchor,
                     onClose: () => setState(() => _libraryOpen = false),
                   ),
               ],
@@ -851,7 +896,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       itemCount: ms.length + 1 + (more ? 1 : 0),
       itemBuilder: (context, k) {
         if (k == 0) {
-          return const Padding(padding: EdgeInsets.only(right: 16), child: Align(alignment: Alignment.topLeft, child: MashupLaneHeader()));
+          final anc = _session?.anchorMode == true ? _session?.anchor : null;
+          return Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Align(alignment: Alignment.topLeft, child: MashupLaneHeader(anchor: anc)));
         }
         final i = k - 1;
         if (i >= ms.length) {
@@ -912,6 +960,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     onVocalDb: (db) => _pitch(() => m.vocalDb = db),
                     onBeatDb: (db) => _pitch(() => m.beatDb = db),
                     onTempo: (s) => _edit(() => m.tempoScale = s.clamp(0.85, 1.15)),
+                    anchorMode: _session?.anchorMode == true,
                     onDrop: (song, asVocal) => _replace(i, song, asVocal),
                   ),
                 ],

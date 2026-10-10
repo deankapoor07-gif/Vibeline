@@ -326,7 +326,8 @@ private final class Deck {
   init() {
     let b = eq.bands
     b[0].filterType = .lowShelf; b[0].frequency = 110; b[0].gain = 0; b[0].bypass = false
-    b[1].filterType = .parametric; b[1].frequency = 1000; b[1].bandwidth = 1.5; b[1].gain = 0
+    // "mid" is the vocal pocket: a dip around 3 kHz on beats while someone sings.
+    b[1].filterType = .parametric; b[1].frequency = 3000; b[1].bandwidth = 1.5; b[1].gain = 0
     b[1].bypass = false
     b[2].filterType = .highShelf; b[2].frequency = 6500; b[2].gain = 0; b[2].bypass = false
     b[3].filterType = .highPass; b[3].frequency = 20; b[3].bypass = true

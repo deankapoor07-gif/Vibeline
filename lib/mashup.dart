@@ -49,6 +49,7 @@ class Mashup {
   int vocalShift = 0;
   int autoShift = 0;
   double fineCents = 0;
+  int beatShift = 0; // semitones on the beat (anchor mode: to sit with the anchor's key)
 
   // Your volume faders (dB), applied live on top of the automatic balance.
   double vocalDb = 0;
@@ -95,7 +96,7 @@ class Mashup {
   double? get _beatHz => beat.stems?.tuning['other'] ?? beat.analysis?.tuning;
 
   /// Cents applied to the beat song's stems (retunes it to 432 Hz, or 0).
-  double get beatCents => Tuning.toReference(_beatHz);
+  double get beatCents => Tuning.toReference(_beatHz) + beatShift * 100;
 
   /// Cents applied to the vocal: key shift + tuning match + your fine-tune.
   double get vocalCents => vocalShift * 100 + Tuning.vocalCents(_vocalHz, _beatHz) + fineCents;
@@ -131,7 +132,7 @@ class Mashup {
 
   String get keyMatch {
     if (beatOnly) return 'beat';
-    final c = keyCompat(beatGrid.camelot, shiftCamelot(vocalGrid.camelot, vocalShift));
+    final c = keyCompat(shiftCamelot(beatGrid.camelot, beatShift), shiftCamelot(vocalGrid.camelot, vocalShift));
     if (c >= 0.99) return vocalShift == autoShift && vocalShift != 0 ? 'shifted' : 'perfect';
     if (c >= 0.8) return 'compatible';
     if (c >= 0.45) return 'loose';
@@ -189,6 +190,30 @@ class SamplePlacement {
   }
 }
 
+/// The steady groove a set comes home to: a 16-bar loop of one beat. New
+/// vocals come in over it, the mashup's own beat takes over once the vocal has
+/// settled, and the set cuts back to it now and then. Everything runs at its
+/// tempo and sits in (or next to) its key.
+class AnchorBeat {
+  final LibraryTrack track;
+  final Analysis grid;
+  final int loopStart; // first bar of the 16-bar loop
+  static const loopBars = 16;
+
+  AnchorBeat(this.track, this.grid, this.loopStart);
+
+  double get tempo => grid.steadyBpm;
+  String get camelot => grid.camelot;
+  double get gainDb {
+    final inst = track.stems?.levels['instrumental'];
+    if (inst != null) return (-14.0 - inst).clamp(-12.0, 20.0);
+    final l = track.analysis?.loudnessDb;
+    return l == null ? 0 : (-13.5 - l).clamp(-12.0, 20.0);
+  }
+
+  double get cents => Tuning.toReference(track.stems?.tuning['other'] ?? track.analysis?.tuning);
+}
+
 class MashupSetPlan {
   final List<Mashup> mashups;
   final double duration;
@@ -226,7 +251,8 @@ class _Pair {
   final Analysis vGrid, bGrid;
   final int shift;
   final double score;
-  _Pair(this.vocal, this.beat, this.vGrid, this.bGrid, this.shift, this.score);
+  final int beatShift;
+  _Pair(this.vocal, this.beat, this.vGrid, this.bGrid, this.shift, this.score, [this.beatShift = 0]);
   double get tempo => bGrid.steadyBpm;
   String get key => '${vocal.path}|${beat.path}';
 }
@@ -340,7 +366,8 @@ class MashupMaker {
     if (vs == null || bs == null || vs.vocalShare < 0.08) return null;
     final m = Mashup(p.vocal, p.beat, p.vGrid, p.bGrid)
       ..vocalShift = p.shift
-      ..autoShift = p.shift;
+      ..autoShift = p.shift
+      ..beatShift = p.beatShift;
     if (!_placeVocal(m)) return null;
     return m;
   }
@@ -639,7 +666,9 @@ class MashupMaker {
         }
         keys.addAll(tail(last: isLast));
         keys.sort((a, b) => a.t.compareTo(b.t));
-        clips.add(_clip(beatStems.first, srcStartB, srcEndB, start, 1.0, m.beatCents, group, beatLen(0) * 0.5, keys,
+        // Vocal pocket: dip the beat around 3 kHz while the vocal sings.
+        final pocketed = m.beatOnly || !m.laneAudible(m.lanes.first) ? keys : _withPocket(keys, vIn, vOut, beatLen(8));
+        clips.add(_clip(beatStems.first, srcStartB, srcEndB, start, 1.0, m.beatCents, group, beatLen(0) * 0.5, pocketed,
             gainDb: m.beatGainDb, warp: beatWarp, mix: beatStems.skip(1).toList()));
       }
       nextStart = barX(outroBar);
@@ -658,6 +687,387 @@ class MashupMaker {
     final summary = '${vibe.summary} · ${ms.length} mashups · ${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
     final json = <String, dynamic>{'duration': duration, 'clips': clips, if (warmth != null) 'warmth': warmth};
     return MashupSetPlan(ms, duration, summary, json, cuts);
+  }
+
+
+  // ------------------------------------------------------------- anchor mode
+
+  /// Beats that would make a good anchor: grooving, steady, near the vibe's
+  /// tempo, and liked (tags / Shazam). Best first.
+  List<LibraryTrack> anchorCandidates(List<LibraryTrack> pool) {
+    final scored = <(LibraryTrack, double)>[];
+    for (final t in pool) {
+      final a = t.analysis;
+      if (a == null || a.barCount < 48 || a.tempoDrift > 0.025) continue;
+      final g = _natural(a);
+      var s = 1.2 * (a.danceability - 1.0) + 0.5 * tagScore(t, vibe, rng);
+      s -= 3 * (math.log(g.steadyBpm / vibe.targetBpm)).abs();
+      s += 0.6 * g.energy;
+      scored.add((t, s));
+    }
+    scored.sort((a, b) => b.$2.compareTo(a.$2));
+    return [for (final x in scored.take(6)) x.$1];
+  }
+
+  /// Turns a song (with stems) into an anchor: its strongest 16-bar groove.
+  AnchorBeat? anchorFor(LibraryTrack t) {
+    final a = t.analysis;
+    if (a == null || t.stems == null) return null;
+    final g = _natural(a);
+    var best = -1e9;
+    var start = g.firstBar;
+    for (var s = g.firstBar; s + AnchorBeat.loopBars <= g.lastBar; s++) {
+      if ((s - g.firstBar) % 8 != 0) continue;
+      final e = _meanEnergy(g, s, s + AnchorBeat.loopBars);
+      final steady = g.fit(g.beatIndexOfBar(s), g.beatIndexOfBar(s + AnchorBeat.loopBars)).trustworthy ? 0.2 : 0;
+      final score = e + steady - (s - g.firstBar) / 400;
+      if (score > best) {
+        best = score;
+        start = s;
+      }
+    }
+    return AnchorBeat(t, g, start);
+  }
+
+  /// A pairing re-fitted to the anchor: both songs at the anchor's tempo, the
+  /// beat shifted (up to 2 semitones) and the vocal (up to 3) into its key.
+  _Pair? anchored(_Pair p, AnchorBeat anchor) {
+    final t = anchor.tempo;
+    final bg = fitTo(p.beat.analysis!, t, 0.08);
+    final vg = fitTo(p.vocal.analysis!, t, 0.14);
+    if (bg == null || vg == null) return null;
+    int? bestShift(String key, List<int> shifts, double perStep) {
+      int? best;
+      var score = -1.0;
+      for (final s in shifts) {
+        final c = keyCompat(anchor.camelot, shiftCamelot(key, s)) - perStep * s.abs();
+        if (c > score) {
+          score = c;
+          best = s;
+        }
+      }
+      return best != null && keyCompat(anchor.camelot, shiftCamelot(key, best)) >= 0.8 ? best : null;
+    }
+
+    final bs = bestShift(bg.camelot, const [0, 1, -1, 2, -2], 0.08);
+    final vs = bestShift(vg.camelot, const [0, 1, -1, 2, -2, 3, -3], 0.07);
+    if (bs == null || vs == null) return null;
+    final stretch = (t / bg.steadyBpm - 1).abs() + 0.5 * (t / vg.steadyBpm - 1).abs();
+    return _Pair(p.vocal, p.beat, vg, bg, vs, p.score - 0.3 * bs.abs() - 0.15 * vs.abs() - 4 * stretch, bs);
+  }
+
+  /// Re-fits a mashup (e.g. one you picked or shuffled) to the anchor.
+  Mashup conform(Mashup m, AnchorBeat anchor) {
+    final t = anchor.tempo;
+    final bg = fitTo(m.beat.analysis!, t, 1) ?? m.beatGrid;
+    if (m.beatOnly) {
+      final b = Mashup(m.vocal, m.beat, bg, bg, beatOnly: true)..vocalBars = m.vocalBars;
+      _placeBeat(b);
+      return b;
+    }
+    final vg = fitTo(m.vocal.analysis!, t, 1) ?? m.vocalGrid;
+    int shift(String key, int range) {
+      var best = 0;
+      var score = -1.0;
+      for (var s = -range; s <= range; s++) {
+        final c = keyCompat(anchor.camelot, shiftCamelot(key, s)) - 0.07 * s.abs();
+        if (c > score) {
+          score = c;
+          best = s;
+        }
+      }
+      return best;
+    }
+
+    final n = build(_Pair(m.vocal, m.beat, vg, bg, shift(vg.camelot, 3), 0, shift(bg.camelot, 2)));
+    if (n == null) return m;
+    n
+      ..vocalDb = m.vocalDb
+      ..beatDb = m.beatDb
+      ..fineCents = m.fineCents;
+    for (var i = 0; i < n.lanes.length && i < m.lanes.length; i++) {
+      n.lanes[i]
+        ..muted = m.lanes[i].muted
+        ..solo = m.lanes[i].solo;
+    }
+    return n;
+  }
+
+  /// Anchor-mode layout (Dean's structure), on one master grid at the anchor's
+  /// tempo:
+  ///   anchor intro → vocal 1 enters over the anchor → after 8–16 bars beat 1
+  ///   takes over (bass swap) → in longer vocals, a 4-bar cut back to the
+  ///   anchor → vocal ends, beat hands back to the anchor → next vocal enters
+  ///   over the anchor … → anchor outro.
+  MashupSetPlan layoutAnchored(List<Mashup> ms, AnchorBeat anchor,
+      {Map<String, dynamic>? warmth, List<SamplePlacement> samples = const []}) {
+    final p = 60 / anchor.tempo; // seconds per beat
+    final barLen = 4 * p;
+    double bt(num bar) => bar * barLen;
+    const kill = -30.0;
+    final clips = <Map<String, dynamic>>[];
+    final cuts = <double>[];
+
+    // Structure, in master bars.
+    final vIn = <int>[], beatIn = <int>[], beatOut = <int>[], cutBack = <int?>[];
+    var cursor = 8; // 8 bars of anchor first
+    for (final m in ms) {
+      final len = m.vocalBars;
+      if (m.beatOnly) {
+        vIn.add(cursor);
+        beatIn.add(cursor);
+        beatOut.add(cursor + len);
+        cutBack.add(null);
+      } else {
+        final settle = len >= 32 ? 16 : 8;
+        vIn.add(cursor);
+        beatIn.add(cursor + settle);
+        beatOut.add(cursor + len);
+        final cb = cursor + settle + 12;
+        cutBack.add(len - settle >= 28 && cb + 4 <= cursor + len - 4 ? cb : null);
+      }
+      cursor += len + 8;
+    }
+    final endBar = ms.isEmpty ? 16 : beatOut.last + 12;
+
+    // Vocal spans (for the vocal pocket on whatever beat is under them).
+    final spans = <(double, double)>[
+      for (var i = 0; i < ms.length; i++)
+        if (!ms[i].beatOnly && ms[i].laneAudible(ms[i].lanes.first)) (bt(vIn[i]), bt(vIn[i] + ms[i].vocalBars))
+    ];
+
+    // Anchor gain over time: 1 except while a mashup's beat has taken over.
+    final env = <(double, double, double)>[(0, 1, 0)]; // (time, gain, low)
+    for (var i = 0; i < ms.length; i++) {
+      env
+        ..add((bt(beatIn[i]), 1, 0))
+        ..add((bt(beatIn[i] + 4) - p * 0.25, 0.25, kill))
+        ..add((bt(beatIn[i] + 4), 0, kill))
+        ..add((bt(beatOut[i]), 0, kill))
+        ..add((bt(beatOut[i] + 3), 0.85, kill))
+        ..add((bt(beatOut[i] + 4) - p * 0.25, 1, kill))
+        ..add((bt(beatOut[i] + 4), 1, 0));
+      final c = cutBack[i];
+      if (c != null) {
+        env
+          ..add((bt(c) - 0.03, 0, kill))
+          ..add((bt(c), 1, 0))
+          ..add((bt(c + 4) - 0.03, 1, 0))
+          ..add((bt(c + 4), 0, kill));
+      }
+    }
+    env
+      ..add((bt(endBar - 8), 1, 0))
+      ..add((bt(endBar), 0, 0));
+    env.sort((a, b) => a.$1.compareTo(b.$1));
+    double envAt(double t, {bool low = false}) {
+      if (t <= env.first.$1) return low ? env.first.$3 : env.first.$2;
+      for (var i = 1; i < env.length; i++) {
+        if (t <= env[i].$1) {
+          final a = env[i - 1], b = env[i];
+          final x = (t - a.$1) / math.max(1e-9, b.$1 - a.$1);
+          return low ? a.$3 + (b.$3 - a.$3) * x : a.$2 + (b.$2 - a.$2) * x;
+        }
+      }
+      return low ? env.last.$3 : env.last.$2;
+    }
+
+    // Anchor clips: the 16-bar loop, one clip per loop pass (20 ms
+    // crossfades at the loop points), skipped where the anchor is silent.
+    final aStems = [
+      for (final s in const ['other', 'bass', 'drums']) anchor.track.stems!.paths[s]!
+    ];
+    final aBase = anchor.grid.beatIndexOfBar(anchor.loopStart);
+    const xf = 0.02;
+    for (var c0 = 0; c0 < endBar; c0 += AnchorBeat.loopBars) {
+      final c1 = math.min(endBar, c0 + AnchorBeat.loopBars);
+      final w0 = bt(c0) - (c0 > 0 ? xf : 0), w1 = bt(c1) + xf;
+      var audible = false;
+      for (var t = w0; t <= w1; t += p) {
+        if (envAt(t) > 0.001) {
+          audible = true;
+          break;
+        }
+      }
+      if (!audible) continue;
+      final warp = <List<double>>[
+        for (var n = 0; n <= (c1 - c0) * 4; n++) [bt(c0) + n * p, anchor.grid.smoothBeat(aBase + n)]
+      ];
+      final slope = (warp[1][1] - warp[0][1]) / (warp[1][0] - warp[0][0]);
+      final times = <double>{w0, w1, for (final e in env) if (e.$1 > w0 && e.$1 < w1) e.$1};
+      if (c0 > 0) times.add(bt(c0) + xf);
+      times.add(bt(c1) - xf);
+      final sorted = times.toList()..sort();
+      var keys = <Keyframe>[
+        for (final t in sorted)
+          Keyframe(t,
+              gain: envAt(t) *
+                  (c0 > 0 && t < bt(c0) + xf ? ((t - w0) / (2 * xf)).clamp(0.0, 1.0) : 1) *
+                  (t > bt(c1) - xf ? ((w1 - t) / (2 * xf)).clamp(0.0, 1.0) : 1),
+              low: envAt(t, low: true))
+      ];
+      keys = _withPockets(keys, spans, p);
+      clips.add(_clip(aStems.first, math.max(0, warp.first[1] - (bt(c0) - w0) * slope), warp.last[1] + xf * slope + 0.02, w0,
+          1.0, anchor.cents, 0, p * 0.5, keys,
+          gainDb: anchor.gainDb, warp: warp, mix: aStems.skip(1).toList()));
+    }
+
+    // Each mashup: its vocal over the anchor, then its own beat.
+    for (var i = 0; i < ms.length; i++) {
+      final m = ms[i];
+      final bg = m.beatGrid, vg = m.vocalGrid;
+      final len = m.vocalBars;
+      final group = (i % 2) * 8;
+
+      // Beat: from beatIn to beatOut (+4 bars handing back to the anchor).
+      final beatStems = [
+        for (final lane in m.lanes)
+          if (!lane.fromVocalSong && m.laneAudible(lane)) m.beat.stems!.paths[lane.stem]!
+      ];
+      if (beatStems.isNotEmpty) {
+        final b0 = beatIn[i], b1 = beatOut[i] + 4;
+        final bBase = bg.beatIndexOfBar(m.beatStart);
+        final warp = <List<double>>[
+          for (var n = 0; n <= (b1 - b0) * 4; n++) [bt(b0) + n * p, bg.smoothBeat(bBase + n)]
+        ];
+        final c = cutBack[i];
+        var keys = <Keyframe>[
+          Keyframe(bt(b0), gain: 0, low: kill),
+          Keyframe(bt(b0 + 3), gain: 0.8, low: kill),
+          Keyframe(bt(b0 + 4) - p * 0.25, gain: 0.95, low: kill),
+          Keyframe(bt(b0 + 4)),
+          if (c != null) ...[
+            Keyframe(bt(c) - 0.03),
+            Keyframe(bt(c), gain: 0),
+            Keyframe(bt(c + 4) - 0.03, gain: 0),
+            Keyframe(bt(c + 4)),
+          ],
+          Keyframe(bt(beatOut[i])),
+          Keyframe(bt(beatOut[i] + 4), gain: 0, low: kill, hpf: 450),
+        ];
+        if (m.beatOnly) {
+          keys = [
+            Keyframe(bt(b0), gain: 0, low: kill),
+            Keyframe(bt(b0 + 4) - p * 0.25, gain: 0.95, low: kill),
+            Keyframe(bt(b0 + 4)),
+            Keyframe(bt(beatOut[i])),
+            Keyframe(bt(beatOut[i] + 4), gain: 0, low: kill, hpf: 450),
+          ];
+        }
+        keys = _withPockets(keys, spans, p);
+        clips.add(_clip(beatStems.first, math.max(0, warp.first[1]), warp.last[1] + 0.05, bt(b0), 1.0, m.beatCents, group,
+            p * 0.5, keys, gainDb: m.beatGainDb, warp: warp, mix: beatStems.skip(1).toList()));
+      }
+
+      // Vocal: pinned beat by beat onto the master grid from its first bar.
+      final vEntry = vg.beatIndexOfBar(m.vocalStart);
+      final vInT = bt(vIn[i]), vOutT = bt(vIn[i] + len);
+      if (!m.beatOnly) {
+        final warp = <List<double>>[
+          for (var n = -2; n <= len * 4 + 2; n++) [vInT + n * p, vg.smoothBeat(vEntry + n)]
+        ];
+        final outStartV = warp.first[0];
+        for (var li = 0; li < m.lanes.length; li++) {
+          final lane = m.lanes[li];
+          if (!lane.fromVocalSong || !m.laneAudible(lane)) continue;
+          final path = m.vocal.stems!.paths[lane.stem]!;
+          final keys = lane.stem == 'vocals'
+              ? [
+                  Keyframe(outStartV, gain: 0),
+                  Keyframe(outStartV + p, gain: 1),
+                  Keyframe(vOutT - p),
+                  Keyframe(vOutT - p * 0.5, echo: 0.4),
+                  Keyframe(vOutT, gain: 0, echo: 0.5),
+                ]
+              : [Keyframe(outStartV, gain: 0), Keyframe(vInT, gain: 1), Keyframe(vOutT - p), Keyframe(vOutT, gain: 0)];
+          clips.add(_clip(path, math.max(0.0, warp.first[1]), warp.last[1] + 0.05, outStartV,
+              (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]), m.renderedVocalCents, group + li, p * 0.75,
+              keys,
+              gainDb: m.beatGainDb + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5), warp: warp, bus: 1));
+        }
+        m.vocalRate = (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]);
+      }
+
+      final first = i == 0 ? 0 : vIn[i] - 8;
+      m
+        ..start = bt(first)
+        ..vocalIn = vInT
+        ..vocalOut = vOutT
+        ..end = bt(beatOut[i] + 4)
+        ..playedBpm = anchor.tempo
+        ..beatTimes = List.unmodifiable([for (var n = first * 4; n <= (beatOut[i] + 8) * 4; n++) n * p]);
+      cuts.add(vInT);
+    }
+
+    for (final s in samples) {
+      if (!ms.contains(s.anchor) || s.anchor.beatTimes.length < 8) continue;
+      final clip = _sampleClip(s, ms.indexOf(s.anchor));
+      if (clip != null) clips.add(clip);
+    }
+
+    final duration = bt(endBar) + 1.5;
+    final mins = (duration / 60).round();
+    final summary = '${vibe.summary} · ⚓ ${anchor.track.title} · ${ms.length} mashups · '
+        '${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
+    final json = <String, dynamic>{'duration': duration, 'clips': clips, if (warmth != null) 'warmth': warmth};
+    return MashupSetPlan(ms, duration, summary, json, cuts);
+  }
+
+  /// The vocal pocket for several vocals (whichever is singing at the time).
+  static List<Keyframe> _withPockets(List<Keyframe> keys, List<(double, double)> spans, double beat) {
+    var out = keys;
+    final mids = <double, double>{};
+    for (final (a, b) in spans) {
+      final k = _withPocket(out, a, b, beat);
+      for (final x in k) {
+        mids[x.t] = math.min(mids[x.t] ?? 0, x.mid);
+      }
+      out = k;
+    }
+    return [
+      for (final k in out)
+        Keyframe(k.t, gain: k.gain, low: k.low, mid: mids[k.t] ?? 0, high: k.high, hpf: k.hpf, lpf: k.lpf, echo: k.echo)
+    ];
+  }
+
+  /// Adds the vocal pocket (−4 dB around 3 kHz) to a clip's automation between
+  /// [vIn] and [vOut], ramping over a beat at each end.
+  static List<Keyframe> _withPocket(List<Keyframe> keys, double vIn, double vOut, double beat) {
+    const dip = -4.0;
+    double pocketAt(double t) {
+      if (t <= vIn - beat || t >= vOut + beat) return 0;
+      if (t < vIn) return dip * (t - (vIn - beat)) / beat;
+      if (t > vOut) return dip * (1 - (t - vOut) / beat);
+      return dip;
+    }
+
+    Keyframe at(double t) {
+      // Value of the existing automation at t (linear between keys).
+      if (keys.isEmpty) return Keyframe(t);
+      if (t <= keys.first.t) return Keyframe(t, gain: keys.first.gain, low: keys.first.low, high: keys.first.high,
+          hpf: keys.first.hpf, lpf: keys.first.lpf, echo: keys.first.echo);
+      for (var i = 1; i < keys.length; i++) {
+        if (t < keys[i].t) {
+          final a = keys[i - 1], b = keys[i];
+          final x = (t - a.t) / math.max(1e-9, b.t - a.t);
+          double l(double p, double q) => p + (q - p) * x;
+          double lf(double p, double q) => math.exp(math.log(p) + (math.log(q) - math.log(p)) * x);
+          return Keyframe(t, gain: l(a.gain, b.gain), low: l(a.low, b.low), high: l(a.high, b.high),
+              hpf: lf(a.hpf, b.hpf), lpf: lf(a.lpf, b.lpf), echo: l(a.echo, b.echo));
+        }
+      }
+      final z = keys.last;
+      return Keyframe(t, gain: z.gain, low: z.low, high: z.high, hpf: z.hpf, lpf: z.lpf, echo: z.echo);
+    }
+
+    final times = <double>{for (final k in keys) k.t, vIn - beat, vIn, vOut, vOut + beat}.toList()..sort();
+    return [
+      for (final t in times)
+        () {
+          final k = at(t);
+          return Keyframe(t, gain: k.gain, low: k.low, mid: pocketAt(t), high: k.high, hpf: k.hpf, lpf: k.lpf, echo: k.echo);
+        }()
+    ];
   }
 
   /// Mix time of beat n of a mashup (extrapolated past its end).
@@ -759,7 +1169,73 @@ class MashupSession {
   bool cancelled = false;
   int target = 0;
 
+  /// Anchor mode: one steady groove the set comes home to (null = classic).
+  bool anchorMode = false;
+  AnchorBeat? anchor;
+  final Map<String, _Pair?> _anchoredCache = {};
+
   MashupSession(this.maker, this.pool, this._ranked);
+
+  _Pair? _anchoredPair(_Pair p) =>
+      _anchoredCache.putIfAbsent(p.key, () => anchor == null ? null : maker.anchored(p, anchor!));
+
+  /// Best unused pairing that fits the anchor (anchor mode).
+  _Pair? _pickAnchored(double pos, Set<String> used) {
+    _Pair? best;
+    var bestScore = -1e9;
+    var looked = 0;
+    for (final x in _ranked) {
+      if (used.contains(x.vocal.path) || used.contains(x.beat.path) || _rejected.contains(x.key)) continue;
+      if (anchor != null && (identical(x.beat, anchor!.track) || identical(x.vocal, anchor!.track))) continue;
+      final a = _anchoredPair(x);
+      if (a == null) continue;
+      final s = a.score - 2 * (a.bGrid.energy - maker.vibe.energyAt(pos)).abs();
+      if (s > bestScore) {
+        bestScore = s;
+        best = a;
+      }
+      if (++looked > 3000) break;
+    }
+    return best;
+  }
+
+  /// Picks and prepares the anchor (splits its stems).
+  Future<bool> _ensureAnchor(MusicLibrary lib, void Function(String) onStatus) async {
+    if (anchor != null) return true;
+    for (final t in maker.anchorCandidates(pool)) {
+      onStatus('Choosing the anchor beat · ${t.title}');
+      await lib.separate([t], (d, n, c) {});
+      final a = maker.anchorFor(t);
+      if (a != null) {
+        anchor = a;
+        _anchoredCache.clear();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Makes [t] the anchor beat and re-fits every mashup to it.
+  Future<String?> setAnchor(LibraryTrack t, MusicLibrary lib, void Function(String) onStatus) async {
+    onStatus('Making "${t.title}" the anchor beat…');
+    await lib.analyze([t], (d, n) {});
+    if (t.analysis == null) return 'Couldn\'t find a steady beat in "${t.title}".';
+    await lib.separate([t], (d, n, c) => onStatus('Splitting stems · ${t.title}'));
+    final a = maker.anchorFor(t);
+    if (a == null) return 'Couldn\'t use "${t.title}" as the anchor.';
+    anchor = a;
+    anchorMode = true;
+    _anchoredCache.clear();
+    for (var i = 0; i < mashups.length; i++) {
+      final n = maker.conform(mashups[i], a);
+      _reanchor(mashups[i], n);
+      mashups[i] = n;
+    }
+    return null;
+  }
+
+  /// In anchor mode, fits a newly made mashup to the anchor.
+  Mashup _fit(Mashup m) => anchorMode && anchor != null ? maker.conform(m, anchor!) : m;
 
   static MashupSession start(MashupMaker maker, List<LibraryTrack> pool) =>
       MashupSession(maker, pool, maker.rankPairs(pool));
@@ -771,6 +1247,7 @@ class MashupSession {
   Future<void> fill(MusicLibrary lib, int count, void Function(String status) onStatus, void Function() onAdded) async {
     target = count;
     var misses = 0;
+    if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
     while (!cancelled && mashups.length < target && misses < 6) {
       // Plan the next few, then split all their stems in one go (faster).
       final picks = <_Pair>[];
@@ -780,9 +1257,9 @@ class MashupSession {
       final batch = mashups.length < 2 ? 2 : 4;
       for (var k = 0; k < batch && mashups.length + picks.length < target; k++) {
         final p = (mashups.length + picks.length) / math.max(1, target - 1);
-        final pick = maker.pickNext(_ranked, prevSim, p, used, _rejected);
+        final pick = anchorMode ? _pickAnchored(p, used) : maker.pickNext(_ranked, prevSim, p, used, _rejected);
         if (pick == null) break;
-        if (prevTempo > 0 && (math.log(pick.tempo / prevTempo)).abs() > math.log(1.06)) break;
+        if (!anchorMode && prevTempo > 0 && (math.log(pick.tempo / prevTempo)).abs() > math.log(1.06)) break;
         picks.add(pick);
         used
           ..add(pick.vocal.path)
@@ -814,7 +1291,9 @@ class MashupSession {
 
   Future<Mashup?> _another(MusicLibrary lib, Mashup? prev, double p, Set<String> avoid, void Function(String) onStatus) async {
     for (var attempt = 0; attempt < 6; attempt++) {
-      final pick = maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected);
+      final pick = anchorMode
+          ? _pickAnchored(p, {..._used, ...avoid})
+          : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected);
       if (pick == null) return null;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
       final m = maker.build(pick);
@@ -835,8 +1314,9 @@ class MashupSession {
   }
 
   bool swap(int i) {
-    final m = maker.swapped(mashups[i]);
-    if (m == null) return false;
+    final s = maker.swapped(mashups[i]);
+    if (s == null) return false;
+    final m = _fit(s);
     _reanchor(mashups[i], m);
     mashups[i] = m;
     return true;
@@ -854,7 +1334,7 @@ class MashupSession {
         await lib.separate([p.vocal, song], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
         final m = maker.build(p);
         if (m != null) {
-          mashups.insert(i + 1, m);
+          mashups.insert(i + 1, _fit(m));
           return null;
         }
       }
@@ -863,7 +1343,7 @@ class MashupSession {
     await lib.separate([song], (d, t, c) => onStatus('Splitting stems · ${song.title}'));
     final m = maker.beatBreak(song, nearTempo: mashups.isEmpty ? null : mashups[i.clamp(0, mashups.length - 1)].tempo);
     if (m == null) return 'Couldn\'t split "${song.title}".';
-    mashups.insert(i + 1, m);
+    mashups.insert(i + 1, _fit(m));
     return null;
   }
 
@@ -889,6 +1369,7 @@ class MashupSession {
       if (made == null) return err;
       m = made;
     }
+    m = _fit(m);
     _reanchor(old, m);
     // Keep your settings for the half that didn't change.
     if (asVocal) {
@@ -902,7 +1383,9 @@ class MashupSession {
     return null;
   }
 
-  MashupSetPlan layout({Map<String, dynamic>? warmth}) => maker.layout(mashups, warmth: warmth, samples: samples);
+  MashupSetPlan layout({Map<String, dynamic>? warmth}) => anchorMode && anchor != null
+      ? maker.layoutAnchored(mashups, anchor!, warmth: warmth, samples: samples)
+      : maker.layout(mashups, warmth: warmth, samples: samples);
 
   /// Plans [count] pairings in order without splitting stems: (pair key, tempo).
   /// Used to check a library can supply a long set.
