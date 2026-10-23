@@ -763,7 +763,10 @@ final class TimelinePlayer {
     engine.prepare()
     // Live controls follow the playhead closely (vocals never overlap between
     // mashups, so switching value between them is seamless).
-    pitchTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in self?.applyLive() }
+    pitchTimer?.invalidate()
+    let pt = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in self?.applyLive() }
+    RunLoop.main.add(pt, forMode: .common)
+    pitchTimer = pt
   }
 
   /// main layer → gain ─┐
@@ -898,26 +901,46 @@ final class TimelinePlayer {
   }
 
 func play(from pos: Double? = nil) {
-    if let pos { pausedPos = pos }
-    // After a long pause the engine is often stopped; restart and wait for a clock.
-    if !engine.isRunning {
-      do { try engine.start() } catch {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.play(from: pos) }
-        return
-      }
+    if let pos { pausedPos = max(0, pos) }
+
+    // After a long pause macOS often stops the engine; a soft start is not enough.
+    if engine.isRunning {
+      engine.pause()
     }
-    stopAll()
-    guard let now = nowSample else {
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.play(from: pos) }
+    do {
+      try engine.start()
+    } catch {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+        self?.play(from: pos ?? self?.pausedPos)
+      }
       return
     }
-    anchorSample = now + AVAudioFramePosition(0.15 * sr)
+
+    stopAll()
+
+    guard let now = nowSample else {
+      // Clock not ready yet — retry with the same resume position.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        self?.play(from: pos ?? self?.pausedPos)
+      }
+      return
+    }
+
+    anchorSample = now + AVAudioFramePosition(0.2 * sr)
     anchorPos = pausedPos
     isPlaying = true
     generation += 1
+
     timer?.invalidate()
-    timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.tick() }
-    RunLoop.main.add(timer!, forMode: .common) // keep ticking while scrolling / UI busy
+    let t = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in self?.tick() }
+    RunLoop.main.add(t, forMode: .common)
+    timer = t
+
+    // Kick live gains so we don't resume with a stuck -inf fader state.
+    voxDb = Smoothed()
+    beatDb = Smoothed()
+    applyLive()
+
     tick()
   }
 
@@ -925,7 +948,10 @@ func play(from pos: Double? = nil) {
     pausedPos = rawPosition
     isPlaying = false
     timer?.invalidate()
+    timer = nil
     stopAll()
+    // Keep engine running so resume has a valid sample clock.
+    // (Do not engine.stop() here.)
   }
 
   /// Jumps while playing without a gap: the new spot is loaded first, then
