@@ -459,7 +459,7 @@ class MashupMaker {
     return s / (b - a);
   }
 
-   /// Chooses the vocal section (verse into chorus, starting on a fresh line)
+  /// Chooses the vocal section (verse into chorus, starting on a fresh line)
   /// and the part of the beat it rides on.
   bool _placeVocal(Mashup m) {
     final vg = m.vocalGrid, bg = m.beatGrid;
@@ -517,16 +517,6 @@ class MashupMaker {
     _placeBeat(m);
     return true;
   }
-      if (bestStart >= 0 && best > 1.2) break;
-    }
-    if (bestStart < 0) return false;
-    m
-      ..vocalStart = bestStart
-      ..vocalBars = bestLen
-      ..vocalTailBeats = _tailBeats(m, bestStart + bestLen);
-    _placeBeat(m);
-    return true;
-  }
 
   /// How many beats the last word rings on past [endBar] (up to 6): the vocal
   /// keeps playing until the singer has actually finished.
@@ -557,15 +547,7 @@ class MashupMaker {
     ];
   }
 
- /// Strongest groove of the beat song that fits the vocal's energy shape,
-  /// on an 8-bar phrase. Matches phrase character (verse/chorus feel) instead
-  /// of only picking the loudest stretch of the instrumental.
-  void _placeBeat(Mashup m) {
-    final bg = m.beatGrid;
-    final vg = m.vocalGrid;
-    final need = m.totalBars;
-
- /// Strongest groove of the beat song that fits the vocal's energy shape,
+  /// Strongest groove of the beat song that fits the vocal's energy shape,
   /// on an 8-bar phrase. Matches phrase character (verse/chorus feel) instead
   /// of only picking the loudest stretch of the instrumental.
   void _placeBeat(Mashup m) {
@@ -621,19 +603,9 @@ class MashupMaker {
       }
     }
 
-    // Micro-align: ±1 bar so the vocal doesn't sit a bar early/late on the groove.
-    var best = bStart;
-    var bestE = _meanEnergy(bg, bStart + Mashup.introBars, bStart + Mashup.introBars + 4);
-    for (final d in const [-1, 1]) {
-      final s = bStart + d;
-      if (s < bg.firstBar || s + need > bg.lastBar + 1) continue;
-      final e = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + 4);
-      if (e > bestE + 0.05) {
-        bestE = e;
-        best = s;
-      }
-    }
-    m.beatStart = best;
+    // (No ±1-bar nudge: the beat must start on an 8-bar phrase so blends,
+    // builds and cut-backs land on phrase boundaries.)
+    m.beatStart = bStart;
   }
 
   // ------------------------------------------------------------- layout

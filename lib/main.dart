@@ -622,6 +622,22 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     }
   }
 
+  /// Jumps to item [i] (a mashup or song): crossfades there while playing,
+  /// or starts playing from there.
+  Future<void> _jumpTo(int i) async {
+    final starts = _itemStarts;
+    if (!_playable || i < 0 || i >= starts.length) return;
+    double t = starts[i];
+    if (_mashupMode && i > 0) t = _mashPlan!.mashups[i].start;
+    if (!_mashupMode && i > 0) t = _plan!.transitions[i - 1].start;
+    if (_playing) {
+      await _mixer.seek(t); // crossfades to the new spot
+    } else {
+      await _mixer.play(from: t);
+      if (mounted) setState(() => _playing = true);
+    }
+  }
+
   Future<void> _export() async {
     if (!_sections.allReady) {
       _set('Still preparing ${_sections.sections.length - _sections.ready} sections — save again in a moment.', phase: Phase.ready);
