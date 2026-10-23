@@ -606,17 +606,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _scroll.animateTo(target, duration: const Duration(milliseconds: 600), curve: Curves.easeInOut);
   }
 
-  Future<void> _togglePlay() async {
+Future<void> _togglePlay() async {
     if (!_playable) {
       if (!_busy) await _remix();
       return;
     }
     if (_playing) {
       await _mixer.pause();
+      setState(() => _playing = false);
     } else {
-      await _mixer.play();
+      // Always resume from the last known mix time (survives engine idle).
+      await _mixer.play(from: _position);
+      setState(() => _playing = true);
     }
-    setState(() => _playing = !_playing);
   }
 
   Future<void> _jumpTo(int i) async {
