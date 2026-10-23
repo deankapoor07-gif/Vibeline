@@ -606,32 +606,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _scroll.animateTo(target, duration: const Duration(milliseconds: 600), curve: Curves.easeInOut);
   }
 
-Future<void> _togglePlay() async {
+  Future<void> _togglePlay() async {
     if (!_playable) {
       if (!_busy) await _remix();
       return;
     }
     if (_playing) {
       await _mixer.pause();
-      setState(() => _playing = false);
+      if (mounted) setState(() => _playing = false);
     } else {
-      // Always resume from the last known mix time (survives engine idle).
-      await _mixer.play(from: _position);
-      setState(() => _playing = true);
-    }
-  }
-
-  Future<void> _jumpTo(int i) async {
-    final starts = _itemStarts;
-    if (!_playable || i < 0 || i >= starts.length) return;
-    double t = starts[i];
-    if (_mashupMode && i > 0) t = _mashPlan!.mashups[i].start;
-    if (!_mashupMode && i > 0) t = _plan!.transitions[i - 1].start;
-    if (_playing) {
-      await _mixer.seek(t); // crossfades to the new spot
-    } else {
-      await _mixer.play(from: t);
-      setState(() => _playing = true);
+      // Always pass the last known mix time so native resume can't start at 0 / empty.
+      final from = _position;
+      await _mixer.play(from: from);
+      if (mounted) setState(() => _playing = true);
     }
   }
 
