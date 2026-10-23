@@ -565,7 +565,7 @@ class MashupMaker {
     final vg = m.vocalGrid;
     final need = m.totalBars;
 
-    /// Strongest groove of the beat song that fits the vocal's energy shape,
+ /// Strongest groove of the beat song that fits the vocal's energy shape,
   /// on an 8-bar phrase. Matches phrase character (verse/chorus feel) instead
   /// of only picking the loudest stretch of the instrumental.
   void _placeBeat(Mashup m) {
@@ -592,25 +592,20 @@ class MashupMaker {
 
       final groove = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + m.vocalBars);
 
-      // Energy-shape match: beat should rise/fall with the vocal, not fight it.
       var shape = 0.0;
       var n = 0;
       for (var i = 0; i < need; i++) {
         final bi = s + i;
         if (bi < 0 || bi >= bg.barEnergy.length) continue;
-        final bE = bg.barEnergy[bi];
-        final vE = vEnergies[i];
-        shape += 1.0 - (bE - vE).abs();
+        shape += 1.0 - (bg.barEnergy[bi] - vEnergies[i]).abs();
         n++;
       }
       final shapeScore = n == 0 ? 0.0 : shape / n;
 
-      // Prefer a build into the vocal entry.
       final pre = _meanEnergy(bg, s, s + Mashup.introBars);
       final atVocal = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + 4);
       final build = (atVocal - pre).clamp(-0.3, 0.5);
 
-      // Soft vocal on a peak drop often feels like a bad mix.
       final vocalLoud = _meanVocal(m, m.vocalStart, m.vocalStart + math.min(8, m.vocalBars));
       final clashPenalty = (vocalLoud < 0.4 && atVocal > 0.85) ? 0.6 : 0.0;
 
@@ -625,7 +620,20 @@ class MashupMaker {
         bStart = s;
       }
     }
-    m.beatStart = bStart;
+
+    // Micro-align: ±1 bar so the vocal doesn't sit a bar early/late on the groove.
+    var best = bStart;
+    var bestE = _meanEnergy(bg, bStart + Mashup.introBars, bStart + Mashup.introBars + 4);
+    for (final d in const [-1, 1]) {
+      final s = bStart + d;
+      if (s < bg.firstBar || s + need > bg.lastBar + 1) continue;
+      final e = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + 4);
+      if (e > bestE + 0.05) {
+        bestE = e;
+        best = s;
+      }
+    }
+    m.beatStart = best;
   }
 
   // ------------------------------------------------------------- layout
