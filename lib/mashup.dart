@@ -489,8 +489,18 @@ class MashupMaker {
         }
         if (longest >= 6) continue;
         final gapPenalty = longest >= 3 ? 0.4 : 0.0;
-        final score = 1.2 * _meanVocal(m, s, s + len) + 0.5 * _meanEnergy(vg, s, s + len) + fresh + endsClean +
-            len / 48 - (s - vg.firstBar) / 400 - gapPenalty;
+        // Prefer sections that open into more energy (verse → chorus feel).
+        final open = _meanEnergy(vg, s, s + 4);
+        final later = _meanEnergy(vg, s + len ~/ 2, s + len);
+        final lift = (later - open).clamp(-0.2, 0.5);
+        final score = 1.2 * _meanVocal(m, s, s + len) +
+            0.5 * _meanEnergy(vg, s, s + len) +
+            0.4 * lift +
+            fresh +
+            endsClean +
+            len / 48 -
+            (s - vg.firstBar) / 400 -
+            gapPenalty;
         if (score > best) {
           best = score;
           bestStart = s;
@@ -537,15 +547,64 @@ class MashupMaker {
     ];
   }
 
-  /// The strongest groove of the beat song that fits, on an 8-bar phrase.
+ /// Strongest groove of the beat song that fits the vocal's energy shape,
+  /// on an 8-bar phrase. Matches phrase character (verse/chorus feel) instead
+  /// of only picking the loudest stretch of the instrumental.
   void _placeBeat(Mashup m) {
     final bg = m.beatGrid;
+    final vg = m.vocalGrid;
+    final need = m.totalBars;
+
+    // Vocal energy contour over intro + vocal + outro bars of this mashup.
+    // Missing bars (outside the vocal song) default quiet so we prefer a beat
+    // section with a real build into the vocal and release after.
+    final vEnergies = <double>[];
+    for (var i = 0; i < need; i++) {
+      final bar = m.vocalStart + (i - Mashup.introBars);
+      if (bar < vg.firstBar || bar >= vg.lastBar || bar < 0 || bar >= vg.barEnergy.length) {
+        vEnergies.add(0.25);
+      } else {
+        vEnergies.add(vg.barEnergy[bar]);
+      }
+    }
+
     var bBest = -1e9;
     var bStart = bg.firstBar;
-    for (var s = bg.firstBar; s + m.totalBars <= bg.lastBar + 1; s++) {
+
+    for (var s = bg.firstBar; s + need <= bg.lastBar + 1; s++) {
       if ((s - bg.firstBar) % 8 != 0) continue;
+
+      // Groove under the vocal (same window as before).
       final groove = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + m.vocalBars);
-      final score = groove - (s - bg.firstBar) / 300;
+
+      // Energy-shape match: beat should rise/fall with the vocal, not fight it.
+      var shape = 0.0;
+      var n = 0;
+      for (var i = 0; i < need; i++) {
+        final bi = s + i;
+        if (bi < 0 || bi >= bg.barEnergy.length) continue;
+        final bE = bg.barEnergy[bi];
+        final vE = vEnergies[i];
+        shape += 1.0 - (bE - vE).abs();
+        n++;
+      }
+      final shapeScore = n == 0 ? 0.0 : shape / n;
+
+      // Prefer a build into the vocal entry.
+      final pre = _meanEnergy(bg, s, s + Mashup.introBars);
+      final atVocal = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + 4);
+      final build = (atVocal - pre).clamp(-0.3, 0.5);
+
+      // Soft vocal on a peak drop often feels like a bad mix.
+      final vocalLoud = _meanVocal(m, m.vocalStart, m.vocalStart + math.min(8, m.vocalBars));
+      final clashPenalty = (vocalLoud < 0.4 && atVocal > 0.85) ? 0.6 : 0.0;
+
+      final score = 0.55 * groove +
+          0.9 * shapeScore +
+          0.35 * build -
+          clashPenalty -
+          (s - bg.firstBar) / 300;
+
       if (score > bBest) {
         bBest = score;
         bStart = s;
