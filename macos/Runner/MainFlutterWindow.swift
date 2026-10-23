@@ -897,21 +897,27 @@ final class TimelinePlayer {
     tick()
   }
 
-  func play(from pos: Double? = nil) {
+func play(from pos: Double? = nil) {
     if let pos { pausedPos = pos }
-    if !engine.isRunning { try? engine.start() }
+    // After a long pause the engine is often stopped; restart and wait for a clock.
+    if !engine.isRunning {
+      do { try engine.start() } catch {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.play(from: pos) }
+        return
+      }
+    }
     stopAll()
     guard let now = nowSample else {
-      // Engine needs a render cycle before it has a clock; try again shortly.
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.play(from: pos) }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.play(from: pos) }
       return
     }
-    anchorSample = now + AVAudioFramePosition(0.12 * sr)
+    anchorSample = now + AVAudioFramePosition(0.15 * sr)
     anchorPos = pausedPos
     isPlaying = true
     generation += 1
     timer?.invalidate()
-    timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.tick() }
+    timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.tick() }
+    RunLoop.main.add(timer!, forMode: .common) // keep ticking while scrolling / UI busy
     tick()
   }
 
