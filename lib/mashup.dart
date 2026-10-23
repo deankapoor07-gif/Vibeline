@@ -459,7 +459,7 @@ class MashupMaker {
     return s / (b - a);
   }
 
-  /// Chooses the vocal section (verse into chorus, starting on a fresh line)
+   /// Chooses the vocal section (verse into chorus, starting on a fresh line)
   /// and the part of the beat it rides on.
   bool _placeVocal(Mashup m) {
     final vg = m.vocalGrid, bg = m.beatGrid;
@@ -517,6 +517,16 @@ class MashupMaker {
     _placeBeat(m);
     return true;
   }
+      if (bestStart >= 0 && best > 1.2) break;
+    }
+    if (bestStart < 0) return false;
+    m
+      ..vocalStart = bestStart
+      ..vocalBars = bestLen
+      ..vocalTailBeats = _tailBeats(m, bestStart + bestLen);
+    _placeBeat(m);
+    return true;
+  }
 
   /// How many beats the last word rings on past [endBar] (up to 6): the vocal
   /// keeps playing until the singer has actually finished.
@@ -555,9 +565,15 @@ class MashupMaker {
     final vg = m.vocalGrid;
     final need = m.totalBars;
 
+    /// Strongest groove of the beat song that fits the vocal's energy shape,
+  /// on an 8-bar phrase. Matches phrase character (verse/chorus feel) instead
+  /// of only picking the loudest stretch of the instrumental.
+  void _placeBeat(Mashup m) {
+    final bg = m.beatGrid;
+    final vg = m.vocalGrid;
+    final need = m.totalBars;
+
     // Vocal energy contour over intro + vocal + outro bars of this mashup.
-    // Missing bars (outside the vocal song) default quiet so we prefer a beat
-    // section with a real build into the vocal and release after.
     final vEnergies = <double>[];
     for (var i = 0; i < need; i++) {
       final bar = m.vocalStart + (i - Mashup.introBars);
@@ -574,7 +590,6 @@ class MashupMaker {
     for (var s = bg.firstBar; s + need <= bg.lastBar + 1; s++) {
       if ((s - bg.firstBar) % 8 != 0) continue;
 
-      // Groove under the vocal (same window as before).
       final groove = _meanEnergy(bg, s + Mashup.introBars, s + Mashup.introBars + m.vocalBars);
 
       // Energy-shape match: beat should rise/fall with the vocal, not fight it.
