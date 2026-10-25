@@ -785,6 +785,8 @@ class MashupMaker {
     for (final t in pool) {
       final a = t.analysis;
       if (a == null || a.barCount < 48 || a.tempoDrift > 0.025) continue;
+      // The anchor's drums play all set long: only tight ones.
+      if ((t.stems?.gridTight ?? 1) < 0.85) continue;
       final g = _natural(a);
       var s = 1.2 * (a.danceability - 1.0) + 0.5 * tagScore(t, vibe, rng);
       s -= 3 * (math.log(g.steadyBpm / vibe.targetBpm)).abs();
@@ -839,7 +841,11 @@ class MashupMaker {
     final vs = bestShift(vg.camelot, const [0, 1, -1, 2, -2, 3, -3], 0.07);
     if (bs == null || vs == null) return null;
     final stretch = (t / bg.steadyBpm - 1).abs() + 0.5 * (t / vg.steadyBpm - 1).abs();
-    return _Pair(p.vocal, p.beat, vg, bg, vs, p.score - 0.3 * bs.abs() - 0.15 * vs.abs() - 4 * stretch, bs);
+    // Loose live drumming (beats far off any steady grid) makes a vocal
+    // wobble against the beat: such songs are only used when little else fits.
+    double loose(LibraryTrack x) => ((0.85 - (x.stems?.gridTight ?? 1)) * 6).clamp(0.0, 3.0);
+    final score = p.score - 0.3 * bs.abs() - 0.15 * vs.abs() - 4 * stretch - loose(p.vocal) - loose(p.beat);
+    return _Pair(p.vocal, p.beat, vg, bg, vs, score, bs);
   }
 
   /// Re-fits a mashup (e.g. one you picked or shuffled) to the anchor.
@@ -881,40 +887,36 @@ class MashupMaker {
 
   /// Anchor-mode layout (Dean's structure), on one master grid at the anchor's
   /// tempo:
-  ///   anchor intro → vocal 1 enters over the anchor → after 8–16 bars beat 1
-  ///   takes over (bass swap) → in longer vocals, a 4-bar cut back to the
-  ///   anchor → vocal ends, beat hands back to the anchor → next vocal enters
-  ///   over the anchor … → anchor outro.
+  ///   anchor intro → vocal 1 enters over the anchor → 4–8 bars in, beat 1
+  ///   rises in (no bass) for 2 bars and takes over on the downbeat (bass
+  ///   swap, the anchor drops out) → the vocal sings over beat 1 → beat 1
+  ///   plays on alone for 8 bars → the anchor swaps back in on a downbeat →
+  ///   4 bars of anchor → next vocal … → anchor outro.
+  /// Only one beat is ever fully playing, so the groove under a vocal never
+  /// smears, and every switch is a clean swap on a downbeat.
   MashupSetPlan layoutAnchored(List<Mashup> ms, AnchorBeat anchor,
       {Map<String, dynamic>? warmth, List<SamplePlacement> samples = const []}) {
     final p = 60 / anchor.tempo; // seconds per beat
     final barLen = 4 * p;
     double bt(num bar) => bar * barLen;
     const kill = -30.0;
+    const rise = 2, solo = 8, gap = 4; // bars
     final clips = <Map<String, dynamic>>[];
     final cuts = <double>[];
 
-    // Structure, in master bars.
-    final vIn = <int>[], beatIn = <int>[], beatOut = <int>[], cutBack = <int?>[];
+    // Structure, in master bars: beatIn is the downbeat the mashup's beat
+    // takes over on; beatEnd the downbeat the anchor takes back over on.
+    final vIn = <int>[], beatIn = <int>[], beatEnd = <int>[];
     var cursor = 8; // 8 bars of anchor first
     for (final m in ms) {
       final len = m.vocalBars;
-      if (m.beatOnly) {
-        vIn.add(cursor);
-        beatIn.add(cursor);
-        beatOut.add(cursor + len);
-        cutBack.add(null);
-      } else {
-        final settle = len >= 32 ? 16 : 8;
-        vIn.add(cursor);
-        beatIn.add(cursor + settle);
-        beatOut.add(cursor + len);
-        final cb = cursor + settle + 12;
-        cutBack.add(len - settle >= 28 && cb + 4 <= cursor + len - 4 ? cb : null);
-      }
-      cursor += len + 8;
+      final settle = m.beatOnly ? rise : (len >= 32 ? 8 : 4);
+      vIn.add(cursor);
+      beatIn.add(cursor + settle);
+      beatEnd.add(cursor + len + solo);
+      cursor += len + solo + gap;
     }
-    final endBar = ms.isEmpty ? 16 : beatOut.last + 12;
+    final endBar = ms.isEmpty ? 16 : beatEnd.last + 12;
 
     // Vocal spans (for the vocal pocket on whatever beat is under them).
     final spans = <(double, double)>[
@@ -922,25 +924,18 @@ class MashupMaker {
         if (!ms[i].beatOnly && ms[i].laneAudible(ms[i].lanes.first)) (bt(vIn[i]), bt(vIn[i] + ms[i].vocalBars))
     ];
 
-    // Anchor gain over time: 1 except while a mashup's beat has taken over.
+    // Anchor gain over time: full until the mashup's beat takes over (it
+    // drops out in the last quarter beat, bass and all), silent while that
+    // beat plays, then back in: rising without bass over 2 bars, full on the
+    // downbeat.
     final env = <(double, double, double)>[(0, 1, 0)]; // (time, gain, low)
     for (var i = 0; i < ms.length; i++) {
       env
-        ..add((bt(beatIn[i]), 1, 0))
-        ..add((bt(beatIn[i] + 4) - p * 0.25, 0.25, kill))
-        ..add((bt(beatIn[i] + 4), 0, kill))
-        ..add((bt(beatOut[i]), 0, kill))
-        ..add((bt(beatOut[i] + 3), 0.85, kill))
-        ..add((bt(beatOut[i] + 4) - p * 0.25, 1, kill))
-        ..add((bt(beatOut[i] + 4), 1, 0));
-      final c = cutBack[i];
-      if (c != null) {
-        env
-          ..add((bt(c) - 0.03, 0, kill))
-          ..add((bt(c), 1, 0))
-          ..add((bt(c + 4) - 0.03, 1, 0))
-          ..add((bt(c + 4), 0, kill));
-      }
+        ..add((bt(beatIn[i]) - p * 0.25, 1, 0))
+        ..add((bt(beatIn[i]), 0, kill))
+        ..add((bt(beatEnd[i] - rise), 0, kill))
+        ..add((bt(beatEnd[i]) - p * 0.25, 0.8, kill))
+        ..add((bt(beatEnd[i]), 1, 0));
     }
     env
       ..add((bt(endBar - 8), 1, 0))
@@ -1005,41 +1000,25 @@ class MashupMaker {
       final len = m.vocalBars;
       final group = (i % 2) * 8;
 
-      // Beat: from beatIn to beatOut (+4 bars handing back to the anchor).
+      // Beat: rises in (no bass) over 2 bars, takes over on beatIn, keeps the
+      // bass through the anchor's rise and hands over on beatEnd.
       final beatStems = [
         for (final lane in m.lanes)
           if (!lane.fromVocalSong && m.laneAudible(lane)) m.beat.stems!.paths[lane.stem]!
       ];
       if (beatStems.isNotEmpty) {
-        final b0 = beatIn[i], b1 = beatOut[i] + 4;
+        final b0 = beatIn[i] - rise, b1 = beatEnd[i];
         final bBase = bg.beatIndexOfBar(m.beatStart);
         final warp = <List<double>>[
           for (var n = 0; n <= (b1 - b0) * 4; n++) [bt(b0) + n * p, bg.smoothBeat(bBase + n)]
         ];
-        final c = cutBack[i];
         var keys = <Keyframe>[
           Keyframe(bt(b0), gain: 0, low: kill),
-          Keyframe(bt(b0 + 3), gain: 0.8, low: kill),
-          Keyframe(bt(b0 + 4) - p * 0.25, gain: 0.95, low: kill),
-          Keyframe(bt(b0 + 4)),
-          if (c != null) ...[
-            Keyframe(bt(c) - 0.03),
-            Keyframe(bt(c), gain: 0),
-            Keyframe(bt(c + 4) - 0.03, gain: 0),
-            Keyframe(bt(c + 4)),
-          ],
-          Keyframe(bt(beatOut[i])),
-          Keyframe(bt(beatOut[i] + 4), gain: 0, low: kill, hpf: 450),
+          Keyframe(bt(beatIn[i]) - p * 0.25, gain: 0.8, low: kill),
+          Keyframe(bt(beatIn[i])),
+          Keyframe(bt(b1) - p * 0.25),
+          Keyframe(bt(b1), gain: 0, low: kill),
         ];
-        if (m.beatOnly) {
-          keys = [
-            Keyframe(bt(b0), gain: 0, low: kill),
-            Keyframe(bt(b0 + 4) - p * 0.25, gain: 0.95, low: kill),
-            Keyframe(bt(b0 + 4)),
-            Keyframe(bt(beatOut[i])),
-            Keyframe(bt(beatOut[i] + 4), gain: 0, low: kill, hpf: 450),
-          ];
-        }
         keys = _withPockets(keys, spans, p);
         clips.add(_clip(beatStems.first, math.max(0, warp.first[1]), warp.last[1] + 0.05, bt(b0), 1.0, m.beatCents, group,
             p * 0.5, keys, gainDb: m.beatGainDb, warp: warp, mix: beatStems.skip(1).toList()));
@@ -1068,14 +1047,14 @@ class MashupMaker {
         m.vocalRate = (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]);
       }
 
-      final first = i == 0 ? 0 : vIn[i] - 8;
+      final first = i == 0 ? 0 : vIn[i] - gap;
       m
         ..start = bt(first)
         ..vocalIn = vInT
         ..vocalOut = vOutT
-        ..end = bt(beatOut[i] + 4)
+        ..end = bt(beatEnd[i])
         ..playedBpm = anchor.tempo
-        ..beatTimes = List.unmodifiable([for (var n = first * 4; n <= (beatOut[i] + 8) * 4; n++) n * p]);
+        ..beatTimes = List.unmodifiable([for (var n = first * 4; n <= (beatEnd[i] + gap) * 4; n++) n * p]);
       cuts.add(vInT);
     }
 

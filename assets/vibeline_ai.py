@@ -388,6 +388,9 @@ def separate_file(path):
         if "levels" not in meta:  # stems made before levels were measured
             meta["levels"] = _stem_levels(meta["stems"])
             changed = True
+        if "gridTight" not in meta:  # stems made before the grid was checked
+            meta.update(_grid_check(path, meta["stems"]))
+            changed = True
         if meta.get("beatsVersion") != CACHE_VERSION:  # analysis (beat grid) changed
             meta.update(_vocal_beats(path, meta["stems"]))
             meta["beatsVersion"] = CACHE_VERSION
@@ -454,6 +457,7 @@ def separate_file(path):
         result["vocalShare"] = round(float(np.median(v / (np.asarray(f_rms) + 1e-9))), 3)
     result["tuning"] = _stem_tuning(result["stems"])
     result["levels"] = _stem_levels(result["stems"])
+    result.update(_grid_check(path, result["stems"]))
     with open(meta_path, "w") as fh:
         json.dump(result, fh)
     return result
@@ -477,6 +481,45 @@ def _vocal_beats(path, stems):
     r = np.asarray(rms)
     out["vocalBeats"] = np.clip(r / (np.percentile(r, 95) + 1e-9), 0, 1).round(3).tolist()
     return out
+
+
+def _grid_check(path, stems):
+    """Where the drums really hit relative to the analysed beats: the median
+    offset of the strong hits (seconds, negative = drums early), and the share
+    of them within 25 ms of the grid (how tight the drumming is)."""
+    import numpy as np
+    import soundfile as sf
+    analysis = analyze_file(path)
+    beats = np.asarray(analysis.get("beats") or []) if analysis.get("ok") else np.asarray([])
+    if len(beats) < 32 or "drums" not in stems:
+        return {"gridOffset": 0.0, "gridTight": 1.0}
+    x, sr = sf.read(stems["drums"], dtype="float32")
+    if x.ndim > 1:
+        x = x.mean(1)
+    hop = 64
+    n = len(x) // hop
+    frames = x[: n * hop].reshape(n, hop)
+    energy = np.log1p(1000 * (np.diff(frames, axis=1) ** 2).sum(1))
+    flux = np.maximum(0, np.diff(energy, prepend=energy[0]))
+    fps = sr / hop
+    w = int(0.09 * fps)
+    offs, strength = [], []
+    for b in beats:
+        c = int(b * fps)
+        if c - w < 0 or c + w >= len(flux):
+            continue
+        seg = flux[c - w : c + w + 1]
+        if seg.max() <= 0:
+            continue
+        offs.append((seg.argmax() - w) / fps)
+        strength.append(seg.max())
+    if len(offs) < 16:
+        return {"gridOffset": 0.0, "gridTight": 1.0}
+    offs, strength = np.asarray(offs), np.asarray(strength)
+    strong = offs[strength > np.median(strength)]
+    offset = float(np.clip(np.median(strong), -0.03, 0.03))
+    tight = float(np.mean(np.abs(strong) < 0.025))
+    return {"gridOffset": round(offset, 4), "gridTight": round(tight, 3)}
 
 
 def _stem_levels(stems):

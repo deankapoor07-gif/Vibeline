@@ -48,8 +48,14 @@ class StemSet {
   final double vocalShare; // vocals' share of the song's level (instrumentals ~0)
   final Map<String, double> tuning; // concert pitch (Hz) of 'vocals' and 'other'
   final Map<String, double> levels; // dB of 'vocals' (while singing) and 'instrumental'
+  /// Where the drums really hit relative to the analysed beats (seconds;
+  /// negative = early), and the share of beats they hit within 25 ms of the
+  /// grid: ~0.95 for a drum machine, lower for a loose live band.
+  final double gridOffset;
+  final double gridTight;
 
-  StemSet(this.paths, this.vocalBeats, this.vocalShare, [this.tuning = const {}, this.levels = const {}]);
+  StemSet(this.paths, this.vocalBeats, this.vocalShare,
+      [this.tuning = const {}, this.levels = const {}, this.gridOffset = 0, this.gridTight = 1]);
 
   factory StemSet.fromJson(Map<String, dynamic> j) => StemSet(
         ((j['stems'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, v as String)),
@@ -57,6 +63,8 @@ class StemSet {
         (j['vocalShare'] as num?)?.toDouble() ?? 0,
         ((j['tuning'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, (v as num).toDouble())),
         ((j['levels'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, (v as num).toDouble())),
+        (j['gridOffset'] as num?)?.toDouble() ?? 0,
+        (j['gridTight'] as num?)?.toDouble() ?? 1,
       );
 
   bool get complete => const ['vocals', 'drums', 'bass', 'other'].every(paths.containsKey);
@@ -92,6 +100,9 @@ class Analysis {
   final double danceability;
   final List<double> waveform;
   final double? tuning; // concert pitch of the recording (Hz)
+  /// Added to every [smoothBeat] so beats land where the drums really hit
+  /// (set from the stems' measurement once a song is split).
+  double gridOffset = 0;
 
   Analysis({
     required this.bpm,
@@ -175,7 +186,7 @@ class Analysis {
         danceability: danceability,
         waveform: waveform,
         tuning: tuning,
-      );
+      )..gridOffset = gridOffset;
 
   int beatIndexOfBar(int bar) => barPhase + 4 * bar;
 
@@ -231,10 +242,10 @@ class Analysis {
     if (i < 0 || i >= beats.length) {
       final edge = i < 0 ? 0 : beats.length - 1;
       final g = fit(edge - 8, edge + 8);
-      return g.timeOfBeat(i);
+      return g.timeOfBeat(i) + gridOffset;
     }
     if (_smooth![i].isNaN) _smooth![i] = fit(i - 8, i + 8).timeOfBeat(i);
-    return _smooth![i];
+    return _smooth![i] + gridOffset;
   }
 
   List<double>? _windowTempos;

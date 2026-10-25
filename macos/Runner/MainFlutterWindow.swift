@@ -745,6 +745,9 @@ final class TimelinePlayer {
   private var anchorSample: AVAudioFramePosition = 0  // engine sample time of anchorPos
   private var anchorPos = 0.0
   private var pausedPos = 0.0
+  // Playing, but the section at the playhead isn't rendered yet: the clock
+  // is held at pausedPos and picks up from exactly there once it's ready.
+  private var holding = false
   private var generation = 0  // bumps on every restart so stale loads are dropped
 
   init() {
@@ -812,7 +815,7 @@ final class TimelinePlayer {
 
   /// Position on the timeline actually playing right now.
   private var rawPosition: Double {
-    guard isPlaying, let now = nowSample else { return pausedPos }
+    guard isPlaying, !holding, let now = nowSample else { return pausedPos }
     return max(anchorPos, anchorPos + Double(now - anchorSample) / sr)
   }
 
@@ -844,17 +847,18 @@ final class TimelinePlayer {
   /// True while playing but the section under the playhead isn't rendered yet.
   var isWaiting: Bool {
     guard isPlaying else { return false }
+    if holding { return true }
     let p = position
     guard let i = segments.firstIndex(where: { p >= $0.start && p < $0.end }) else { return false }
     return active[i] == nil
   }
 
   func update(_ new: [Segment], remap newRemap: [[Double]]? = nil) {
-    if let newRemap, !isPlaying, !newRemap.isEmpty {
+    if let newRemap, !isPlaying || holding, !newRemap.isEmpty {
       // Edited while paused: resume at the same musical moment.
       pausedPos = Self.mapped(pausedPos, newRemap)
     }
-    if let newRemap, isPlaying, !newRemap.isEmpty {
+    if let newRemap, isPlaying, !holding, !newRemap.isEmpty {
       // Keep everything that's playing going; switch over once ready.
       if remap == nil {
         retiring.append(contentsOf: active.values)
@@ -916,6 +920,7 @@ func play(from pos: Double? = nil) {
       return
     }
 
+    holding = false
     stopAll()
 
     guard let now = nowSample else {
@@ -947,6 +952,7 @@ func play(from pos: Double? = nil) {
   func pause() {
     pausedPos = rawPosition
     isPlaying = false
+    holding = false
     timer?.invalidate()
     timer = nil
     stopAll()
@@ -957,6 +963,7 @@ func play(from pos: Double? = nil) {
   /// Jumps while playing without a gap: the new spot is loaded first, then
   /// crossfaded in over 60 ms (sample-accurate, on the engine clock).
   func seek(to pos: Double) {
+    if holding { play(from: pos); return }
     guard isPlaying, remap == nil, !seeking else {
       if isPlaying { play(from: pos) } else { pausedPos = pos }
       return
@@ -996,6 +1003,16 @@ func play(from pos: Double? = nil) {
   }
   private var seeking = false
 
+  private func hold(at pos: Double) {
+    for (_, a) in active { recycle(a.beat, a.vox) }
+    active.removeAll()
+    loading.removeAll()
+    swapping.removeAll()
+    generation += 1  // drop loads in flight
+    pausedPos = pos
+    holding = true
+  }
+
   private func stopAll() {
     for (_, a) in active { recycle(a.beat, a.vox) }
     for a in retiring { recycle(a.beat, a.vox) }
@@ -1033,6 +1050,11 @@ func play(from pos: Double? = nil) {
   /// Keeps the next few seconds scheduled and lets go of finished sections.
   private func tick() {
     guard isPlaying else { return }
+    if holding {
+      if let s = segments.first(where: { pausedPos >= $0.start && pausedPos < $0.end }), s.path == nil { return }
+      play(from: pausedPos)
+      return
+    }
     if remap != nil {
       trySwitch()
       return
@@ -1041,6 +1063,12 @@ func play(from pos: Double? = nil) {
     for (i, a) in active where i >= segments.count || segments[i].end < p - 0.5 {
       recycle(a.beat, a.vox)
       active[i] = nil
+    }
+    // Reached a section that isn't rendered yet: wait at the spot the music
+    // stopped (never run on through silence and jump in late).
+    if let i = segments.firstIndex(where: { p >= $0.start && p < $0.end }), segments[i].path == nil, active[i] == nil {
+      hold(at: max(segments[i].start, anchorPos))
+      return
     }
     for (i, s) in segments.enumerated() where s.end > p && s.start < p + 10 {
       guard active[i] == nil, !loading.contains(i), let path = s.path else { continue }
