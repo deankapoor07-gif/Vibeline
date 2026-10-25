@@ -113,6 +113,14 @@ class StemSet {
     return n == 0 ? -100 : 10 * math.log(sum / n) / math.ln10;
   }
 
+  /// Half-second blocks between two song times where the whole instrumental
+  /// stops dead (a "full stop" break in the song, however short).
+  int stops(double t0, double t1) {
+    if (!hasCurves) return 0;
+    final floor = ref('inst') - 24;
+    return _span('inst', t0, t1).where((v) => v < floor).length;
+  }
+
   /// Share of the time between two song times where a stem drops out (more
   /// than 15 dB under its usual level over 2 s, so the space between sparse
   /// hits doesn't count): breakdowns, drum-less passages.

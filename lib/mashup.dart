@@ -459,12 +459,14 @@ class MashupMaker {
   }
 
   /// How much of bars [from, to) of a song lose their drums / their bass
-  /// (0..1; 0 when the stems haven't been measured).
+  /// (0..1; 0 when the stems haven't been measured). A full stop, where
+  /// everything cuts out even for half a second, counts as a big drum gap.
   static (double, double) dropouts(LibraryTrack t, Analysis g, int from, int to) {
     final st = t.stems;
     if (st == null || !st.hasCurves) return (0, 0);
     final t0 = _barTime(g, from), t1 = _barTime(g, to);
-    return (st.dropout('drums', t0, t1), st.dropout('bass', t0, t1));
+    final stop = st.stops(t0, t1) > 0 ? 0.25 : 0.0;
+    return (st.dropout('drums', t0, t1) + stop, st.dropout('bass', t0, t1));
   }
 
   /// Gain that brings bars [from, to) of a song to a common loudness, as the
