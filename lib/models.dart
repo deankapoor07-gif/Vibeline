@@ -115,18 +115,27 @@ class StemSet {
 
   /// Half-second blocks between two song times where the whole instrumental
   /// stops dead (a "full stop" break in the song, however short).
+  /// Also counts breaks where the bass vanishes for 1.5 s or more (a 2-bar
+  /// breakdown under the vocal).
   int stops(double t0, double t1) {
     if (!hasCurves) return 0;
     final floor = ref('inst') - 24;
-    return _span('inst', t0, t1).where((v) => v < floor).length;
+    var n = _span('inst', t0, t1).where((v) => v < floor).length;
+    final bassFloor = ref('bass') - 30;
+    var run = 0;
+    for (final v in _span('bass', t0, t1)) {
+      run = v < bassFloor ? run + 1 : 0;
+      if (run == 3) n++;
+    }
+    return n;
   }
 
   /// Share of the time between two song times where a stem drops out (more
-  /// than 15 dB under its usual level over 2 s, so the space between sparse
+  /// than 12 dB (drums) / 15 dB (bass) under its usual level over 2 s, so the space between sparse
   /// hits doesn't count): breakdowns, drum-less passages.
   double dropout(String k, double t0, double t1) {
     if (!hasCurves) return 0;
-    final floor = math.pow(10, (ref(k) - 15) / 10);
+    final floor = math.pow(10, (ref(k) - (k == 'drums' ? 12 : 15)) / 10);
     final w = math.max(1, (2 / curveHop).round());
     final p = [for (final v in _span(k, t0, t1)) math.pow(10, v / 10)];
     var out = 0;

@@ -490,7 +490,7 @@ class MashupMaker {
   /// groove, so another pairing is used instead.
   static bool gappyBeat(Mashup m) {
     final (drumsOut, bassOut) = dropouts(m.beat, m.beatGrid, m.beatStart, m.beatStart + m.vocalBars + 12);
-    return drumsOut > 0.02 || bassOut > 0.1;
+    return drumsOut > 0.02 || bassOut > 0.05;
   }
 
   /// Solid enough to be the anchor: a real bassline and steady drums.
