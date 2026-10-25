@@ -475,7 +475,7 @@ class MashupMaker {
   static double? sectionGainDb(LibraryTrack t, Analysis g, int from, int to) {
     final st = t.stems;
     if (st == null || !st.hasCurves) return null;
-    return (-14.0 - st.levelDb('inst', _barTime(g, from), _barTime(g, to))).clamp(-12.0, 20.0);
+    return (-14.0 - st.levelDb('inst', _barTime(g, from), _barTime(g, to))).clamp(-12.0, 26.0);
   }
 
   /// A beat with no real bass or drums to carry a section on its own.
@@ -488,9 +488,14 @@ class MashupMaker {
   /// In anchor mode, a beat whose chosen section still loses its drums (or
   /// bass) somewhere while it's heard: the song has no long enough unbroken
   /// groove, so another pairing is used instead.
-  static bool gappyBeat(Mashup m) {
+  /// The end of the vocal, the solo and the handover must be completely
+  /// unbroken. [relaxed] (when the library runs short) allows small gaps.
+  static bool gappyBeat(Mashup m, {bool relaxed = false}) {
     final (drumsOut, bassOut) = dropouts(m.beat, m.beatGrid, m.beatStart, m.beatStart + m.vocalBars + 12);
-    return drumsOut > 0.02 || bassOut > 0.05;
+    if (relaxed) return drumsOut > 0.05 || bassOut > 0.12;
+    final (tailDrums, tailBass) =
+        dropouts(m.beat, m.beatGrid, m.beatStart + m.vocalBars - 8, m.beatStart + m.vocalBars + 12);
+    return drumsOut > 0.02 || bassOut > 0.05 || tailDrums > 0 || tailBass > 0.02;
   }
 
   /// Solid enough to be the anchor: a real bassline and steady drums.
@@ -1364,6 +1369,9 @@ class MashupSession {
   /// Anchor mode: beats that turned out bass-less or without an unbroken
   /// groove once split (any pairing with them is skipped).
   final Set<String> _badBeats = {};
+  /// …and beats whose grooves have gaps, skipped until the set runs short.
+  final Set<String> _gappy = {};
+  bool _relaxed = false;
   bool cancelled = false;
   int target = 0;
 
@@ -1384,7 +1392,7 @@ class MashupSession {
     var looked = 0;
     for (final x in _ranked) {
       if (used.contains(x.vocal.path) || used.contains(x.beat.path) || _rejected.contains(x.key)) continue;
-      if (_badBeats.contains(x.beat.path)) continue;
+      if (_badBeats.contains(x.beat.path) || _gappy.contains(x.beat.path)) continue;
       if (anchor != null && (identical(x.beat, anchor!.track) || identical(x.vocal, anchor!.track))) continue;
       final a = _anchoredPair(x);
       if (a == null) continue;
@@ -1448,7 +1456,15 @@ class MashupSession {
     target = count;
     var misses = 0;
     if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
-    while (!cancelled && mashups.length < target && misses < (anchorMode ? 12 : 6)) {
+    while (!cancelled && mashups.length < target) {
+      if (misses >= (anchorMode ? 12 : 6)) {
+        // Anchor mode: rather than end the set short, allow beats with small
+        // gaps once the unbroken ones run out.
+        if (!anchorMode || _relaxed) break;
+        _relaxed = true;
+        _gappy.clear();
+        misses = 0;
+      }
       // Plan the next few, then split all their stems in one go (faster).
       final picks = <_Pair>[];
       final used = _used;
@@ -1467,7 +1483,13 @@ class MashupSession {
         prevTempo = pick.tempo;
         prevSim = null; // later picks in the batch chain on tempo only
       }
-      if (picks.isEmpty) break;
+      if (picks.isEmpty) {
+        if (anchorMode && !_relaxed) {
+          misses = 99;
+          continue;
+        }
+        break;
+      }
       final songs = {for (final p in picks) ...[p.vocal, p.beat]}.toList();
       await lib.separate(songs, (d, t, c) {
         onStatus('Splitting stems for mashup ${mashups.length + 1}–${mashups.length + picks.length} of $target'
@@ -1477,9 +1499,13 @@ class MashupSession {
       var added = 0;
       for (final p in picks) {
         var m = anchorMode && MashupMaker.weakBeat(p.beat) ? null : maker.build(p);
-        if (anchorMode && (m == null ? MashupMaker.weakBeat(p.beat) : MashupMaker.gappyBeat(m))) {
+        if (anchorMode && m == null && MashupMaker.weakBeat(p.beat)) {
           _badBeats.add(p.beat.path);
-          m = null;
+          continue;
+        }
+        if (anchorMode && m != null && MashupMaker.gappyBeat(m, relaxed: _relaxed)) {
+          _gappy.add(p.beat.path);
+          continue;
         }
         if (m == null) {
           _rejected.add(p.key);
@@ -1501,8 +1527,12 @@ class MashupSession {
       if (pick == null) return null;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
       final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : maker.build(pick);
-      if (anchorMode && (m == null ? MashupMaker.weakBeat(pick.beat) : MashupMaker.gappyBeat(m))) {
+      if (anchorMode && m == null && MashupMaker.weakBeat(pick.beat)) {
         _badBeats.add(pick.beat.path);
+        continue;
+      }
+      if (anchorMode && m != null && MashupMaker.gappyBeat(m, relaxed: _relaxed)) {
+        _gappy.add(pick.beat.path);
         continue;
       }
       if (m != null) return m;
