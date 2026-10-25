@@ -25,11 +25,12 @@ void main() {
     final session = MashupSession.start(maker, pool)..anchorMode = true;
     await session.fill(lib, int.tryParse(Platform.environment['VIBELINE_COUNT'] ?? '') ?? 4, (s) {}, () {});
     final a = session.anchor!;
-    print('ANCHOR: ${a.track.artist} – ${a.track.title} · ${a.tempo.toStringAsFixed(1)} BPM · key ${a.camelot} · loop from bar ${a.loopStart}');
+    print('ANCHOR: ${a.track.artist} – ${a.track.title} · ${a.tempo.toStringAsFixed(1)} BPM · key ${a.camelot} · loop from bar ${a.loopStart} · gain ${a.gainDb.toStringAsFixed(1)} dB · bass ${a.track.stems?.relative('bass')?.toStringAsFixed(1)} drums ${a.track.stems?.relative('drums')?.toStringAsFixed(1)}');
     final plan = session.layout();
     for (final m in plan.mashups) {
       print('${m.vocal.title} (vocal ${m.vocalShift >= 0 ? '+' : ''}${m.vocalShift} st) OVER ${m.beat.title} (beat ${m.beatShift >= 0 ? '+' : ''}${m.beatShift} st, key ${m.beatGrid.camelot}) · '
-          'vocal ${m.vocalIn.toStringAsFixed(1)}–${m.vocalOut.toStringAsFixed(1)}s (${m.vocalBars} bars)');
+          'vocal ${m.vocalIn.toStringAsFixed(1)}–${m.vocalOut.toStringAsFixed(1)}s (${m.vocalBars} bars) · '
+          'beat bass ${m.beat.stems?.relative('bass')?.toStringAsFixed(1)} · gaps (drums, bass) ${MashupMaker.dropouts(m.beat, m.beatGrid, m.beatStart, m.beatStart + m.totalBars)}');
     }
     print(plan.summary);
     final out = Platform.environment['VIBELINE_PLAN_OUT'];

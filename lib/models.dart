@@ -53,9 +53,14 @@ class StemSet {
   /// grid: ~0.95 for a drum machine, lower for a loose live band.
   final double gridOffset;
   final double gridTight;
+  /// Level (dB) of 'drums', 'bass' and the ear-weighted 'inst'rumental every
+  /// [curveHop] seconds of the song.
+  final Map<String, List<double>> curves;
+  final double curveHop;
 
   StemSet(this.paths, this.vocalBeats, this.vocalShare,
-      [this.tuning = const {}, this.levels = const {}, this.gridOffset = 0, this.gridTight = 1]);
+      [this.tuning = const {}, this.levels = const {}, this.gridOffset = 0, this.gridTight = 1,
+      this.curves = const {}, this.curveHop = 0.5]);
 
   factory StemSet.fromJson(Map<String, dynamic> j) => StemSet(
         ((j['stems'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, v as String)),
@@ -65,7 +70,68 @@ class StemSet {
         ((j['levels'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, (v as num).toDouble())),
         (j['gridOffset'] as num?)?.toDouble() ?? 0,
         (j['gridTight'] as num?)?.toDouble() ?? 1,
+        {
+          for (final e in ((j['curves'] as Map?) ?? const {}).entries)
+            if (e.value is List) e.key as String: (e.value as List).map((x) => (x as num).toDouble()).toList()
+        },
+        ((j['curves'] as Map?)?['hop'] as num?)?.toDouble() ?? 0.5,
       );
+
+  bool get hasCurves => const ['drums', 'bass', 'inst'].every((k) => (curves[k]?.length ?? 0) > 16);
+
+  final Map<String, double> _refs = {};
+
+  /// A stem's typical level when it's playing (80th percentile, dB).
+  double ref(String k) => _refs.putIfAbsent(k, () {
+        final c = [...?curves[k]]..sort();
+        return c.isEmpty ? -100 : c[(c.length * 0.8).floor().clamp(0, c.length - 1)];
+      });
+
+  /// How loud a stem is next to the whole instrumental (dB; ~-3 to -10 for
+  /// drums and bass in most songs, below -20 when there's none).
+  double? relative(String k) => hasCurves ? ref(k) - ref('inst') : null;
+
+  /// No real bassline (e.g. Prince's "Kiss").
+  bool get bassless => (relative('bass') ?? 0) < -20;
+
+  Iterable<double> _span(String k, double t0, double t1) sync* {
+    final c = curves[k];
+    if (c == null || c.isEmpty) return;
+    final a = (t0 / curveHop).floor().clamp(0, c.length - 1), b = (t1 / curveHop).ceil().clamp(a + 1, c.length);
+    for (var i = a; i < b; i++) {
+      yield c[i];
+    }
+  }
+
+  /// Average level of a stem between two song times (dB, power average).
+  double levelDb(String k, double t0, double t1) {
+    var sum = 0.0, n = 0;
+    for (final v in _span(k, t0, t1)) {
+      sum += math.pow(10, v / 10);
+      n++;
+    }
+    return n == 0 ? -100 : 10 * math.log(sum / n) / math.ln10;
+  }
+
+  /// Share of the time between two song times where a stem drops out (more
+  /// than 15 dB under its usual level over 2 s, so the space between sparse
+  /// hits doesn't count): breakdowns, drum-less passages.
+  double dropout(String k, double t0, double t1) {
+    if (!hasCurves) return 0;
+    final floor = math.pow(10, (ref(k) - 15) / 10);
+    final w = math.max(1, (2 / curveHop).round());
+    final p = [for (final v in _span(k, t0, t1)) math.pow(10, v / 10)];
+    var out = 0;
+    for (var i = 0; i < p.length; i++) {
+      var sum = 0.0, n = 0;
+      for (var j = math.max(0, i - w ~/ 2); j < math.min(p.length, i - w ~/ 2 + w); j++) {
+        sum += p[j];
+        n++;
+      }
+      if (sum / n < floor) out++;
+    }
+    return p.isEmpty ? 0 : out / p.length;
+  }
 
   bool get complete => const ['vocals', 'drums', 'bass', 'other'].every(paths.containsKey);
 

@@ -206,6 +206,8 @@ class AnchorBeat {
   double get tempo => grid.steadyBpm;
   String get camelot => grid.camelot;
   double get gainDb {
+    final loop = MashupMaker.sectionGainDb(track, grid, loopStart, loopStart + loopBars);
+    if (loop != null) return loop;
     final inst = track.stems?.levels['instrumental'];
     if (inst != null) return (-14.0 - inst).clamp(-12.0, 20.0);
     final l = track.analysis?.loudnessDb;
@@ -450,6 +452,52 @@ class MashupMaker {
     return s / math.max(1, to - from);
   }
 
+  /// Song time of a bar's downbeat.
+  static double _barTime(Analysis g, int bar) {
+    if (g.beats.isEmpty) return 0;
+    return g.beats[g.beatIndexOfBar(bar).clamp(0, g.beats.length - 1)];
+  }
+
+  /// How much of bars [from, to) of a song lose their drums / their bass
+  /// (0..1; 0 when the stems haven't been measured).
+  static (double, double) dropouts(LibraryTrack t, Analysis g, int from, int to) {
+    final st = t.stems;
+    if (st == null || !st.hasCurves) return (0, 0);
+    final t0 = _barTime(g, from), t1 = _barTime(g, to);
+    return (st.dropout('drums', t0, t1), st.dropout('bass', t0, t1));
+  }
+
+  /// Gain that brings bars [from, to) of a song to a common loudness, as the
+  /// ear hears it, measured on the part that actually plays (null when the
+  /// stems haven't been measured).
+  static double? sectionGainDb(LibraryTrack t, Analysis g, int from, int to) {
+    final st = t.stems;
+    if (st == null || !st.hasCurves) return null;
+    return (-14.0 - st.levelDb('inst', _barTime(g, from), _barTime(g, to))).clamp(-12.0, 20.0);
+  }
+
+  /// A beat with no real bass or drums to carry a section on its own.
+  static bool weakBeat(LibraryTrack t) {
+    final st = t.stems;
+    if (st == null || !st.hasCurves) return false;
+    return st.bassless || (st.relative('drums') ?? 0) < -12;
+  }
+
+  /// In anchor mode, a beat whose chosen section still loses its drums (or
+  /// bass) somewhere while it's heard: the song has no long enough unbroken
+  /// groove, so another pairing is used instead.
+  static bool gappyBeat(Mashup m) {
+    final (drumsOut, bassOut) = dropouts(m.beat, m.beatGrid, m.beatStart, m.beatStart + m.vocalBars + 12);
+    return drumsOut > 0.03 || bassOut > 0.1;
+  }
+
+  /// Solid enough to be the anchor: a real bassline and steady drums.
+  static bool solidAnchor(LibraryTrack t) {
+    final st = t.stems;
+    if (st == null || !st.hasCurves) return true; // not measured yet
+    return (st.relative('bass') ?? 0) > -12 && (st.relative('drums') ?? 0) > -6;
+  }
+
   double _meanEnergy(Analysis g, int from, int to) {
     final a = from.clamp(0, g.barCount - 1), b = to.clamp(a + 1, g.barCount);
     var s = 0.0;
@@ -591,10 +639,15 @@ class MashupMaker {
       final vocalLoud = _meanVocal(m, m.vocalStart, m.vocalStart + math.min(8, m.vocalBars));
       final clashPenalty = (vocalLoud < 0.4 && atVocal > 0.85) ? 0.6 : 0.0;
 
+      // Never under a vocal where the beat's drums (or bass) drop out.
+      final (drumsOut, bassOut) = dropouts(m.beat, bg, s, s + need);
+
       final score = 0.55 * groove +
           0.9 * shapeScore +
           0.35 * build -
           clashPenalty -
+          6.0 * drumsOut -
+          2.5 * bassOut -
           (s - bg.firstBar) / 300;
 
       if (score > bBest) {
@@ -787,6 +840,8 @@ class MashupMaker {
       if (a == null || a.barCount < 48 || a.tempoDrift > 0.025) continue;
       // The anchor's drums play all set long: only tight ones.
       if ((t.stems?.gridTight ?? 1) < 0.85) continue;
+      // …and it carries the set, so it needs a real bassline and steady drums.
+      if (!solidAnchor(t)) continue;
       final g = _natural(a);
       var s = 1.2 * (a.danceability - 1.0) + 0.5 * tagScore(t, vibe, rng);
       s -= 3 * (math.log(g.steadyBpm / vibe.targetBpm)).abs();
@@ -794,7 +849,7 @@ class MashupMaker {
       scored.add((t, s));
     }
     scored.sort((a, b) => b.$2.compareTo(a.$2));
-    return [for (final x in scored.take(6)) x.$1];
+    return [for (final x in scored.take(10)) x.$1];
   }
 
   /// Turns a song (with stems) into an anchor: its strongest 16-bar groove.
@@ -808,7 +863,9 @@ class MashupMaker {
       if ((s - g.firstBar) % 8 != 0) continue;
       final e = _meanEnergy(g, s, s + AnchorBeat.loopBars);
       final steady = g.fit(g.beatIndexOfBar(s), g.beatIndexOfBar(s + AnchorBeat.loopBars)).trustworthy ? 0.2 : 0;
-      final score = e + steady - (s - g.firstBar) / 400;
+      // The loop repeats all set: no drum or bass gaps in it.
+      final (drumsOut, bassOut) = dropouts(t, g, s, s + AnchorBeat.loopBars);
+      final score = e + steady - 4 * drumsOut - 2 * bassOut - (s - g.firstBar) / 400;
       if (score > best) {
         best = score;
         start = s;
@@ -844,7 +901,9 @@ class MashupMaker {
     // Loose live drumming (beats far off any steady grid) makes a vocal
     // wobble against the beat: such songs are only used when little else fits.
     double loose(LibraryTrack x) => ((0.85 - (x.stems?.gridTight ?? 1)) * 6).clamp(0.0, 3.0);
-    final score = p.score - 0.3 * bs.abs() - 0.15 * vs.abs() - 4 * stretch - loose(p.vocal) - loose(p.beat);
+    // Each beat carries its section on its own: bass-less or drum-less ones last.
+    final weak = weakBeat(p.beat) ? 3.0 : 0.0;
+    final score = p.score - 0.3 * bs.abs() - 0.15 * vs.abs() - 4 * stretch - loose(p.vocal) - loose(p.beat) - weak;
     return _Pair(p.vocal, p.beat, vg, bg, vs, score, bs);
   }
 
@@ -890,8 +949,10 @@ class MashupMaker {
   ///   anchor intro → vocal 1 enters over the anchor → 4–8 bars in, beat 1
   ///   rises in (no bass) for 2 bars and takes over on the downbeat (bass
   ///   swap, the anchor drops out) → the vocal sings over beat 1 → beat 1
-  ///   plays on alone for 8 bars → the anchor swaps back in on a downbeat →
-  ///   4 bars of anchor → next vocal … → anchor outro.
+  ///   plays on alone for 8 bars → vocal 2 enters over beat 1 → beat 2 takes
+  ///   over the same way … The anchor only comes home once in the middle of
+  ///   the set (8 bars of beat solo, the anchor swaps back in, 4 bars of
+  ///   anchor, next vocal) and for the outro, so the set flows in long runs.
   /// Only one beat is ever fully playing, so the groove under a vocal never
   /// smears, and every switch is a clean swap on a downbeat.
   MashupSetPlan layoutAnchored(List<Mashup> ms, AnchorBeat anchor,
@@ -904,17 +965,25 @@ class MashupMaker {
     final clips = <Map<String, dynamic>>[];
     final cuts = <double>[];
 
+    // Where the anchor comes home: after the mashup halfway through (sets of
+    // 4+), and for the outro.
+    final home = [for (var i = 0; i < ms.length; i++) i == ms.length - 1 || (ms.length >= 4 && i == ms.length ~/ 2 - 1)];
+
     // Structure, in master bars: beatIn is the downbeat the mashup's beat
-    // takes over on; beatEnd the downbeat the anchor takes back over on.
+    // takes over on; beatEnd the downbeat the next beat (or the anchor)
+    // takes over from it.
     final vIn = <int>[], beatIn = <int>[], beatEnd = <int>[];
     var cursor = 8; // 8 bars of anchor first
-    for (final m in ms) {
-      final len = m.vocalBars;
-      final settle = m.beatOnly ? rise : (len >= 32 ? 8 : 4);
+    for (var i = 0; i < ms.length; i++) {
+      final len = ms[i].vocalBars;
+      final settle = ms[i].beatOnly ? rise : (len >= 32 ? 8 : 4);
       vIn.add(cursor);
       beatIn.add(cursor + settle);
       beatEnd.add(cursor + len + solo);
-      cursor += len + solo + gap;
+      cursor += len + solo + (home[i] ? gap : 0);
+    }
+    for (var i = 0; i + 1 < ms.length; i++) {
+      if (!home[i]) beatEnd[i] = beatIn[i + 1]; // carries the next vocal in
     }
     final endBar = ms.isEmpty ? 16 : beatEnd.last + 12;
 
@@ -930,12 +999,17 @@ class MashupMaker {
     // downbeat.
     final env = <(double, double, double)>[(0, 1, 0)]; // (time, gain, low)
     for (var i = 0; i < ms.length; i++) {
-      env
-        ..add((bt(beatIn[i]) - p * 0.25, 1, 0))
-        ..add((bt(beatIn[i]), 0, kill))
-        ..add((bt(beatEnd[i] - rise), 0, kill))
-        ..add((bt(beatEnd[i]) - p * 0.25, 0.8, kill))
-        ..add((bt(beatEnd[i]), 1, 0));
+      if (i == 0 || home[i - 1]) {
+        env
+          ..add((bt(beatIn[i]) - p * 0.25, 1, 0))
+          ..add((bt(beatIn[i]), 0, kill));
+      }
+      if (home[i]) {
+        env
+          ..add((bt(beatEnd[i] - rise), 0, kill))
+          ..add((bt(beatEnd[i]) - p * 0.25, 0.8, kill))
+          ..add((bt(beatEnd[i]), 1, 0));
+      }
     }
     env
       ..add((bt(endBar - 8), 1, 0))
@@ -1020,8 +1094,11 @@ class MashupMaker {
           Keyframe(bt(b1), gain: 0, low: kill),
         ];
         keys = _withPockets(keys, spans, p);
+        // Levelled on the bars that actually play, the same way as the
+        // anchor, so no section jumps out or drops away.
+        final gain = sectionGainDb(m.beat, bg, m.beatStart, m.beatStart + b1 - b0) ?? m.beatGainDb;
         clips.add(_clip(beatStems.first, math.max(0, warp.first[1]), warp.last[1] + 0.05, bt(b0), 1.0, m.beatCents, group,
-            p * 0.5, keys, gainDb: m.beatGainDb, warp: warp, mix: beatStems.skip(1).toList()));
+            p * 0.5, keys, gainDb: gain, warp: warp, mix: beatStems.skip(1).toList()));
       }
 
       // Vocal: pinned beat by beat onto the master grid from its first bar.
@@ -1047,14 +1124,14 @@ class MashupMaker {
         m.vocalRate = (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]);
       }
 
-      final first = i == 0 ? 0 : vIn[i] - gap;
+      final first = i == 0 ? 0 : vIn[i] - (home[i - 1] ? gap : 0);
       m
         ..start = bt(first)
         ..vocalIn = vInT
         ..vocalOut = vOutT
         ..end = bt(beatEnd[i])
         ..playedBpm = anchor.tempo
-        ..beatTimes = List.unmodifiable([for (var n = first * 4; n <= (beatEnd[i] + gap) * 4; n++) n * p]);
+        ..beatTimes = List.unmodifiable([for (var n = first * 4; n <= (math.max(beatEnd[i], i + 1 < ms.length ? vIn[i + 1] : 0) + gap) * 4; n++) n * p]);
       cuts.add(vInT);
     }
 
@@ -1225,6 +1302,9 @@ class MashupSession {
     return s;
   }
   final Set<String> _rejected = {};
+  /// Anchor mode: beats that turned out bass-less or without an unbroken
+  /// groove once split (any pairing with them is skipped).
+  final Set<String> _badBeats = {};
   bool cancelled = false;
   int target = 0;
 
@@ -1245,6 +1325,7 @@ class MashupSession {
     var looked = 0;
     for (final x in _ranked) {
       if (used.contains(x.vocal.path) || used.contains(x.beat.path) || _rejected.contains(x.key)) continue;
+      if (_badBeats.contains(x.beat.path)) continue;
       if (anchor != null && (identical(x.beat, anchor!.track) || identical(x.vocal, anchor!.track))) continue;
       final a = _anchoredPair(x);
       if (a == null) continue;
@@ -1264,6 +1345,7 @@ class MashupSession {
     for (final t in maker.anchorCandidates(pool)) {
       onStatus('Choosing the anchor beat · ${t.title}');
       await lib.separate([t], (d, n, c) {});
+      if (!MashupMaker.solidAnchor(t)) continue; // thin bass / drums, now we can hear it
       final a = maker.anchorFor(t);
       if (a != null) {
         anchor = a;
@@ -1307,7 +1389,7 @@ class MashupSession {
     target = count;
     var misses = 0;
     if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
-    while (!cancelled && mashups.length < target && misses < 6) {
+    while (!cancelled && mashups.length < target && misses < (anchorMode ? 12 : 6)) {
       // Plan the next few, then split all their stems in one go (faster).
       final picks = <_Pair>[];
       final used = _used;
@@ -1335,7 +1417,11 @@ class MashupSession {
       if (cancelled) return;
       var added = 0;
       for (final p in picks) {
-        final m = maker.build(p);
+        var m = anchorMode && MashupMaker.weakBeat(p.beat) ? null : maker.build(p);
+        if (anchorMode && (m == null ? MashupMaker.weakBeat(p.beat) : MashupMaker.gappyBeat(m))) {
+          _badBeats.add(p.beat.path);
+          m = null;
+        }
         if (m == null) {
           _rejected.add(p.key);
           continue;
@@ -1355,7 +1441,11 @@ class MashupSession {
           : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected);
       if (pick == null) return null;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
-      final m = maker.build(pick);
+      final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : maker.build(pick);
+      if (anchorMode && (m == null ? MashupMaker.weakBeat(pick.beat) : MashupMaker.gappyBeat(m))) {
+        _badBeats.add(pick.beat.path);
+        continue;
+      }
       if (m != null) return m;
       _rejected.add(pick.key);
     }

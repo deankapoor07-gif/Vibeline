@@ -391,6 +391,9 @@ def separate_file(path):
         if "gridTight" not in meta:  # stems made before the grid was checked
             meta.update(_grid_check(path, meta["stems"]))
             changed = True
+        if "curves" not in meta:  # stems made before drum/bass curves were measured
+            meta["curves"] = _stem_curves(meta["stems"])
+            changed = True
         if meta.get("beatsVersion") != CACHE_VERSION:  # analysis (beat grid) changed
             meta.update(_vocal_beats(path, meta["stems"]))
             meta["beatsVersion"] = CACHE_VERSION
@@ -458,6 +461,7 @@ def separate_file(path):
     result["tuning"] = _stem_tuning(result["stems"])
     result["levels"] = _stem_levels(result["stems"])
     result.update(_grid_check(path, result["stems"]))
+    result["curves"] = _stem_curves(result["stems"])
     with open(meta_path, "w") as fh:
         json.dump(result, fh)
     return result
@@ -547,6 +551,40 @@ def _stem_levels(stems):
         loud = inst > np.percentile(inst, 90) * 0.2
         if loud.sum() > 20:
             out["instrumental"] = round(float(20 * np.log10(np.mean(inst[loud]))), 2)
+    except Exception:
+        pass
+    return out
+
+
+def _stem_curves(stems):
+    """Level of the drums, the bass and the whole instrumental every half
+    second (dB), so a beat can be taken from where its drums and bass keep
+    playing, and sections can be matched for loudness. The instrumental is
+    weighted like the ear hears it (K-weighting: quiet below 40 Hz, a lift
+    above 1.5 kHz), so a bass-heavy beat doesn't measure louder than it sounds."""
+    import numpy as np
+    import soundfile as sf
+    out = {"hop": 0.5}
+    try:
+        def load(name):
+            x, sr = sf.read(stems[name], dtype="float32")
+            return (x.mean(1) if x.ndim > 1 else x), sr
+        drums, sr = load("drums")
+        bass, _ = load("bass")
+        other, _ = load("other")
+        n = int(sr * out["hop"])
+        k = min(len(drums), len(bass), len(other)) // n
+        def db(x):
+            return np.round(10 * np.log10(np.mean(x[: k * n].reshape(k, n) ** 2, axis=1) + 1e-10), 1)
+        out["drums"] = db(drums).tolist()
+        out["bass"] = db(bass).tolist()
+        blocks = (drums[: k * n] + bass[: k * n] + other[: k * n]).reshape(k, n)
+        f = np.fft.rfftfreq(n, 1 / sr)
+        shelf = 10 ** (4 / (1 + (1500 / np.maximum(f, 1)) ** 2) / 10)  # +4 dB (power) above ~1.5 kHz
+        hp = f ** 4 / (f ** 4 + 38.0 ** 4)
+        w = shelf * hp
+        power = (np.abs(np.fft.rfft(blocks, axis=1)) ** 2 * w).sum(1) * 2 / (n * n)
+        out["inst"] = np.round(10 * np.log10(power + 1e-10), 1).tolist()
     except Exception:
         pass
     return out
