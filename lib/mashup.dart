@@ -490,7 +490,7 @@ class MashupMaker {
   /// groove, so another pairing is used instead.
   static bool gappyBeat(Mashup m) {
     final (drumsOut, bassOut) = dropouts(m.beat, m.beatGrid, m.beatStart, m.beatStart + m.vocalBars + 12);
-    return drumsOut > 0.03 || bassOut > 0.1;
+    return drumsOut > 0.02 || bassOut > 0.1;
   }
 
   /// Solid enough to be the anchor: a real bassline and steady drums.
@@ -643,13 +643,21 @@ class MashupMaker {
 
       // Never under a vocal where the beat's drums (or bass) drop out.
       final (drumsOut, bassOut) = dropouts(m.beat, bg, s, s + need);
+      // A steady groove (no big lifts and drops inside it) under the vocal.
+      final g0 = s + Mashup.introBars, g1 = s + Mashup.introBars + m.vocalBars;
+      var dev = 0.0;
+      for (var b = g0; b < g1 && b < bg.barEnergy.length; b++) {
+        dev += (bg.barEnergy[b] - groove).abs();
+      }
+      final unsteady = dev / math.max(1, g1 - g0);
 
       final score = 0.55 * groove +
           0.9 * shapeScore +
           0.35 * build -
           clashPenalty -
           6.0 * drumsOut -
-          2.5 * bassOut -
+          4.0 * bassOut -
+          1.5 * unsteady -
           (s - bg.firstBar) / 300;
 
       if (score > bBest) {
@@ -859,6 +867,12 @@ class MashupMaker {
     final a = t.analysis;
     if (a == null || t.stems == null) return null;
     final g = _natural(a);
+    return AnchorBeat(t, g, loopStartFor(t, g).$1);
+  }
+
+  /// A song's best 16-bar loop to come home to (first bar, score): strong,
+  /// steady, and no drum or bass gaps, since it repeats.
+  (int, double) loopStartFor(LibraryTrack t, Analysis g) {
     var best = -1e9;
     var start = g.firstBar;
     for (var s = g.firstBar; s + AnchorBeat.loopBars <= g.lastBar; s++) {
@@ -873,7 +887,7 @@ class MashupMaker {
         start = s;
       }
     }
-    return AnchorBeat(t, g, start);
+    return (start, best);
   }
 
   /// A pairing re-fitted to the anchor: both songs at the anchor's tempo, the
@@ -952,9 +966,10 @@ class MashupMaker {
   ///   rises in (no bass) for 2 bars and takes over on the downbeat (bass
   ///   swap, the anchor drops out) → the vocal sings over beat 1 → beat 1
   ///   plays on alone for 8 bars → vocal 2 enters over beat 1 → beat 2 takes
-  ///   over the same way … The anchor only comes home once in the middle of
-  ///   the set (8 bars of beat solo, the anchor swaps back in, 4 bars of
-  ///   anchor, next vocal) and for the outro, so the set flows in long runs.
+  ///   over the same way … Mid-set (5+ mashups) and for the outro the set
+  ///   comes home (8 bars of beat solo, the home groove swaps back in, 4 bars
+  ///   of it, next vocal) to a promoted anchor: the strongest beat used so
+  ///   far. The original anchor is heard at most twice, so the set travels.
   /// Only one beat is ever fully playing, so the groove under a vocal never
   /// smears, and every switch is a clean swap on a downbeat.
   MashupSetPlan layoutAnchored(List<Mashup> ms, AnchorBeat anchor,
@@ -967,12 +982,33 @@ class MashupMaker {
     final clips = <Map<String, dynamic>>[];
     final cuts = <double>[];
 
-    // Where the anchor comes home: after the mashup halfway through (sets of
-    // 4+), and for the outro.
-    final home = [for (var i = 0; i < ms.length; i++) i == ms.length - 1 || (ms.length >= 4 && i == ms.length ~/ 2 - 1)];
+    // The original anchor opens the set. Later, the set comes home to a
+    // promoted anchor instead: the strongest beat used so far (solid drums,
+    // real bass, an unbroken loop), mid-set (sets of 5+) and for the outro.
+    // So the original is heard at most twice, and usually once.
+    final mid = ms.length >= 5 ? ms.length ~/ 2 : -1;
+    int? promoted;
+    var promotedLoop = 0;
+    var bestScore = -1e9;
+    for (var i = 1; i < (mid > 0 ? mid : ms.length - 1); i++) {
+      final b = ms[i].beat, g = ms[i].beatGrid;
+      if (!(b.stems?.hasCurves ?? false) || !solidAnchor(b) || weakBeat(b)) continue;
+      final (loop, score) = loopStartFor(b, g);
+      final (drumsOut, bassOut) = dropouts(b, g, loop, loop + AnchorBeat.loopBars);
+      if (drumsOut > 0.02 || bassOut > 0.1) continue;
+      final sc = score + 0.05 * (b.stems!.relative('bass') ?? -10);
+      if (sc > bestScore) {
+        bestScore = sc;
+        promoted = i;
+        promotedLoop = loop;
+      }
+    }
+    final home = [
+      for (var i = 0; i < ms.length; i++) i == ms.length - 1 || (promoted != null && i == mid)
+    ];
 
     // Structure, in master bars: beatIn is the downbeat the mashup's beat
-    // takes over on; beatEnd the downbeat the next beat (or the anchor)
+    // takes over on; beatEnd the downbeat the next beat (or the home groove)
     // takes over from it.
     final vIn = <int>[], beatIn = <int>[], beatEnd = <int>[];
     var cursor = 8; // 8 bars of anchor first
@@ -995,78 +1031,99 @@ class MashupMaker {
         if (!ms[i].beatOnly && ms[i].laneAudible(ms[i].lanes.first)) (bt(vIn[i]), bt(vIn[i] + ms[i].vocalBars))
     ];
 
-    // Anchor gain over time: full until the mashup's beat takes over (it
-    // drops out in the last quarter beat, bass and all), silent while that
-    // beat plays, then back in: rising without bass over 2 bars, full on the
-    // downbeat.
-    final env = <(double, double, double)>[(0, 1, 0)]; // (time, gain, low)
-    for (var i = 0; i < ms.length; i++) {
-      if (i == 0 || home[i - 1]) {
+    // Gain over time of a home groove: it drops out in the last quarter beat
+    // before a mashup's beat takes over (bass and all), and swaps back in
+    // rising without bass over 2 bars, full on the downbeat.
+    List<(double, double, double)> envelope({required bool opens, required bool homes}) {
+      final env = <(double, double, double)>[opens ? (0, 1, 0) : (0, 0, kill)]; // (time, gain, low)
+      if (ms.isNotEmpty && opens) {
         env
-          ..add((bt(beatIn[i]) - p * 0.25, 1, 0))
-          ..add((bt(beatIn[i]), 0, kill));
+          ..add((bt(beatIn[0]) - p * 0.25, 1, 0))
+          ..add((bt(beatIn[0]), 0, kill));
       }
-      if (home[i]) {
-        env
-          ..add((bt(beatEnd[i] - rise), 0, kill))
-          ..add((bt(beatEnd[i]) - p * 0.25, 0.8, kill))
-          ..add((bt(beatEnd[i]), 1, 0));
-      }
-    }
-    env
-      ..add((bt(endBar - 8), 1, 0))
-      ..add((bt(endBar), 0, 0));
-    env.sort((a, b) => a.$1.compareTo(b.$1));
-    double envAt(double t, {bool low = false}) {
-      if (t <= env.first.$1) return low ? env.first.$3 : env.first.$2;
-      for (var i = 1; i < env.length; i++) {
-        if (t <= env[i].$1) {
-          final a = env[i - 1], b = env[i];
-          final x = (t - a.$1) / math.max(1e-9, b.$1 - a.$1);
-          return low ? a.$3 + (b.$3 - a.$3) * x : a.$2 + (b.$2 - a.$2) * x;
+      if (homes) {
+        for (var i = 0; i < ms.length; i++) {
+          if (!home[i]) continue;
+          env
+            ..add((bt(beatEnd[i] - rise), 0, kill))
+            ..add((bt(beatEnd[i]) - p * 0.25, 0.8, kill))
+            ..add((bt(beatEnd[i]), 1, 0));
+          if (i + 1 < ms.length) {
+            env
+              ..add((bt(beatIn[i + 1]) - p * 0.25, 1, 0))
+              ..add((bt(beatIn[i + 1]), 0, kill));
+          }
         }
+        env
+          ..add((bt(endBar - 8), 1, 0))
+          ..add((bt(endBar), 0, 0));
       }
-      return low ? env.last.$3 : env.last.$2;
+      env.sort((a, b) => a.$1.compareTo(b.$1));
+      return env;
     }
 
-    // Anchor clips: the 16-bar loop, one clip per loop pass (20 ms
-    // crossfades at the loop points), skipped where the anchor is silent.
-    final aStems = [
-      for (final s in const ['other', 'bass', 'drums']) anchor.track.stems!.paths[s]!
-    ];
-    final aBase = anchor.grid.beatIndexOfBar(anchor.loopStart);
-    const xf = 0.02;
-    for (var c0 = 0; c0 < endBar; c0 += AnchorBeat.loopBars) {
-      final c1 = math.min(endBar, c0 + AnchorBeat.loopBars);
-      final w0 = bt(c0) - (c0 > 0 ? xf : 0), w1 = bt(c1) + xf;
-      var audible = false;
-      for (var t = w0; t <= w1; t += p) {
-        if (envAt(t) > 0.001) {
-          audible = true;
-          break;
+    // A home groove's clips: its 16-bar loop, one clip per loop pass (20 ms
+    // crossfades at the loop points), skipped where it is silent.
+    void addGroove(LibraryTrack track, Analysis grid, int loopStart, double cents, double gainDb,
+        List<(double, double, double)> env) {
+      double envAt(double t, {bool low = false}) {
+        if (t <= env.first.$1) return low ? env.first.$3 : env.first.$2;
+        for (var i = 1; i < env.length; i++) {
+          if (t <= env[i].$1) {
+            final a = env[i - 1], b = env[i];
+            final x = (t - a.$1) / math.max(1e-9, b.$1 - a.$1);
+            return low ? a.$3 + (b.$3 - a.$3) * x : a.$2 + (b.$2 - a.$2) * x;
+          }
         }
+        return low ? env.last.$3 : env.last.$2;
       }
-      if (!audible) continue;
-      final warp = <List<double>>[
-        for (var n = 0; n <= (c1 - c0) * 4; n++) [bt(c0) + n * p, anchor.grid.smoothBeat(aBase + n)]
+
+      final aStems = [
+        for (final s in const ['other', 'bass', 'drums']) track.stems!.paths[s]!
       ];
-      final slope = (warp[1][1] - warp[0][1]) / (warp[1][0] - warp[0][0]);
-      final times = <double>{w0, w1, for (final e in env) if (e.$1 > w0 && e.$1 < w1) e.$1};
-      if (c0 > 0) times.add(bt(c0) + xf);
-      times.add(bt(c1) - xf);
-      final sorted = times.toList()..sort();
-      var keys = <Keyframe>[
-        for (final t in sorted)
-          Keyframe(t,
-              gain: envAt(t) *
-                  (c0 > 0 && t < bt(c0) + xf ? ((t - w0) / (2 * xf)).clamp(0.0, 1.0) : 1) *
-                  (t > bt(c1) - xf ? ((w1 - t) / (2 * xf)).clamp(0.0, 1.0) : 1),
-              low: envAt(t, low: true))
-      ];
-      keys = _withPockets(keys, spans, p);
-      clips.add(_clip(aStems.first, math.max(0, warp.first[1] - (bt(c0) - w0) * slope), warp.last[1] + xf * slope + 0.02, w0,
-          1.0, anchor.cents, 0, p * 0.5, keys,
-          gainDb: anchor.gainDb, warp: warp, mix: aStems.skip(1).toList()));
+      final aBase = grid.beatIndexOfBar(loopStart);
+      const xf = 0.02;
+      for (var c0 = 0; c0 < endBar; c0 += AnchorBeat.loopBars) {
+        final c1 = math.min(endBar, c0 + AnchorBeat.loopBars);
+        final w0 = bt(c0) - (c0 > 0 ? xf : 0), w1 = bt(c1) + xf;
+        var audible = false;
+        for (var t = w0; t <= w1; t += p) {
+          if (envAt(t) > 0.001) {
+            audible = true;
+            break;
+          }
+        }
+        if (!audible) continue;
+        final warp = <List<double>>[
+          for (var n = 0; n <= (c1 - c0) * 4; n++) [bt(c0) + n * p, grid.smoothBeat(aBase + n)]
+        ];
+        final slope = (warp[1][1] - warp[0][1]) / (warp[1][0] - warp[0][0]);
+        final times = <double>{w0, w1, for (final e in env) if (e.$1 > w0 && e.$1 < w1) e.$1};
+        if (c0 > 0) times.add(bt(c0) + xf);
+        times.add(bt(c1) - xf);
+        final sorted = times.toList()..sort();
+        var keys = <Keyframe>[
+          for (final t in sorted)
+            Keyframe(t,
+                gain: envAt(t) *
+                    (c0 > 0 && t < bt(c0) + xf ? ((t - w0) / (2 * xf)).clamp(0.0, 1.0) : 1) *
+                    (t > bt(c1) - xf ? ((w1 - t) / (2 * xf)).clamp(0.0, 1.0) : 1),
+                low: envAt(t, low: true))
+        ];
+        keys = _withPockets(keys, spans, p);
+        clips.add(_clip(aStems.first, math.max(0, warp.first[1] - (bt(c0) - w0) * slope), warp.last[1] + xf * slope + 0.02, w0,
+            1.0, cents, 0, p * 0.5, keys,
+            gainDb: gainDb, warp: warp, mix: aStems.skip(1).toList()));
+      }
+    }
+
+    addGroove(anchor.track, anchor.grid, anchor.loopStart, anchor.cents, anchor.gainDb,
+        envelope(opens: true, homes: promoted == null));
+    if (promoted != null) {
+      final m = ms[promoted];
+      addGroove(m.beat, m.beatGrid, promotedLoop, m.beatCents,
+          sectionGainDb(m.beat, m.beatGrid, promotedLoop, promotedLoop + AnchorBeat.loopBars) ?? m.beatGainDb,
+          envelope(opens: false, homes: true));
     }
 
     // Each mashup: its vocal over the anchor, then its own beat.
@@ -1145,7 +1202,7 @@ class MashupMaker {
 
     final duration = bt(endBar) + 1.5;
     final mins = (duration / 60).round();
-    final summary = '${vibe.summary} · ⚓ ${anchor.track.title} · ${ms.length} mashups · '
+    final summary = '${vibe.summary} · ⚓ ${anchor.track.title}${promoted == null ? '' : ' → ${ms[promoted].beat.title}'} · ${ms.length} mashups · '
         '${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
     final json = <String, dynamic>{'duration': duration, 'clips': clips, if (warmth != null) 'warmth': warmth};
     return MashupSetPlan(ms, duration, summary, json, cuts);
