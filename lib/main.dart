@@ -375,11 +375,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _scheduleRelayout();
   }
 
-  /// Vocal pitch moves are applied live by the player, like a key knob on DJ
-  /// hardware: instant, nothing re-mixed.
-  void _pitch(void Function() change) {
+  /// Volume moves are applied live by the player, like faders on DJ
+  /// hardware: instant, nothing re-mixed. (Pitch moves re-render the mashup.)
+  void _live(void Function() change) {
     setState(change);
-    _pushPitch();
+    _pushLive();
   }
 
   Map<String, dynamic> get _liveMap => (_mashupMode ? _mashPlan?.liveMap : null) ?? const {'vocal': [], 'beat': []};
@@ -389,7 +389,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   DateTime _lastLivePush = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _livePushTimer;
 
-  Future<void> _pushPitch() async {
+  Future<void> _pushLive() async {
     const gap = Duration(milliseconds: 50);
     final since = DateTime.now().difference(_lastLivePush);
     if (since >= gap) {
@@ -398,7 +398,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       await _mixer.setLiveMap(_liveMap);
     } else {
       _livePushTimer?.cancel();
-      _livePushTimer = Timer(gap - since, _pushPitch);
+      _livePushTimer = Timer(gap - since, _pushLive);
     }
   }
 
@@ -956,14 +956,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     onShuffle: () => _shuffle(i),
                     onToggleMute: (lane) => _edit(() => lane.muted = !lane.muted),
                     onToggleSolo: (lane) => _edit(() => lane.solo = !lane.solo),
-                    onShift: (d) => _pitch(() => m.vocalShift = (m.vocalShift + d).clamp(-6, 6)),
-                    onFine: (c) => _pitch(() => m.fineCents = c),
-                    onResetPitch: () => _pitch(() {
+                    onShift: (d) => _edit(() => m.vocalShift = (m.vocalShift + d).clamp(-6, 6)),
+                    onFine: (c) => _edit(() => m.fineCents = c),
+                    onResetPitch: () => _edit(() {
                       m.vocalShift = m.autoShift;
                       m.fineCents = 0;
                     }),
-                    onVocalDb: (db) => _pitch(() => m.vocalDb = db),
-                    onBeatDb: (db) => _pitch(() => m.beatDb = db),
+                    onVocalDb: (db) => _live(() => m.vocalDb = db),
+                    onBeatDb: (db) => _live(() => m.beatDb = db),
                     onTempo: (s) => _edit(() => m.tempoScale = s.clamp(0.85, 1.15)),
                     anchorMode: _session?.anchorMode == true,
                     onDrop: (song, asVocal) => _replace(i, song, asVocal),

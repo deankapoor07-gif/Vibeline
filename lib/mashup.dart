@@ -100,13 +100,9 @@ class Mashup {
   double get beatCents => Tuning.toReference(_beatHz) + beatShift * 100;
 
   /// Cents applied to the vocal: key shift + tuning match + your fine-tune.
+  /// All of it is baked into the render (a live pitch unit put vocals ~90 ms
+  /// behind the beat).
   double get vocalCents => vocalShift * 100 + Tuning.vocalCents(_vocalHz, _beatHz) + fineCents;
-
-  /// The part baked into the render (automatic key shift + tuning match)…
-  double get renderedVocalCents => autoShift * 100 + Tuning.vocalCents(_vocalHz, _beatHz);
-
-  /// …and your adjustment on top, applied live by the player (instant).
-  double get liveVocalCents => (vocalShift - autoShift) * 100 + fineCents;
 
   /// Automatic vocal level, relative to the beat as recorded: every vocal is
   /// aimed at the same place, about 2.5 dB under the full beat while singing,
@@ -225,13 +221,12 @@ class MashupSetPlan {
   final List<double> cuts; // section boundaries (where blends finish)
   MashupSetPlan(this.mashups, this.duration, this.summary, this.renderJson, this.cuts);
 
-  /// Your live pitch and volume moves for each mashup, for the player.
+  /// Your live volume moves for each mashup, for the player.
   /// Beat regions change hands halfway through each blend.
   Map<String, dynamic> get liveMap => {
         'vocal': [
           for (final m in mashups)
-            if (!m.beatOnly && (m.liveVocalCents != 0 || m.vocalDb != 0))
-              {'start': m.vocalIn - 4, 'end': m.vocalOut + 7, 'cents': m.liveVocalCents, 'db': m.vocalDb}
+            if (!m.beatOnly && m.vocalDb != 0) {'start': m.vocalIn - 4, 'end': m.vocalOut + 7, 'db': m.vocalDb}
         ],
         'beat': [
           for (var i = 0; i < mashups.length; i++)
@@ -796,7 +791,7 @@ class MashupMaker {
               ? vocalKeys(outStartV, outStartV + preRollOut * 0.5, vOut, m.vocalTailBeats, vBeat)
               // Vocal song's own backing stems (only when unmuted).
               : [Keyframe(outStartV, gain: 0), Keyframe(vIn, gain: 1), Keyframe(vOut - vBeat), Keyframe(vOut, gain: 0)];
-          clips.add(_clip(path, srcStartV, srcEndV, outStartV, m.vocalRate, m.renderedVocalCents, group + li, vBeat * 0.75,
+          clips.add(_clip(path, srcStartV, srcEndV, outStartV, m.vocalRate, m.vocalCents, group + li, vBeat * 0.75,
               keys, gainDb: m.beatGainDb + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5), warp: warp, bus: 1));
           continue;
         }
@@ -1181,7 +1176,7 @@ class MashupMaker {
               ? vocalKeys(outStartV, outStartV + p, vOutT, m.vocalTailBeats, p)
               : [Keyframe(outStartV, gain: 0), Keyframe(vInT, gain: 1), Keyframe(vOutT - p), Keyframe(vOutT, gain: 0)];
           clips.add(_clip(path, math.max(0.0, warp.first[1]), warp.last[1] + 0.05, outStartV,
-              (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]), m.renderedVocalCents, group + li, p * 0.75,
+              (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]), m.vocalCents, group + li, p * 0.75,
               keys,
               gainDb: m.beatGainDb + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5), warp: warp, bus: 1));
         }

@@ -56,7 +56,7 @@ final class MixerChannel {
         do {
           let plan = try JSONDecoder().decode(MixPlan.self, from: Data(planJson.utf8))
           // Two layers: everything else, and the featured vocals (bus 1), which
-          // the player runs through a live pitch control.
+          // the player runs through a live volume control.
           let layers: [(MixPlan, String)] = [(plan.layer(vocal: false), out), (plan.layer(vocal: true), out + ".vox.m4a")]
           // Both layers render at once, on two cores.
           var failure: Error?
@@ -174,7 +174,7 @@ struct Clip: Decodable {
   /// Optional beat map [[mixTime, songTime], ...]: the song's speed follows it
   /// so every beat lands where the map says (vocals riding a live recording).
   let warp: [[Double]]?
-  /// 1 = featured vocal layer (gets live pitch control); otherwise the main layer.
+  /// 1 = featured vocal layer (gets live volume control); otherwise the main layer.
   let bus: Int?
   /// More stems summed with `path` before stretching (e.g. a beat's melody,
   /// bass and drums): one time-stretch instead of several.
@@ -637,9 +637,11 @@ func convert(_ raw: AVAudioPCMBuffer, to format: AVAudioFormat, path: String) th
 // MARK: - Live timeline player
 
 /// Plays rendered sections back to back on the engine's sample clock, so a
-/// 4-hour set never drifts. Each section has a main layer and a vocal layer;
-/// the vocal layer runs through a live pitch control, so pitch moves are
-/// instant (like the key knob on DJ hardware), with no re-rendering.
+/// 4-hour set never drifts. Each section has a main layer and a vocal layer,
+/// each with a live volume control, so level moves are instant (like faders on
+/// DJ hardware), with no re-rendering. Vocal pitch is baked into the render:
+/// a live time-pitch unit on the vocal layer delayed it by up to ~95 ms
+/// (varying with when it started), which put every vocal behind the beat.
 final class TimelinePlayer {
   struct Segment: Equatable {
     let path: String?
@@ -661,18 +663,16 @@ final class TimelinePlayer {
     }
   }
 
-  /// Your live adjustments over a stretch of the mix: vocal pitch (cents)
-  /// and volume (dB) for the vocal layer or the main (beat) layer.
+  /// Your live volume (dB) over a stretch of the mix, for the vocal layer or
+  /// the main (beat) layer.
   struct LiveRegion {
     let start: Double
     let end: Double
-    let cents: Double
     let db: Double
 
     init(row: [String: Any]) {
       start = (row["start"] as? Double) ?? 0
       end = (row["end"] as? Double) ?? 0
-      cents = (row["cents"] as? Double) ?? 0
       db = (row["db"] as? Double) ?? 0
     }
   }
@@ -687,11 +687,11 @@ final class TimelinePlayer {
       beat = (args["beat"] as? [[String: Any]] ?? []).map(LiveRegion.init(row:))
     }
 
-    /// (vocal cents, vocal dB, beat dB) at mix time t.
-    func at(_ t: Double) -> (Float, Float, Float) {
+    /// (vocal dB, beat dB) at mix time t.
+    func at(_ t: Double) -> (Float, Float) {
       let v = vocal.first(where: { t >= $0.start && t < $0.end })
       let b = beat.first(where: { t >= $0.start && t < $0.end })
-      return (Float(v?.cents ?? 0), Float(v?.db ?? 0), Float(b?.db ?? 0))
+      return (Float(v?.db ?? 0), Float(b?.db ?? 0))
     }
   }
 
@@ -719,7 +719,6 @@ final class TimelinePlayer {
   private let engine = AVAudioEngine()
   private let beatBus = AVAudioMixerNode()
   private let voxBus = AVAudioMixerNode()
-  private let voxPitch = AVAudioUnitTimePitch()
   private let voxGain = AVAudioUnitEQ(numberOfBands: 1)
   private let beatGain = AVAudioUnitEQ(numberOfBands: 1)
   private let master = AVAudioMixerNode()
@@ -734,7 +733,7 @@ final class TimelinePlayer {
   private var beatPool: [AVAudioPlayerNode] = []
   private var voxPool: [AVAudioPlayerNode] = []
   private var timer: Timer?
-  private var pitchTimer: Timer?
+  private var liveTimer: Timer?
   private let loadQueue = DispatchQueue(label: "vibeline.load", qos: .userInitiated)
 
   var live = LiveMap() {
@@ -751,7 +750,7 @@ final class TimelinePlayer {
   private var generation = 0  // bumps on every restart so stale loads are dropped
 
   init() {
-    Self.wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxPitch: voxPitch, voxGain: voxGain,
+    Self.wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxGain: voxGain,
       master: master, limiter: limiter, format: format)
     // All player nodes are created up front: attaching nodes to a running
     // engine stalls audio (and, on this app's shared thread, the screen).
@@ -766,25 +765,24 @@ final class TimelinePlayer {
     engine.prepare()
     // Live controls follow the playhead closely (vocals never overlap between
     // mashups, so switching value between them is seamless).
-    pitchTimer?.invalidate()
+    liveTimer?.invalidate()
     let pt = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in self?.applyLive() }
     RunLoop.main.add(pt, forMode: .common)
-    pitchTimer = pt
+    liveTimer = pt
   }
 
   /// main layer → gain ─┐
-  /// vocal layer → pitch → gain ─┴→ master → limiter → out
+  /// vocal layer → gain ─┴→ master → limiter → out
   static func wire(
     _ engine: AVAudioEngine, beatBus: AVAudioMixerNode, beatGain: AVAudioUnitEQ, voxBus: AVAudioMixerNode,
-    voxPitch: AVAudioUnitTimePitch, voxGain: AVAudioUnitEQ, master: AVAudioMixerNode, limiter: AVAudioUnitEffect,
+    voxGain: AVAudioUnitEQ, master: AVAudioMixerNode, limiter: AVAudioUnitEffect,
     format: AVAudioFormat
   ) {
     for g in [voxGain, beatGain] { g.bands[0].bypass = true }
-    [beatBus, beatGain, voxBus, voxPitch, voxGain, master, limiter].forEach { engine.attach($0) }
+    [beatBus, beatGain, voxBus, voxGain, master, limiter].forEach { engine.attach($0) }
     engine.connect(beatBus, to: beatGain, format: format)
     engine.connect(beatGain, to: master, format: format)
-    engine.connect(voxBus, to: voxPitch, format: format)
-    engine.connect(voxPitch, to: voxGain, format: format)
+    engine.connect(voxBus, to: voxGain, format: format)
     engine.connect(voxGain, to: master, format: format)
     engine.connect(master, to: limiter, format: format)
     engine.connect(limiter, to: engine.mainMixerNode, format: format)
@@ -802,8 +800,7 @@ final class TimelinePlayer {
   }
 
   private func applyLive() {
-    let (cents, vdb, bdb) = live.at(position)
-    if voxPitch.pitch != cents { voxPitch.pitch = cents }
+    let (vdb, bdb) = live.at(position)
     voxGain.globalGain = voxDb.toward(vdb, 0.25)
     beatGain.globalGain = beatDb.toward(bdb, 0.25)
   }
@@ -1260,18 +1257,17 @@ func play(from pos: Double? = nil) {
   }
 
   /// Renders the whole set to one file the same way the player plays it:
-  /// sections back to back, the vocal layer through the pitch control
-  /// (following the pitch map), and the master limiter.
+  /// sections back to back, both layers through their volume controls
+  /// (following the live map), and the master limiter.
   static func export(_ segs: [Segment], live: LiveMap, to url: URL) throws {
     let sr = 44100.0
     let format = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
     let engine = AVAudioEngine()
     try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
     let beatBus = AVAudioMixerNode(), voxBus = AVAudioMixerNode(), master = AVAudioMixerNode()
-    let voxPitch = AVAudioUnitTimePitch()
     let voxGain = AVAudioUnitEQ(numberOfBands: 1), beatGain = AVAudioUnitEQ(numberOfBands: 1)
     let limiter = makeLimiter()
-    wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxPitch: voxPitch, voxGain: voxGain,
+    wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxGain: voxGain,
       master: master, limiter: limiter, format: format)
     var voxDb = Smoothed(), beatDb = Smoothed()
     try engine.start()
@@ -1313,8 +1309,7 @@ func play(from pos: Double? = nil) {
         let s = AVAudioFramePosition((segs[next].start * sr).rounded())
         if s > frame { n = min(n, s - frame) }
       }
-      let (cents, vdb, bdb) = live.at(Double(frame) / sr)
-      voxPitch.pitch = cents
+      let (vdb, bdb) = live.at(Double(frame) / sr)
       voxGain.globalGain = voxDb.toward(vdb, 0.12)
       beatGain.globalGain = beatDb.toward(bdb, 0.12)
       let status = try engine.renderOffline(AVAudioFrameCount(n), to: buffer)
