@@ -1370,6 +1370,79 @@ class MashupMaker {
         gainDb: gain);
   }
 
+  /// While a Melody sample plays, the beats under it drop their own melody
+  /// (keys, horns, guitars: the 'other' stem) and keep just drums and bass, so
+  /// two tunes don't fight. That stem moves to a clip of its own which fades
+  /// out over [fade] seconds before each span and back in after it.
+  static void clearForMelody(List<Map<String, dynamic>> clips, List<(double, double)> spans, double fade) {
+    if (spans.isEmpty) return;
+    double level(double t) {
+      var g = 1.0;
+      for (final (a, b) in spans) {
+        if (t <= a - fade || t >= b + fade) continue;
+        g = math.min(g, t < a ? (a - t) / fade : (t > b ? (t - b) / fade : 0.0));
+      }
+      return g;
+    }
+
+    Map<String, dynamic> keyAt(List<Map<String, dynamic>> keys, double t) {
+      double n(Map<String, dynamic> k, String f, double d) => (k[f] as num?)?.toDouble() ?? d;
+      if (t <= (keys.first['t'] as num)) return {...keys.first, 't': t};
+      for (var i = 1; i < keys.length; i++) {
+        final a = keys[i - 1], b = keys[i];
+        if (t < (b['t'] as num)) {
+          final x = (t - (a['t'] as num)) / math.max(1e-9, (b['t'] as num) - (a['t'] as num));
+          double l(String f, double d) => n(a, f, d) + (n(b, f, d) - n(a, f, d)) * x;
+          // Filters sweep on a log scale, as the renderer does.
+          double lf(String f, double d) => math.exp(math.log(n(a, f, d)) + (math.log(n(b, f, d)) - math.log(n(a, f, d))) * x);
+          return {
+            't': t, 'gain': l('gain', 1), 'low': l('low', 0), 'mid': l('mid', 0), 'high': l('high', 0),
+            'hpf': lf('hpf', 20), 'lpf': lf('lpf', 20000), 'echo': l('echo', 0),
+            if (a['verb'] != null || b['verb'] != null) 'verb': l('verb', 0),
+          };
+        }
+      }
+      return {...keys.last, 't': t};
+    }
+
+    final added = <Map<String, dynamic>>[];
+    for (final c in clips) {
+      if ((c['bus'] ?? 0) != 0) continue;
+      final paths = [c['path'] as String, ...((c['mix'] as List?)?.cast<String>() ?? const <String>[])];
+      final other = paths.where((p) => p.endsWith('/other.flac')).toList();
+      // Only beats made of several stems (a lone 'other' is the melody itself).
+      if (other.length != 1 || paths.length < 2) continue;
+      final keys = (c['keys'] as List).cast<Map<String, dynamic>>();
+      if (keys.isEmpty) continue;
+      final c0 = (keys.first['t'] as num).toDouble(), c1 = (keys.last['t'] as num).toDouble();
+      if (!spans.any((s) => s.$1 - fade < c1 && s.$2 + fade > c0)) continue;
+      final rest = paths.where((p) => p != other.first).toList();
+      c['path'] = rest.first;
+      if (rest.length > 1) {
+        c['mix'] = rest.sublist(1);
+      } else {
+        c.remove('mix');
+      }
+      final times = <double>{
+        for (final k in keys) (k['t'] as num).toDouble(),
+        for (final (a, b) in spans) ...[a - fade, a, b, b + fade],
+      }.where((t) => t >= c0 && t <= c1).toList()
+        ..sort();
+      added.add({
+        ...c,
+        'path': other.first,
+        'keys': [
+          for (final t in times)
+            () {
+              final k = keyAt(keys, t);
+              return {...k, 'gain': (k['gain'] as num) * level(t)};
+            }()
+        ],
+      }..remove('mix'));
+    }
+    clips.addAll(added);
+  }
+
   Map<String, dynamic> _clip(String path, double srcStart, double srcEnd, double outStart, double rate, double cents,
           int deck, double echoTime, List<Keyframe> keys,
           {double gainDb = 0, List<List<double>>? warp, int bus = 0, List<String> mix = const []}) =>
@@ -1676,9 +1749,21 @@ class MashupSession {
     return null;
   }
 
-  MashupSetPlan layout({Map<String, dynamic>? warmth}) => anchorMode && anchor != null
-      ? maker.layoutAnchored(mashups, anchor!, warmth: warmth, samples: samples)
-      : maker.layout(mashups, warmth: warmth, samples: samples);
+  MashupSetPlan layout({Map<String, dynamic>? warmth}) {
+    final plan = anchorMode && anchor != null
+        ? maker.layoutAnchored(mashups, anchor!, warmth: warmth, samples: samples)
+        : maker.layout(mashups, warmth: warmth, samples: samples);
+    final clips = (plan.renderJson['clips'] as List).cast<Map<String, dynamic>>();
+    final spans = [
+      for (final s in samples)
+        if (s.melodyOnly)
+          for (final c in clips)
+            if (c['path'] == s.track.stems?.paths['other'])
+              ((c['outStart'] as num).toDouble(), ((c['keys'] as List).last['t'] as num).toDouble())
+    ];
+    MashupMaker.clearForMelody(clips, spans, 0.5);
+    return plan;
+  }
 
   /// Plans [count] pairings in order without splitting stems: (pair key, tempo).
   /// Used to check a library can supply a long set.
