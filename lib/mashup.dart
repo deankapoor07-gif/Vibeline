@@ -842,9 +842,26 @@ class MashupMaker {
   // ------------------------------------------------------------- anchor mode
 
   /// Beats that would make a good anchor: grooving, steady, near the vibe's
-  /// tempo, and liked (tags / Shazam). Best first.
+  /// tempo, liked (tags / Shazam), and with plenty of the pool's beats able to
+  /// follow it (every mashup beat is fitted to the anchor's tempo and key; a
+  /// 127 BPM anchor over a ~115 BPM library left 4 usable beats). Best first.
   List<LibraryTrack> anchorCandidates(List<LibraryTrack> pool) {
     final scored = <(LibraryTrack, double)>[];
+    final grids = [
+      for (final u in pool)
+        if (u.analysis != null && u.analysis!.barCount >= 40) (u, u.analysis!)
+    ];
+    // How many other songs could play as a beat under this anchor.
+    int followers(LibraryTrack t, Analysis g) {
+      var n = 0;
+      for (final (u, a) in grids) {
+        if (identical(u, t)) continue;
+        final bg = fitTo(a, g.steadyBpm, 0.08);
+        if (bg == null) continue;
+        if (const [0, 1, -1, 2, -2].any((k) => keyCompat(g.camelot, shiftCamelot(bg.camelot, k)) >= 0.8)) n++;
+      }
+      return n;
+    }
     for (final t in pool) {
       final a = t.analysis;
       if (a == null || a.barCount < 48 || a.tempoDrift > 0.025) continue;
@@ -856,6 +873,9 @@ class MashupMaker {
       var s = 1.2 * (a.danceability - 1.0) + 0.5 * tagScore(t, vibe, rng);
       s -= 3 * (math.log(g.steadyBpm / vibe.targetBpm)).abs();
       s += 0.6 * g.energy;
+      // Full marks from about 20 followers; under 10 strands most of the set.
+      final f = followers(t, g);
+      s += 4.0 * math.min(f, 20) / 20 - (f < 10 ? 3.0 : 0.0);
       scored.add((t, s));
     }
     scored.sort((a, b) => b.$2.compareTo(a.$2));
@@ -1209,10 +1229,13 @@ class MashupMaker {
   }
 
   /// The vocal pocket for several vocals (whichever is singing at the time).
+  /// Only vocals within the clip's own keys count, so a clip doesn't change
+  /// (and its section re-render) when the set changes somewhere else.
   static List<Keyframe> _withPockets(List<Keyframe> keys, List<(double, double)> spans, double beat) {
     var out = keys;
     final mids = <double, double>{};
     for (final (a, b) in spans) {
+      if (keys.isNotEmpty && (b + beat <= keys.first.t || a - beat >= keys.last.t)) continue;
       final k = _withPocket(out, a, b, beat);
       for (final x in k) {
         mids[x.t] = math.min(mids[x.t] ?? 0, x.mid);

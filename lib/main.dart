@@ -237,8 +237,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked) async {
     final maker = MashupMaker(vibe);
     final count = maker.mashupCount;
-    // Long sets need a bigger pool of songs to draw from.
-    final pool = ranked.take(math.max(80, count * 4)).toList();
+    // Long sets need a bigger pool of songs to draw from. Anchor mode needs
+    // more again: every beat has to fit the anchor's tempo and key (80 songs
+    // left 2–3 mashups for a 5-mashup set).
+    final pool = ranked.take(_anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)).toList();
     await _library.analyze(pool, (done, total) {
       _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
     });
