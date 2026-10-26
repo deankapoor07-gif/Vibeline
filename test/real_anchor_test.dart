@@ -37,6 +37,14 @@ void main() {
       expect(await session.setAnchor(t, lib, (_) {}), isNull);
     }
     print('pool ${pool.length} (${pool.where((t) => t.shazam).length} Shazams)');
+    // VIBELINE_SEED=<title words> builds the set around that song.
+    final seedWant = Platform.environment['VIBELINE_SEED']?.toLowerCase();
+    if (seedWant != null) {
+      final t = lib.tracks.firstWhere((t) => t.title.toLowerCase().contains(seedWant));
+      final sw2 = Stopwatch()..start();
+      final err = await session.seed(t, lib.tracks, lib, (s) {});
+      print('SEED ${t.title}: ${err ?? 'ok'} in ${sw2.elapsed.inSeconds}s · analysed in library ${lib.tracks.where((x) => x.analysis != null).length}/${lib.tracks.length}');
+    }
     await session.fill(lib, int.tryParse(Platform.environment['VIBELINE_COUNT'] ?? '') ?? (appLike ? maker.mashupCount : 4), (s) {}, () {});
     final a = session.anchor!;
     print('ANCHOR: ${a.track.artist} – ${a.track.title} · ${a.tempo.toStringAsFixed(1)} BPM · key ${a.camelot} · loop from bar ${a.loopStart} · gain ${a.gainDb.toStringAsFixed(1)} dB · bass ${a.track.stems?.relative('bass')?.toStringAsFixed(1)} drums ${a.track.stems?.relative('drums')?.toStringAsFixed(1)}');

@@ -310,21 +310,23 @@ class MashupMaker {
 
   /// Every vocal-song / beat-song pairing worth trying, best first.
   /// Mashups are about contrast: different genres and eras score higher.
-  List<_Pair> rankPairs(List<LibraryTrack> pool, {LibraryTrack? onlyBeat}) {
+  List<_Pair> rankPairs(List<LibraryTrack> pool, {LibraryTrack? onlyBeat, LibraryTrack? onlyVocal}) {
     final songs = pool.where((t) => t.analysis != null && t.analysis!.barCount >= 40).toList();
-    final tags = {for (final t in songs) t.path: tagScore(t, vibe, rng)};
+    final tags = {for (final t in [...songs, ?onlyVocal, ?onlyBeat]) t.path: tagScore(t, vibe, rng)};
     final pairs = <_Pair>[];
     final beats = onlyBeat != null ? [onlyBeat] : songs;
+    final vocals = onlyVocal != null ? [onlyVocal] : songs;
     for (final b in beats) {
       if (b.analysis == null) continue;
       final bg = _natural(b.analysis!);
       final tb = bg.steadyBpm;
-      if (onlyBeat == null && (tb < vibe.targetBpm * 0.78 || tb > vibe.targetBpm * 1.22)) continue;
+      // (A song you picked sets the tempo, so any beat that fits it will do.)
+      if (onlyBeat == null && onlyVocal == null && (tb < vibe.targetBpm * 0.78 || tb > vibe.targetBpm * 1.22)) continue;
       // A good beat grooves and keeps steady time.
       var bScore = 0.6 * ((b.analysis!.danceability - 1.0).clamp(-0.5, 1.0));
       if (b.analysis!.tempoDrift > 0.03) bScore -= 1.2;
       bScore -= 1.5 * (math.log(tb / vibe.targetBpm)).abs();
-      for (final v in songs) {
+      for (final v in vocals) {
         if (identical(v, b) || v.artist.toLowerCase() == b.artist.toLowerCase()) continue;
         final vg = fitTo(v.analysis!, tb, 0.14);
         if (vg == null) continue;
@@ -356,6 +358,14 @@ class MashupMaker {
     return pairs;
   }
 
+  /// What marks a song as used: its file, and its title without versions
+  /// ("(Rap Remix)", "[Edit]", "feat. …"), so two versions of one song never
+  /// end up in the same set.
+  static List<String> usedKeys(LibraryTrack t) => [t.path, songKey(t)];
+  static bool isUsed(Set<String> used, LibraryTrack t) => used.contains(t.path) || used.contains(songKey(t));
+  static String songKey(LibraryTrack t) =>
+      'song:${t.title.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'\s(feat|ft)\..*$'), '').replaceAll(RegExp(r'\s-\s.*$'), '').replaceAll(RegExp(r'[^a-z0-9]'), '')}';
+
   /// Best pairing to follow [prev] at set position [p]: its beat must be
   /// within 6% of the tempo the set is at, so the blend can match it.
   _Pair? pickNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected) {
@@ -364,7 +374,7 @@ class MashupMaker {
     var bestScore = -1e9;
     var looked = 0;
     for (final x in ranked) {
-      if (used.contains(x.vocal.path) || used.contains(x.beat.path) || rejected.contains(x.key)) continue;
+      if (isUsed(used, x.vocal) || isUsed(used, x.beat) || rejected.contains(x.key)) continue;
       if (prev != null && (math.log(x.tempo / prev.tempo)).abs() > math.log(1.06)) continue;
       var s = x.score - 9 * (math.log(x.tempo / target)).abs() - 2 * (x.bGrid.energy - vibe.energyAt(p)).abs();
       if (prev != null) s += keyCompat(prev.beatGrid.camelot, x.bGrid.camelot);
@@ -1519,9 +1529,9 @@ class MashupSession {
     var bestScore = -1e9;
     var looked = 0;
     for (final x in _ranked) {
-      if (used.contains(x.vocal.path) || used.contains(x.beat.path) || _rejected.contains(x.key)) continue;
+      if (MashupMaker.isUsed(used, x.vocal) || MashupMaker.isUsed(used, x.beat) || _rejected.contains(x.key)) continue;
       if (_badBeats.contains(x.beat.path) || _gappy.contains(x.beat.path)) continue;
-      if (anchor != null && (identical(x.beat, anchor!.track) || identical(x.vocal, anchor!.track))) continue;
+      if (anchor != null && (_sameSong(x.beat, anchor!.track) || _sameSong(x.vocal, anchor!.track))) continue;
       final a = _anchoredPair(x);
       if (a == null) continue;
       final s = a.score - 2 * (a.bGrid.energy - maker.vibe.energyAt(pos)).abs();
@@ -1534,10 +1544,72 @@ class MashupSession {
     return best;
   }
 
-  /// Picks and prepares the anchor (splits its stems).
-  Future<bool> _ensureAnchor(MusicLibrary lib, void Function(String) onStatus) async {
+  /// Opens the set with [song]: as the vocal over the best beat in [library]
+  /// (or, if it has no real singing, as the beat under the best vocal). The
+  /// top few pairings are split and checked like any other; the first that
+  /// holds up wins. In anchor mode the anchor is chosen to suit it. Returns an
+  /// error to show, or null.
+  Future<String?> seed(LibraryTrack song, List<LibraryTrack> library, MusicLibrary lib, void Function(String) onStatus) async {
+    onStatus('Listening to "${song.title}"…');
+    await lib.analyze([song], (d, t) {});
+    if (song.analysis == null) return 'Couldn\'t find a steady beat in "${song.title}".';
+    await lib.separate([song], (d, t, c) => onStatus('Splitting "${song.title}" into vocals and beat…'));
+    if (song.stems == null) return 'Couldn\'t split "${song.title}".';
+    final asVocal = song.stems!.vocalShare >= 0.08;
+    final others = library.where((t) => !identical(t, song) && t.analysis != null).toList();
+    var pairs = asVocal ? maker.rankPairs(others, onlyVocal: song) : maker.rankPairs(others, onlyBeat: song);
+    if (pairs.isEmpty) return 'Nothing in your library fits "${song.title}" (tempo or key too far off).';
+    if (anchorMode) {
+      if (anchor == null && !await _ensureAnchor(lib, onStatus, suits: pairs.take(30).toList())) {
+        return 'Couldn\'t find an anchor beat that suits "${song.title}".';
+      }
+      pairs = [
+        for (final p in pairs)
+          if (!_sameSong(p.beat, anchor!.track) && !_sameSong(p.vocal, anchor!.track)) ?maker.anchored(p, anchor!)
+      ]..sort((a, b) => b.score.compareTo(a.score));
+      if (pairs.isEmpty) return '"${song.title}" doesn\'t fit the anchor beat\'s tempo or key.';
+    }
+    // Split the best few together, then take the first that holds up.
+    for (var from = 0; from < math.min(pairs.length, 15); from += 3) {
+      final batch = pairs.skip(from).take(3).toList();
+      LibraryTrack partner(_Pair p) => asVocal ? p.beat : p.vocal;
+      await lib.separate([for (final p in batch) partner(p)],
+          (d, t, c) => onStatus('Finding the best ${asVocal ? 'beat' : 'vocal'} for "${song.title}"${c == null ? '' : ' · trying ${c.title}'}'));
+      if (cancelled) return null;
+      for (final p in batch) {
+        if (anchorMode && MashupMaker.weakBeat(p.beat)) continue;
+        final m = maker.build(p);
+        if (m == null) continue;
+        if (anchorMode && MashupMaker.gappyBeat(m, relaxed: true)) continue;
+        mashups.insert(0, _fit(m));
+        return null;
+      }
+    }
+    return 'None of the best matches for "${song.title}" held up once split — try another song.';
+  }
+
+  /// Picks and prepares the anchor (splits its stems). With [suits], only an
+  /// anchor that at least one of those pairings fits.
+  Future<bool> _ensureAnchor(MusicLibrary lib, void Function(String) onStatus, {List<_Pair>? suits}) async {
     if (anchor != null) return true;
-    for (final t in maker.anchorCandidates(pool)) {
+    var candidates = maker.anchorCandidates(pool);
+    if (suits != null && suits.isNotEmpty) {
+      // Building around a song: an anchor near the tempo of its best pairing,
+      // so the song isn't sped up or slowed down more than it needs to be.
+      // Never one of its best partners, though: that song couldn't then be
+      // its beat (or vocal) too.
+      final want = suits.first.tempo;
+      final best = suits.take(5).toList();
+      double cost(LibraryTrack t) =>
+          (math.log(maker._natural(t.analysis!).steadyBpm / want)).abs() +
+          (best.any((p) => _sameSong(p.beat, t) || _sameSong(p.vocal, t)) ? 1.0 : 0.0);
+      candidates = [...candidates]..sort((a, b) => cost(a).compareTo(cost(b)));
+    }
+    for (final t in candidates) {
+      if (suits != null) {
+        final trial = AnchorBeat(t, maker._natural(t.analysis!), 0);
+        if (!suits.any((p) => !_sameSong(p.beat, t) && !_sameSong(p.vocal, t) && maker.anchored(p, trial) != null)) continue;
+      }
       onStatus('Choosing the anchor beat · ${t.title}');
       await lib.separate([t], (d, n, c) {});
       if (!MashupMaker.solidAnchor(t)) continue; // thin bass / drums, now we can hear it
@@ -1576,7 +1648,10 @@ class MashupSession {
   static MashupSession start(MashupMaker maker, List<LibraryTrack> pool) =>
       MashupSession(maker, pool, maker.rankPairs(pool));
 
-  Set<String> get _used => {for (final m in mashups) ...[m.vocal.path, m.beat.path]};
+  /// Two files of one song (a remaster, an edit, a remix).
+  static bool _sameSong(LibraryTrack a, LibraryTrack b) => identical(a, b) || MashupMaker.songKey(a) == MashupMaker.songKey(b);
+
+  Set<String> get _used => {for (final m in mashups) ...MashupMaker.usedKeys(m.vocal), for (final m in mashups) ...MashupMaker.usedKeys(m.beat)};
 
   /// Keeps adding mashups until there are [count]. Calls [onAdded] after each
   /// batch so the set can start playing while the rest is prepared.
@@ -1606,8 +1681,8 @@ class MashupSession {
         if (!anchorMode && prevTempo > 0 && (math.log(pick.tempo / prevTempo)).abs() > math.log(1.06)) break;
         picks.add(pick);
         used
-          ..add(pick.vocal.path)
-          ..add(pick.beat.path);
+          ..addAll(MashupMaker.usedKeys(pick.vocal))
+          ..addAll(MashupMaker.usedKeys(pick.beat));
         prevTempo = pick.tempo;
         prevSim = null; // later picks in the batch chain on tempo only
       }
@@ -1672,7 +1747,7 @@ class MashupSession {
   Future<bool> shuffle(int i, MusicLibrary lib, void Function(String status) onStatus) async {
     final old = mashups[i];
     final m = await _another(lib, i > 0 ? mashups[i - 1] : null, i / math.max(1, mashups.length - 1),
-        {old.vocal.path, old.beat.path}, onStatus);
+        {...MashupMaker.usedKeys(old.vocal), ...MashupMaker.usedKeys(old.beat)}, onStatus);
     if (m == null) return false;
     _reanchor(old, m);
     mashups[i] = m;
@@ -1777,7 +1852,7 @@ class MashupSession {
       _Pair? best;
       var bestScore = -1e9;
       for (final x in _ranked) {
-        if (used.contains(x.vocal.path) || used.contains(x.beat.path)) continue;
+        if (MashupMaker.isUsed(used, x.vocal) || MashupMaker.isUsed(used, x.beat)) continue;
         if (prevTempo != null && (math.log(x.tempo / prevTempo)).abs() > math.log(1.06)) continue;
         final s = x.score - 9 * (math.log(x.tempo / target)).abs();
         if (s > bestScore) {
@@ -1787,8 +1862,8 @@ class MashupSession {
       }
       if (best == null) break;
       used
-        ..add(best.vocal.path)
-        ..add(best.beat.path);
+        ..addAll(MashupMaker.usedKeys(best.vocal))
+        ..addAll(MashupMaker.usedKeys(best.beat));
       prevTempo = best.tempo;
       out.add((best.key, best.tempo));
     }

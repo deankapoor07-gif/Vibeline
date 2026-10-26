@@ -181,12 +181,20 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   // ------------------------------------------------------------- Re-Mix AI
 
-  Future<void> _remix() async {
+  /// [seed]: a song to build the set around ("mix <song>" in the vibe box,
+  /// or ✨ in the Songs panel).
+  Future<void> _remix({LibraryTrack? seed}) async {
     if (_busy) return;
     _currentVibePrompt = _vibeController.text.trim().isEmpty ? _currentVibePrompt : _vibeController.text.trim();
     try {
       if (!_scanned) await _scan();
       if (_phase == Phase.error) return;
+      var prompt = _currentVibePrompt;
+      if (seed == null) {
+        final found = _songFromPrompt(prompt);
+        if (found != null) (seed, prompt) = found;
+      }
+      if (seed != null && !_mashupMode) _setMode(true);
       _session?.cancelled = true;
       await _stopPlayback();
       setState(() {
@@ -194,7 +202,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         _background = null;
       });
 
-      final vibe = parseVibe(_currentVibePrompt);
+      final vibe = parseVibe(prompt);
       _vibe = vibe;
       final rng = math.Random();
       var pool = _library.tracks.toList();
@@ -205,7 +213,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       final ranked = pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
 
       if (_mashupMode) {
-        await _makeMashups(vibe, ranked.map((e) => e.$1).toList());
+        await _makeMashups(vibe, ranked.map((e) => e.$1).toList(), seed: seed);
       } else {
         await _makeBlendMix(vibe, ranked.map((e) => e.$1).toList());
       }
@@ -234,7 +242,44 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     await _publish(plan.toRenderJson(), plan.cuts, plan.duration, plan.summary, autoplay: true);
   }
 
-  Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked) async {
+  /// "mix Poison", "mix Poison by Bell Biv DeVoe, party": the song it names
+  /// (title, optionally artist) and the rest of the prompt as the vibe.
+  (LibraryTrack, String)? _songFromPrompt(String prompt) {
+    final m = RegExp(r'^\s*(?:build (?:a )?mix around|mashup|mix)\s+(.+)$', caseSensitive: false).firstMatch(prompt);
+    if (m == null) return null;
+    String norm(String x) =>
+        x.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'[^a-z0-9 ]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+    final parts = m.group(1)!.split(',');
+    var query = norm(parts.first);
+    String? artist;
+    final by = RegExp(r'^(.+?) by (.+)$').firstMatch(query);
+    if (by != null) {
+      query = by.group(1)!.trim();
+      artist = by.group(2)!.trim();
+    }
+    if (query.length < 3) return null;
+    LibraryTrack? best;
+    var bestScore = 0.0;
+    for (final t in _library.tracks) {
+      final title = norm(t.title);
+      // Exact title, or the title starting with what you typed (or the other
+      // way round). A word merely appearing somewhere doesn't count, so
+      // "mix genres, …" stays a vibe.
+      var sc = title == query ? 3.0 : (title.startsWith(query) || query.startsWith(title) && title.length >= 3 ? 2.0 : 0.0);
+      if (sc == 0) continue;
+      if (artist != null) sc += norm(t.artist).contains(artist) ? 1.0 : -1.5;
+      if (t.analysis != null) sc += 0.2;
+      if (t.shazam) sc += 0.1;
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = t;
+      }
+    }
+    if (best == null || bestScore < 2) return null;
+    return (best, parts.skip(1).join(',').trim());
+  }
+
+  Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed}) async {
     final maker = MashupMaker(vibe);
     final count = maker.mashupCount;
     // Long sets need a bigger pool of songs to draw from. Anchor mode needs
@@ -251,6 +296,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _mashPlan = null;
       _expanded.clear();
     });
+    if (seed != null) {
+      final err = await session.seed(seed, _library.tracks, _library, (s) => _set(s));
+      if (session.cancelled) return;
+      if (err != null) {
+        _set(err, phase: Phase.error);
+        return;
+      }
+    }
     var started = false;
     // Builds progressively: plays as soon as the first mashups are ready and
     // keeps preparing the rest in the background.
@@ -829,6 +882,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                         _replace((_libTarget ?? math.max(0, _currentIndex)).clamp(0, (_mashPlan?.mashups.length ?? 1) - 1), song, asVocal),
                     onAnalyseAll: _analyseAll,
                     onAnchor: _makeAnchor,
+                    onMixAround: (song) => _remix(seed: song),
                     onClose: () => setState(() => _libraryOpen = false),
                   ),
               ],

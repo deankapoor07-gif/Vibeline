@@ -20,6 +20,7 @@ class LibraryPanel extends StatefulWidget {
   final VoidCallback onAnalyseAll;
   final VoidCallback onClose;
   final void Function(LibraryTrack song)? onAnchor;
+  final void Function(LibraryTrack song)? onMixAround;
 
   const LibraryPanel({
     super.key,
@@ -36,6 +37,7 @@ class LibraryPanel extends StatefulWidget {
     required this.onAnalyseAll,
     required this.onClose,
     this.onAnchor,
+    this.onMixAround,
   });
 
   @override
@@ -292,6 +294,7 @@ class _LibraryPanelState extends State<LibraryPanel> {
               ],
             ),
           ),
+          if (widget.onMixAround != null) _use('✨', 'Build a new mix around this song (finds its best beat)', () => widget.onMixAround!(t)),
           if (_m != null) ...[
             _use('🎤', 'Use as the vocal of this mashup', () => widget.onUse(t, true)),
             _use('🥁', 'Use as the beat of this mashup', () => widget.onUse(t, false)),
