@@ -466,21 +466,26 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _scheduleRelayout();
   }
 
-  Future<void> _toggleSampleVocal(SamplePlacement s) async {
-    if (s.vocalOnly) {
-      _edit(() => s.vocalOnly = false);
+  /// Plays just one part of a sample (its singing, or its instruments without
+  /// drums and bass), splitting its stems the first time.
+  Future<void> _toggleSamplePart(SamplePlacement s, {required bool melody}) async {
+    if (melody ? s.melodyOnly : s.vocalOnly) {
+      _edit(() => melody ? s.melodyOnly = false : s.vocalOnly = false);
       return;
     }
     if (s.track.stems == null) {
-      _set('Splitting "${s.track.title}" to get its vocal…', phase: Phase.ready);
+      _set('Splitting "${s.track.title}" to get its ${melody ? 'melody' : 'vocal'}…', phase: Phase.ready);
       await _library.separate([s.track], (d, t, c) {});
       if (s.track.stems == null) {
         _set('Couldn\'t split "${s.track.title}".', phase: Phase.ready);
         return;
       }
-      _set('Acapella ready: "${s.track.title}"', phase: Phase.ready);
+      _set('${melody ? 'Melody' : 'Acapella'} ready: "${s.track.title}"', phase: Phase.ready);
     }
-    _edit(() => s.vocalOnly = true);
+    _edit(() {
+      s.vocalOnly = !melody;
+      s.melodyOnly = melody;
+    });
   }
 
   Future<void> _analyseAll() async {
@@ -943,7 +948,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     },
                     onChange: (s, change) => _edit(change),
                     onRemove: (s) => _edit(() => _session?.samples.remove(s)),
-                    onToggleVocal: _toggleSampleVocal,
+                    onToggleVocal: (s) => _toggleSamplePart(s, melody: false),
+                    onToggleMelody: (s) => _toggleSamplePart(s, melody: true),
                   ),
                   const SizedBox(height: 10),
                   TrackStemLaneWidget(

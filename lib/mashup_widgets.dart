@@ -754,6 +754,7 @@ class SampleStrip extends StatelessWidget {
   final void Function(SamplePlacement s, void Function() change) onChange;
   final void Function(SamplePlacement s) onRemove;
   final void Function(SamplePlacement s) onToggleVocal;
+  final void Function(SamplePlacement s) onToggleMelody;
 
   const SampleStrip({
     super.key,
@@ -765,6 +766,7 @@ class SampleStrip extends StatelessWidget {
     required this.onChange,
     required this.onRemove,
     required this.onToggleVocal,
+    required this.onToggleMelody,
   });
 
   @override
@@ -857,7 +859,7 @@ class SampleStrip extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(s.vocalOnly ? '🎤 ' : '🎛 ', style: const TextStyle(fontSize: 11)),
+              Text(s.vocalOnly ? '🎤 ' : (s.melodyOnly ? '🎹 ' : '🎛 '), style: const TextStyle(fontSize: 11)),
               Expanded(
                 child: Text(s.track.title, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
               ),
@@ -879,8 +881,20 @@ class SampleStrip extends StatelessWidget {
             children: [
               toggle('🎤 Vocal only', s.vocalOnly, 'Play just the singing (an acapella). First time splits stems.', () => onToggleVocal(s)),
               const SizedBox(width: 4),
+              toggle('🎹 Melody', s.melodyOnly,
+                  'Play just the instruments — no drums, bass or vocals (e.g. an orchestra over a dance beat). First time splits stems.',
+                  () => onToggleMelody(s)),
+              const SizedBox(width: 4),
               toggle('Sync', s.sync, 'Lock its beat to the mashup (songs with a beat)',
                   s.canSync ? () => onChange(s, () => s.sync = !s.sync) : null),
+              const SizedBox(width: 4),
+              toggle(s.keyMatch && s.keyShift != 0 ? 'Key ${s.keyShift > 0 ? '+' : ''}${s.keyShift}' : 'Key',
+                  s.keyMatch, 'Shift it into the key of the mashup',
+                  s.canKeyMatch ? () => onChange(s, () => s.keyMatch = !s.keyMatch) : null),
+            ],
+          ),
+          Row(
+            children: [
               Expanded(
                 child: SliderTheme(
                   data: SliderThemeData(trackHeight: 2, overlayShape: SliderComponentShape.noOverlay,

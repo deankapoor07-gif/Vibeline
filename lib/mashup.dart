@@ -173,11 +173,31 @@ class SamplePlacement {
   double db = 0; // your volume on top of the automatic level
   double fade = 2.0; // seconds of fade in and out
   bool vocalOnly = false; // play just the singing (acapella)
+  bool melodyOnly = false; // play just the instruments: no drums, bass or vocals
+  bool keyMatch = true; // shift it into the mashup's key
   bool sync; // lock its beat to the mashup's (songs with a beat)
 
   SamplePlacement(this.track, this.anchor, {this.bar = 0, this.bars = 16}) : sync = track.analysis != null;
 
   bool get canSync => track.analysis != null;
+  bool get canKeyMatch => (track.analysis?.camelot ?? '').isNotEmpty;
+
+  /// Semitones that put it in the key of the beat it plays over (0 if off).
+  int get keyShift {
+    final from = track.analysis?.camelot ?? '';
+    if (!keyMatch || from.isEmpty) return 0;
+    final to = shiftCamelot(anchor.beatGrid.camelot, anchor.beatShift);
+    var best = 0;
+    var score = -1e9;
+    for (var k = -5; k <= 6; k++) {
+      final c = keyCompat(to, shiftCamelot(from, k)) - 0.03 * k.abs();
+      if (c > score) {
+        score = c;
+        best = k;
+      }
+    }
+    return best;
+  }
 
   /// Automatic level: sits under the music (about −20 dB average).
   double get autoDb {
@@ -1299,34 +1319,51 @@ class MashupMaker {
 
   Map<String, dynamic>? _sampleClip(SamplePlacement s, int index) {
     final t = s.track;
-    final path = s.vocalOnly ? t.stems?.paths['vocals'] : t.path;
+    final stem = s.vocalOnly ? 'vocals' : (s.melodyOnly ? 'other' : null);
+    final path = stem != null ? t.stems?.paths[stem] : t.path;
     if (path == null) return null;
     final startBeat = s.bar * 4, beats = s.bars * 4;
-    final t0 = _beatAt(s.anchor, startBeat), t1 = _beatAt(s.anchor, startBeat + beats);
-    final cents = Tuning.toReference(s.vocalOnly ? (t.stems?.tuning['vocals'] ?? t.tuningHz) : (t.tuningHz ?? t.analysis?.tuning));
+    final t0 = _beatAt(s.anchor, startBeat);
+    var t1 = _beatAt(s.anchor, startBeat + beats);
+    final cents = Tuning.toReference(stem != null ? (t.stems?.tuning[stem] ?? t.tuningHz) : (t.tuningHz ?? t.analysis?.tuning)) +
+        100.0 * s.keyShift;
     final gain = s.autoDb + s.db + (s.vocalOnly ? 4 : 0); // a vocal alone measures quieter
-    final f = math.min(s.fade, (t1 - t0) / 3);
-    final keys = [
-      Keyframe(t0, gain: f > 0 ? 0 : 1),
-      Keyframe(t0 + f),
-      Keyframe(t1 - f),
-      Keyframe(t1, gain: 0),
-    ];
+    List<Keyframe> keysTo(double end) {
+      final f = math.min(s.fade, (end - t0) / 3);
+      return [
+        Keyframe(t0, gain: f > 0 ? 0 : 1),
+        Keyframe(t0 + f),
+        Keyframe(end - f),
+        Keyframe(end, gain: 0),
+      ];
+    }
+
     final a = t.analysis;
     if (s.sync && a != null) {
       // Lock its beats to the mashup's beats, from its first downbeat.
       final g = MashupMaker.fitTo(a, s.anchor.tempo * s.anchor.tempoScale, 0.25);
       if (g != null) {
         final first = g.beatIndexOfBar(g.firstBar);
-        final warp = <List<double>>[
-          for (var n = 0; n <= beats && first + n < g.beats.length; n++) [_beatAt(s.anchor, startBeat + n), g.smoothBeat(first + n)]
-        ];
+        final warp = <List<double>>[];
+        for (var n = 0; n <= beats && first + n < g.beats.length; n++) {
+          final w = [_beatAt(s.anchor, startBeat + n), g.smoothBeat(first + n)];
+          // Live players (an orchestra) can speed up a lot, e.g. for a finale:
+          // stop before a stretch that would sound warped.
+          if (warp.length >= 4) {
+            final speed = (w[1] - warp.last[1]) / (w[0] - warp.last[0]);
+            final usual = (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]);
+            if ((speed / usual - 1).abs() > 0.2) break;
+          }
+          warp.add(w);
+        }
         if (warp.length >= 2) {
-          return _clip(path, math.max(0, warp.first[1]), warp.last[1] + 0.05, warp.first[0], 1.0, cents, 0, 0.25, keys,
+          t1 = math.min(t1, warp.last[0]);
+          return _clip(path, math.max(0, warp.first[1]), warp.last[1] + 0.05, warp.first[0], 1.0, cents, 0, 0.25, keysTo(t1),
               gainDb: gain, warp: warp);
         }
       }
     }
+    final keys = keysTo(t1);
     // Free-running (ambient sounds, or sync off): plays at its own speed.
     final len = math.min(t.duration > 0 ? t.duration : 600.0, t1 - t0);
     return _clip(path, 0, len, t0, 1.0, cents, 0, 0.25, keys.map((k) => k.t > t0 + len ? Keyframe(t0 + len, gain: 0) : k).toList(),

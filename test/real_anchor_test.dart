@@ -40,6 +40,19 @@ void main() {
     await session.fill(lib, int.tryParse(Platform.environment['VIBELINE_COUNT'] ?? '') ?? (appLike ? maker.mashupCount : 4), (s) {}, () {});
     final a = session.anchor!;
     print('ANCHOR: ${a.track.artist} – ${a.track.title} · ${a.tempo.toStringAsFixed(1)} BPM · key ${a.camelot} · loop from bar ${a.loopStart} · gain ${a.gainDb.toStringAsFixed(1)} dB · bass ${a.track.stems?.relative('bass')?.toStringAsFixed(1)} drums ${a.track.stems?.relative('drums')?.toStringAsFixed(1)}');
+    // VIBELINE_SAMPLE=<title words> puts that song on mashup 1's sample lane
+    // (VIBELINE_SAMPLE_MELODY=1: instruments only).
+    final sampleWant = Platform.environment['VIBELINE_SAMPLE']?.toLowerCase();
+    if (sampleWant != null) {
+      final t = lib.tracks.firstWhere((t) => t.title.toLowerCase().contains(sampleWant));
+      final sp = await session.addSample(0, t, lib);
+      if (Platform.environment['VIBELINE_SAMPLE_MELODY'] == '1') {
+        await lib.separate([t], (d, n, c) {});
+        sp.melodyOnly = true;
+      }
+      sp.bars = 32;
+      print('SAMPLE ${t.title} · ${t.analysis?.camelot} → beat key ${session.mashups[0].beatGrid.camelot} +${session.mashups[0].beatShift} st · shift ${sp.keyShift} st · melody ${sp.melodyOnly}');
+    }
     final plan = session.layout();
     if (Platform.environment['VIBELINE_INTRO_CHECK'] == '1') {
       String intro(MashupSetPlan pl) => jsonEncode([
