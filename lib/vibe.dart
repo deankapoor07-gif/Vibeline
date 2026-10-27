@@ -21,7 +21,7 @@ class VibeProfile {
   // A theme night: only songs that fit are used (see [fits]). Genres you name
   // outright, a decade, or one of [_themes].
   final Set<String> themeGenres = {};
-  String? theme; // 'punk', 'rocknroll', 'halloween'
+  String? theme; // 'punk', 'rocknroll', 'halloween', or a key of [cultureThemes]
   bool strictEra = false;
   String? genreText; // a theme typed that isn't one of the above: matched against genre tags ("soundtrack", "k-pop")
   bool lengthSet = false; // the prompt said how long ("1 hour", "20 songs")
@@ -57,6 +57,8 @@ class VibeProfile {
         if (!classic && !era) return false;
       case 'halloween':
         if (!isSpooky(title, a)) return false;
+      case final String k when cultureThemes.containsKey(k):
+        if (!cultureThemes[k]!.fits(t)) return false;
     }
     if (themeGenres.isNotEmpty && !themeGenres.contains(genreFamily(t.genre))) return false;
     if (genreText != null && !g.contains(genreText!) && !a.contains(genreText!)) return false;
@@ -70,6 +72,65 @@ class VibeProfile {
     return mashups ? n / 2 * 2.1 : n * 2.3;
   }
 }
+
+/// Music from a country or culture: by artist (files don't say where a
+/// singer is from) or by a genre tag that does.
+class CultureTheme {
+  final String name;
+  final List<String> words; // what you'd type
+  final RegExp? genre;
+  final List<String> artists;
+  const CultureTheme(this.name, this.words, this.genre, this.artists);
+
+  bool fits(LibraryTrack t) {
+    if (genre != null && genre!.hasMatch(t.genre.toLowerCase())) return true;
+    final a = t.artist.toLowerCase();
+    // Whole names only: "zed" isn't Zedd, "kings" isn't Kings of Leon.
+    return artists.any((x) => RegExp('(?<![a-z0-9])${RegExp.escape(x)}(?![a-z0-9])').hasMatch(a));
+  }
+}
+
+final cultureThemes = {
+  'kiwi': CultureTheme('Kiwi', ['kiwi', 'kiwis', 'new zealand', 'nz', 'aotearoa', 'kiwiana'], null, [
+    'crowded house', 'neil finn', 'tim finn', 'split enz', 'drax project', 'sons of zion', 'nesian mystik',
+    'dave dobbyn', 'dragon', 'stan walker', 'six60', 'lorde', 'benee', 'brooke fraser', 'herbs', 'katchafire',
+    'foley', 'bic runga', 'kimbra', "fat freddy's drop", 'gin wigmore', 'tiki taane', 'che fu', 'prince tui teka',
+    'the exponents', 'hollie smith', 'marlon williams', 'broods', 'the naked and famous', 'shihad', 'opshop',
+    'supergroove', 'dei hamo', 'scribe', 'aaradhna', 'j williams', 'mitch james', 'jordan rakei', 'alien weaponry',
+    'omc', 'stellar', 'elemeno p', 'goldenhorse', 'the mutton birds', 'hayley westenra', 'kiri te kanawa',
+    'avalanche city', 'house of shem', 'tomorrow people', 'l.a.b', 'lab', 'lomez', 'corrella', 'teeks',
+    'jamie mcdell', 'ria hall', 'rob ruha', 'annah mac', 'the feelers', 'mi-sex', "th' dudes", 'tami neilson',
+    'smashproof', 'david dallas', 'p-money', 'ladi6', 'bailey wiley', 'montell2099', 'the beths', 'yumi zouma',
+    'salmonella dub', 'trinity roots', 'shapeshifter', 'ladyhawke', 'concord dawn', 'upper hutt posse',
+    'the chills', 'the clean', 'jon toogood', 'chelsea jade', 'the black seeds', 'kora', 'savage & aaradhna',
+  ]),
+  'pacific': CultureTheme('Pacific', ['pacific', 'polynesian', 'pasifika', 'islander', 'islanders', 'samoan', 'tongan', 'hawaiian', 'fijian'],
+      null, [
+    'sons of zion', 'common kings', 'katchafire', 'te vaka', 'lomez', 'corrella', 'tomorrow people', 'l.a.b',
+    'house of shem', 'j boog', 'spawnbreezie', 'rebel souljahz', 'kolohe kai', "israel kamakawiwo'ole",
+    'jawsh 685', 'three houses down', 'nesian mystik', 'aaradhna', 'fiji', 'stan walker', 'jamestown story',
+  ]),
+  'reggae': CultureTheme('Reggae', ['reggae', 'dancehall', 'caribbean', 'jamaican', 'jamaica', 'ska', 'roots'],
+      RegExp(r'reggae|dancehall|\bska\b|\bdub\b'), [
+    'bob marley', 'ub40', 'jimmy cliff', 'peter tosh', 'toots', 'shaggy', 'sean paul', 'damian marley',
+    'ziggy marley', 'inner circle', 'chronixx', 'koffee', 'beenie man', 'buju banton', 'popcaan', 'burning spear',
+    'steel pulse', 'third world', 'maxi priest', 'katchafire', 'the black seeds', 'j boog', 'protoje',
+  ]),
+  'latin': CultureTheme('Latin', ['latin', 'latino', 'latina', 'reggaeton', 'spanish', 'salsa', 'bachata', 'cumbia'],
+      RegExp(r'latin|urbano|reggaeton|spanish|salsa|bachata|cumbia'), [
+    'shakira', 'j balvin', 'bad bunny', 'daddy yankee', 'luis fonsi', 'enrique iglesias', 'ricky martin', 'maluma',
+    'ozuna', 'karol g', 'rosalía', 'rosalia', 'becky g', 'becky g.', 'nicky jam', 'marc anthony', 'gloria estefan',
+    'pitbull', 'camila cabello', 'santana', 'juanes', 'don omar', 'romeo santos', 'prince royce', 'anitta',
+    'sebastián yatra', 'sebastian yatra', 'manu chao', 'los del rio', 'gipsy kings', 'selena', 'celia cruz',
+    'mc fioti', 'anuel aa', 'rauw alejandro', 'tainy', 'jennifer lopez', 'juan magán', 'farruko', 'sech',
+  ]),
+  'afrobeats': CultureTheme('Afrobeats', ['afrobeat', 'afrobeats', 'afro', 'african', 'amapiano', 'naija'],
+      RegExp(r'afro|african|amapiano'), [
+    'burna boy', 'wizkid', 'davido', 'tems', 'rema', 'ckay', 'fireboy dml', 'tiwa savage', 'yemi alade', 'mr eazi',
+    'tekno', 'kizz daniel', 'master kg', 'black coffee', 'sauti sol', 'diamond platnumz', 'fela kuti',
+    'angelique kidjo', 'asake', 'ayra starr', 'omah lay', 'joeboy', 'patoranking', 'tyla',
+  ]),
+};
 
 /// Spooky by its title (or a classic Halloween song).
 bool isSpooky(String title, String artist) {
@@ -198,6 +259,14 @@ VibeProfile parseVibe(String text) {
   } else if (has(['halloween', 'horror', 'spooky', 'scary', 'creepy', 'haunted', 'zombie', 'trick or treat', 'monster mash', 'fright night'])) {
     v.theme = 'halloween';
     v.description.add('Halloween');
+  } else {
+    for (final e in cultureThemes.entries) {
+      if (has(e.value.words)) {
+        v.theme = e.key;
+        v.description.add(e.value.name);
+        break;
+      }
+    }
   }
 
   // Genres. Named outright, they make a theme night (only those genres).
@@ -218,6 +287,9 @@ VibeProfile parseVibe(String text) {
   if (v.genres.isNotEmpty) v.description.add(v.genres.map(_familyName).join(' + '));
   v.themeGenres.addAll(named.where((g) => g != 'pop' || has(['pop'])));
   if (v.theme == 'punk') v.themeGenres.remove('rock'); // "punk rock": the punk list decides
+  // "reggae" / "latin" / "afrobeat" also name genre families; the theme's own
+  // artist list and tags decide (Shakira is tagged Pop).
+  if (cultureThemes.containsKey(v.theme)) v.themeGenres.removeAll(['reggae', 'latin']);
 
   // "country vocals over hip hop beats"
   final over = RegExp(r"([a-z&/ -]+?)\s+(?:vocals?|acapellas?|singing|singers?)\s+(?:over|on|with)\s+(?:a\s+|an\s+)?([a-z&/ -]+?)(?:\s+(?:beats?|instrumentals?|music|grooves?))?(?:$|[,.!])")

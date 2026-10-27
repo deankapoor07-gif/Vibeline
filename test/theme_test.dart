@@ -49,6 +49,24 @@ void main() {
     expect(fitThemeLength(parseTheme('chill', ''), 5), isNull); // not a theme night
   });
 
+  test('country and culture themes', () {
+    final dobbyn = t('Slice of Heaven', 'Dave Dobbyn', 'Pop', 1986);
+    final zedd = t('The Middle', 'Zedd, Maren Morris & Grey', 'Dance', 2018);
+    final leon = t('Use Somebody', 'Kings of Leon', 'Rock', 2008);
+    final marley = t('Three Little Birds', 'Bob Marley & The Wailers', 'Reggae', 1977);
+    final shakira = t("Hips Don't Lie", 'Shakira', 'Pop', 2005);
+    final burna = t('On the Low', 'Burna Boy', 'Afro-Pop', 2019);
+    final soz = t('Drift Away', 'Sons Of Zion', 'Pop', 2016);
+    final songs = [dobbyn, zedd, leon, marley, shakira, burna, soz, drake];
+    List<String> fit(String theme) => [for (final x in songs) if (parseTheme('', theme).fits(x)) x.title];
+    expect(fit('Kiwi'), ['Slice of Heaven', 'Drift Away']);
+    expect(fit('New Zealand'), ['Slice of Heaven', 'Drift Away']);
+    expect(fit('Pacific'), ['Drift Away']);
+    expect(fit('Reggae'), ['Three Little Birds']);
+    expect(fit('Latin'), ["Hips Don't Lie"]);
+    expect(fit('Afrobeats'), ['On the Low']);
+  });
+
   test('ordinary vibes are not theme nights', () {
     for (final p in ['Party, mix genres, my Shazams', 'chill sunset', 'top 40 hits', 'club bangers', 'throwback party']) {
       expect(parseVibe(p).themed, isFalse, reason: p);
@@ -62,10 +80,10 @@ void main() {
       for (final l in File(tags!).readAsLinesSync())
         if (l.trim().isNotEmpty && (jsonDecode(l) as Map)['type'] == 'tags') LibraryTrack.fromJson(jsonDecode(l) as Map<String, dynamic>)
     ];
-    for (final p in ['80s', 'punk', 'Rockin Roll', 'rap', 'rock', '80s rock', 'Halloween', 'horror night', '90s', 'country']) {
+    for (final p in ['80s', 'punk', 'Rockin Roll', 'rap', 'rock', '80s rock', 'Halloween', 'horror night', '90s', 'country', 'Kiwi', 'Pacific', 'Reggae', 'Latin', 'Afrobeats']) {
       final v = parseVibe(p);
       final fit = lib.where(v.fits).toList();
-      print('$p → ${fit.length} songs · mashups ~${v.minutesAvailable(lib, mashups: true).round()} min · blend ~${v.minutesAvailable(lib, mashups: false).round()} min${p.contains('allow') || p.contains('orror') ? ': ${fit.map((x) => x.title).join(' | ')}' : ''}');
+      print('$p → ${fit.length} songs · mashups ~${v.minutesAvailable(lib, mashups: true).round()} min · blend ~${v.minutesAvailable(lib, mashups: false).round()} min${p.contains('allow') || p.contains('orror') || p == 'Kiwi' || p == 'Pacific' || p == 'Afrobeats' ? ': ${fit.map((x) => x.title).join(' | ')}' : ''}');
     }
   }, skip: tags == null);
 }
