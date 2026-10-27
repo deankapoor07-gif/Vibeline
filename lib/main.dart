@@ -11,6 +11,7 @@ import 'mashup_widgets.dart';
 import 'mixer.dart';
 import 'models.dart';
 import 'planner.dart';
+import 'prompt_song.dart';
 import 'sections.dart';
 import 'tuning.dart';
 import 'vibe.dart';
@@ -191,8 +192,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       if (_phase == Phase.error) return;
       var prompt = _currentVibePrompt;
       if (seed == null) {
-        final found = _songFromPrompt(prompt);
-        if (found != null) (seed, prompt) = found;
+        final found = songFromPrompt(prompt, _library.tracks);
+        if (found != null && found.track == null) {
+          _set('Couldn\'t find "${found.query}" in your songs. Check the spelling, or find it in the Songs panel and press ✨.',
+              phase: Phase.error);
+          return;
+        }
+        if (found != null) (seed, prompt) = (found.track, found.rest);
       }
       if (seed != null && !_mashupMode) _setMode(true);
       _session?.cancelled = true;
@@ -244,41 +250,6 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   /// "mix Poison", "mix Poison by Bell Biv DeVoe, party": the song it names
   /// (title, optionally artist) and the rest of the prompt as the vibe.
-  (LibraryTrack, String)? _songFromPrompt(String prompt) {
-    final m = RegExp(r'^\s*(?:build (?:a )?mix around|mashup|mix)\s+(.+)$', caseSensitive: false).firstMatch(prompt);
-    if (m == null) return null;
-    String norm(String x) =>
-        x.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'[^a-z0-9 ]'), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-    final parts = m.group(1)!.split(',');
-    var query = norm(parts.first);
-    String? artist;
-    final by = RegExp(r'^(.+?) by (.+)$').firstMatch(query);
-    if (by != null) {
-      query = by.group(1)!.trim();
-      artist = by.group(2)!.trim();
-    }
-    if (query.length < 3) return null;
-    LibraryTrack? best;
-    var bestScore = 0.0;
-    for (final t in _library.tracks) {
-      final title = norm(t.title);
-      // Exact title, or the title starting with what you typed (or the other
-      // way round). A word merely appearing somewhere doesn't count, so
-      // "mix genres, …" stays a vibe.
-      var sc = title == query ? 3.0 : (title.startsWith(query) || query.startsWith(title) && title.length >= 3 ? 2.0 : 0.0);
-      if (sc == 0) continue;
-      if (artist != null) sc += norm(t.artist).contains(artist) ? 1.0 : -1.5;
-      if (t.analysis != null) sc += 0.2;
-      if (t.shazam) sc += 0.1;
-      if (sc > bestScore) {
-        bestScore = sc;
-        best = t;
-      }
-    }
-    if (best == null || bestScore < 2) return null;
-    return (best, parts.skip(1).join(',').trim());
-  }
-
   Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed}) async {
     final maker = MashupMaker(vibe);
     final count = maker.mashupCount;
