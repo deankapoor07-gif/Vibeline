@@ -32,6 +32,23 @@ void main() {
     expect(pick('Halloween'), ['Hells Bells', 'Ghostbusters (from "Ghostbusters")']);
   });
 
+  test('theme box: any genre tag, and 20+ minutes or what the songs allow', () {
+    final soundtrack = t('Ghostbusters', 'Ray Parker Jr.', 'Soundtrack', 1984);
+    final v = parseTheme('party', 'soundtrack');
+    expect(v.fits(soundtrack), isTrue);
+    expect(v.fits(drake), isFalse);
+    final big = parseTheme('party', '80s');
+    expect(fitThemeLength(big, 300), isNull);
+    expect(big.minutes, 20);
+    final asked = parseTheme('party, 1 hour', '80s');
+    expect(fitThemeLength(asked, 300), isNull);
+    expect(asked.minutes, 60);
+    final small = parseTheme('', 'punk');
+    expect(fitThemeLength(small, 11), contains('about 11 min'));
+    expect(small.minutes, 11);
+    expect(fitThemeLength(parseTheme('chill', ''), 5), isNull); // not a theme night
+  });
+
   test('ordinary vibes are not theme nights', () {
     for (final p in ['Party, mix genres, my Shazams', 'chill sunset', 'top 40 hits', 'club bangers', 'throwback party']) {
       expect(parseVibe(p).themed, isFalse, reason: p);
@@ -48,7 +65,7 @@ void main() {
     for (final p in ['80s', 'punk', 'Rockin Roll', 'rap', 'rock', '80s rock', 'Halloween', 'horror night', '90s', 'country']) {
       final v = parseVibe(p);
       final fit = lib.where(v.fits).toList();
-      print('$p → ${fit.length}${p.contains('allow') || p.contains('orror') ? ': ${fit.map((x) => x.title).join(' | ')}' : ''}');
+      print('$p → ${fit.length} songs · mashups ~${v.minutesAvailable(lib, mashups: true).round()} min · blend ~${v.minutesAvailable(lib, mashups: false).round()} min${p.contains('allow') || p.contains('orror') ? ': ${fit.map((x) => x.title).join(' | ')}' : ''}');
     }
   }, skip: tags == null);
 }

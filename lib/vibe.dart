@@ -23,6 +23,8 @@ class VibeProfile {
   final Set<String> themeGenres = {};
   String? theme; // 'punk', 'rocknroll', 'halloween'
   bool strictEra = false;
+  String? genreText; // a theme typed that isn't one of the above: matched against genre tags ("soundtrack", "k-pop")
+  bool lengthSet = false; // the prompt said how long ("1 hour", "20 songs")
   String? vocalFamily; // "country vocals over hip hop" -> country
   String? beatFamily; //                                 -> hiphop
   // Master "analog warmth" (tape saturation + vinyl crackle), set by the vibe.
@@ -38,7 +40,7 @@ class VibeProfile {
 
   String get summary => description.isEmpty ? 'All-rounder mix' : description.join(' · ');
 
-  bool get themed => themeGenres.isNotEmpty || theme != null || strictEra;
+  bool get themed => themeGenres.isNotEmpty || theme != null || strictEra || genreText != null;
 
   /// Whether a song belongs in this theme night (always true without one).
   bool fits(LibraryTrack t) {
@@ -57,17 +59,15 @@ class VibeProfile {
         if (!isSpooky(title, a)) return false;
     }
     if (themeGenres.isNotEmpty && !themeGenres.contains(genreFamily(t.genre))) return false;
+    if (genreText != null && !g.contains(genreText!) && !a.contains(genreText!)) return false;
     return true;
   }
 
-  /// Close enough to fill out a theme night that's short of songs: for
-  /// Halloween, dark-sounding (minor-key) songs.
-  bool nearlyFits(LibraryTrack t) {
-    if (theme == 'halloween') {
-      final c = t.analysis?.camelot ?? '';
-      return c.endsWith('A') && !t.genre.toLowerCase().contains('christmas');
-    }
-    return false;
+  /// Roughly how many minutes of mix the songs that fit can make: a mashup
+  /// (~2.1 min) uses two songs; a blend mix plays ~2.3 min of each.
+  double minutesAvailable(List<LibraryTrack> tracks, {required bool mashups}) {
+    final n = tracks.where((t) => fits(t) && t.duration >= 100).length;
+    return mashups ? n / 2 * 2.1 : n * 2.3;
   }
 }
 
@@ -278,6 +278,7 @@ VibeProfile parseVibe(String text) {
   if (has(['smooth', 'seamless', 'long blends', 'silky'])) v.smooth = true;
   if (has(['punchy', 'quick cuts', 'fast cuts', 'chop', 'hard'])) v.smooth = false;
   // Set length: "short", "long", "4 hours", "4hrs", "90 minutes", "20 songs".
+  final defaultMinutes = v.minutes;
   if (has(['short', 'quick set', 'quick mix'])) v.minutes = 7;
   if (has(['long', 'hour', 'marathon'])) v.minutes = 60;
   if (has(['all night', 'all-nighter'])) v.minutes = 240;
@@ -287,6 +288,7 @@ VibeProfile parseVibe(String text) {
   if (mins != null) v.minutes = double.parse(mins.group(1)!);
   final n = RegExp(r'\b(\d{1,3})\s*(?:songs|tracks|tunes|mashups)\b').firstMatch(t);
   if (n != null) v.minutes = int.parse(n.group(1)!) * 2.2;
+  v.lengthSet = v.minutes != defaultMinutes;
   v.minutes = v.minutes.clamp(4, 360);
   v.trackCount = (v.minutes / 2.3).round().clamp(2, 160);
   if (v.minutes >= 60) {
@@ -324,6 +326,35 @@ VibeProfile parseVibe(String text) {
 
   v.description.add(v.smooth ? 'Smooth blends' : 'Punchy cuts');
   return v;
+}
+
+/// The vibe box plus the theme box ("80s", "punk", "Halloween", or any genre
+/// tag in your library like "soundtrack").
+VibeProfile parseTheme(String vibe, String theme) {
+  final th = theme.trim();
+  final v = parseVibe(th.isEmpty ? vibe : '$vibe, $th');
+  if (th.isNotEmpty && !parseVibe(th).themed) {
+    v.genreText = th.toLowerCase();
+    v.description.insert(0, th);
+  }
+  return v;
+}
+
+/// Sets the length of a theme night: at least 20 minutes unless you asked
+/// for a length, but never more than the songs that fit can fill. Returns a
+/// note when the theme is short of songs.
+String? fitThemeLength(VibeProfile v, double available) {
+  if (!v.themed) return null;
+  if (!v.lengthSet) v.minutes = math.max(20, v.minutes);
+  String? note;
+  if (available < v.minutes) {
+    note = available < 4
+        ? 'Hardly any of your songs fit this theme — add some to your music folder.'
+        : 'Your library has about ${available.round()} min of music for this theme, so the mix is ${available.round()} min. Add more songs to make it longer.';
+    v.minutes = math.max(4, available);
+  }
+  v.trackCount = (v.minutes / 2.3).round().clamp(2, 160);
+  return note;
 }
 
 String _familyName(String f) => switch (f) {

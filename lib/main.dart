@@ -71,6 +71,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   late final SectionEngine _sections = SectionEngine(_mixer, () => _position)..onChanged = _sectionsChanged;
   final _scroll = ScrollController();
   late final TextEditingController _vibeController = TextEditingController(text: _currentVibePrompt);
+  final _themeController = TextEditingController(); // theme night: "80s", "punk", "Halloween"…
 
   String _currentVibePrompt = "Party, mix genres, my Shazams";
   Phase _phase = Phase.idle;
@@ -117,6 +118,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _ticker?.cancel();
     _relayout?.cancel();
     _vibeController.dispose();
+    _themeController.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -209,7 +211,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         _background = null;
       });
 
-      final vibe = parseVibe(prompt);
+      final vibe = parseTheme(prompt, _themeController.text);
       _vibe = vibe;
       final rng = math.Random();
       var pool = _library.tracks.toList();
@@ -217,24 +219,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         final mine = pool.where((t) => t.shazam).toList();
         if (mine.length >= 8) pool = mine;
       }
-      // A theme night ("80s", "punk", "Halloween"): only songs that fit, or if
-      // there aren't enough, those first and then the closest others.
-      _themeNote = null;
-      List<LibraryTrack>? themed;
-      if (vibe.themed) {
-        themed = pool.where(vibe.fits).toList();
-        final enough = _mashupMode ? 16 : math.max(8, vibe.trackCount);
-        if (themed.length < enough) {
-          final near = pool.where((t) => !vibe.fits(t) && vibe.nearlyFits(t)).length;
-          _themeNote = themed.isEmpty
-              ? 'None of your songs fit "${vibe.summary}" — add some to your music folder for this theme.'
-              : 'Only ${themed.length} of your songs fit the theme${near > 0 ? ' — filled out with dark, minor-key songs' : ' — mixed in the closest others'}. Add more to your music folder for a full theme set.';
-        }
-      }
-      double score(LibraryTrack t) =>
-          tagScore(t, vibe, rng) + (themed == null ? 0 : (vibe.fits(t) ? 20 : (vibe.nearlyFits(t) ? 10 : 0)));
-      var ranked = pool.map((t) => (t, score(t))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
-      if (themed != null && _themeNote == null) ranked = ranked.where((e) => vibe.fits(e.$1)).toList();
+      // A theme night ("80s", "punk", "Halloween"): only songs that fit, at
+      // least 20 minutes, or as long as those songs allow (and say so).
+      _themeNote = fitThemeLength(vibe, vibe.minutesAvailable(pool, mashups: _mashupMode));
+      if (vibe.themed) pool = pool.where(vibe.fits).toList();
+      final ranked = pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
 
       if (_mashupMode) {
         await _makeMashups(vibe, ranked.map((e) => e.$1).toList(), seed: seed);
@@ -710,6 +699,16 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   Color get _accent => _mashupMode ? kMashupAccent : Colors.amber;
 
+  /// How much music your library has for the theme typed, as you type it.
+  String? get _themeHint {
+    final th = _themeController.text.trim();
+    if (th.isEmpty || _library.tracks.isEmpty) return null;
+    final v = parseTheme('', th);
+    final mins = v.minutesAvailable(_library.tracks, mashups: _mashupMode).round();
+    if (mins < 4) return 'Hardly any songs for this theme';
+    return mins >= 20 ? 'About $mins min of music · mix will be 20+ min' : 'Only about $mins min of music for this theme';
+  }
+
   String get _readiness {
     if (!_playable) return '';
     final ahead = _sections.readyAhead;
@@ -777,6 +776,31 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     },
                   ),
                 ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 230,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        controller: _themeController,
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.theater_comedy, size: 18),
+                          prefixIconConstraints: BoxConstraints(minWidth: 30),
+                          hintText: 'Theme (80s, punk, Halloween…)',
+                          border: InputBorder.none,
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setState(() {}),
+                        onSubmitted: (_) => _remix(),
+                      ),
+                      if (_themeHint != null)
+                        Text(_themeHint!, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _mashupMode ? Colors.purpleAccent : Colors.amber.shade700,
