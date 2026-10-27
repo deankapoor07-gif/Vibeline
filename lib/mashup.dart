@@ -189,7 +189,8 @@ class SamplePlacement {
     final to = shiftCamelot(anchor.beatGrid.camelot, anchor.beatShift);
     var best = 0;
     var score = -1e9;
-    for (var k = -5; k <= 6; k++) {
+    // An acapella keeps to what a voice can take; instruments can go further.
+    for (final k in vocalOnly ? MashupMaker.vocalShifts : [for (var k = -5; k <= 6; k++) k]) {
       final c = keyCompat(to, shiftCamelot(from, k)) - 0.03 * k.abs();
       if (c > score) {
         score = c;
@@ -294,6 +295,32 @@ class MashupMaker {
     return a.scaled(best);
   }
 
+  /// Key shifts a singer takes without sounding like a chipmunk (too far up)
+  /// or a slowed-down tape (too far down): one semitone up, two down at most.
+  static const vocalShifts = [0, -1, 1, -2];
+
+  /// A vocal scaled to [tempo], or null if it would have to be sped up more
+  /// than 7% (rushed and squeaky) or slowed down more than 12%.
+  static Analysis? fitVocal(Analysis a, double tempo) {
+    final g = fitTo(a, tempo, 0.12);
+    if (g == null || tempo / g.steadyBpm - 1 > 0.07) return null;
+    return g;
+  }
+
+  /// The shift (from [vocalShifts]) that best puts a vocal in key [from]
+  /// into key [to], and how well it then fits. Going up costs a little extra.
+  static (int, double) vocalKey(String to, String from) {
+    var shift = 0, best = -1.0;
+    for (final s in vocalShifts) {
+      final c = keyCompat(to, shiftCamelot(from, s)) - 0.07 * s.abs() - (s > 0 ? 0.03 : 0);
+      if (c > best) {
+        best = c;
+        shift = s;
+      }
+    }
+    return (shift, best);
+  }
+
   /// A beat plays at its own tempo, counted in the range that suits the vibe.
   Analysis _natural(Analysis a) => fitTo(a, vibe.targetBpm, 10)!;
 
@@ -328,18 +355,11 @@ class MashupMaker {
       bScore -= 1.5 * (math.log(tb / vibe.targetBpm)).abs();
       for (final v in vocals) {
         if (identical(v, b) || v.artist.toLowerCase() == b.artist.toLowerCase()) continue;
-        final vg = fitTo(v.analysis!, tb, 0.14);
+        // A vocal that would have to go squeaky to fit: find another pairing.
+        final vg = fitVocal(v.analysis!, tb);
         if (vg == null) continue;
         if (v.stems != null && v.stems!.vocalShare < 0.08) continue; // no real vocal
-        // Key: shift the vocal up to 3 semitones to sit on the beat.
-        var shift = 0, compat = -1.0;
-        for (final s in const [0, 1, -1, 2, -2, 3, -3]) {
-          final c = keyCompat(bg.camelot, shiftCamelot(vg.camelot, s)) - 0.07 * s.abs();
-          if (c > compat) {
-            compat = c;
-            shift = s;
-          }
-        }
+        final (shift, compat) = vocalKey(bg.camelot, vg.camelot);
         if (compat < 0.6) continue;
         final stretch = (tb / vg.steadyBpm - 1).abs();
         var s = 1.5 * compat - 4.0 * stretch + bScore;
@@ -409,14 +429,7 @@ class MashupMaker {
     final bg = nearTempo != null ? fitTo(ba, nearTempo, 10)! : _natural(ba);
     final vg = fitTo(va, bg.steadyBpm, 0.25);
     if (vg == null) return null;
-    var shift = 0, best = -1.0;
-    for (final s in const [0, 1, -1, 2, -2, 3, -3]) {
-      final c = keyCompat(bg.camelot, shiftCamelot(vg.camelot, s)) - 0.07 * s.abs();
-      if (c > best) {
-        best = c;
-        shift = s;
-      }
-    }
+    final (shift, _) = vocalKey(bg.camelot, vg.camelot);
     final key = keyCompat(bg.camelot, shiftCamelot(vg.camelot, shift));
     return (shift: shift, key: key, stretch: bg.steadyBpm / vg.steadyBpm - 1, vGrid: vg, bGrid: bg);
   }
@@ -447,16 +460,9 @@ class MashupMaker {
   Mashup? swapped(Mashup m) {
     if (m.beatOnly || m.beat.stems == null || m.vocal.stems == null) return null;
     final bg = _natural(m.vocal.analysis!);
-    final vg = fitTo(m.beat.analysis!, bg.steadyBpm, 0.16);
+    final vg = fitVocal(m.beat.analysis!, bg.steadyBpm);
     if (vg == null) return null;
-    var shift = 0, compat = -1.0;
-    for (final s in const [0, 1, -1, 2, -2, 3, -3]) {
-      final c = keyCompat(bg.camelot, shiftCamelot(vg.camelot, s)) - 0.07 * s.abs();
-      if (c > compat) {
-        compat = c;
-        shift = s;
-      }
-    }
+    final (shift, _) = vocalKey(bg.camelot, vg.camelot);
     return build(_Pair(m.beat, m.vocal, vg, bg, shift, 0));
   }
 
@@ -945,7 +951,7 @@ class MashupMaker {
   _Pair? anchored(_Pair p, AnchorBeat anchor) {
     final t = anchor.tempo;
     final bg = fitTo(p.beat.analysis!, t, 0.08);
-    final vg = fitTo(p.vocal.analysis!, t, 0.14);
+    final vg = fitVocal(p.vocal.analysis!, t);
     if (bg == null || vg == null) return null;
     int? bestShift(String key, List<int> shifts, double perStep) {
       int? best;
@@ -961,7 +967,7 @@ class MashupMaker {
     }
 
     final bs = bestShift(bg.camelot, const [0, 1, -1, 2, -2], 0.08);
-    final vs = bestShift(vg.camelot, const [0, 1, -1, 2, -2, 3, -3], 0.07);
+    final vs = bestShift(vg.camelot, vocalShifts, 0.07);
     if (bs == null || vs == null) return null;
     final stretch = (t / bg.steadyBpm - 1).abs() + 0.5 * (t / vg.steadyBpm - 1).abs();
     // Loose live drumming (beats far off any steady grid) makes a vocal
@@ -983,10 +989,10 @@ class MashupMaker {
       return b;
     }
     final vg = fitTo(m.vocal.analysis!, t, 1) ?? m.vocalGrid;
-    int shift(String key, int range) {
+    int shift(String key, List<int> range) {
       var best = 0;
       var score = -1.0;
-      for (var s = -range; s <= range; s++) {
+      for (final s in range) {
         final c = keyCompat(anchor.camelot, shiftCamelot(key, s)) - 0.07 * s.abs();
         if (c > score) {
           score = c;
@@ -996,7 +1002,7 @@ class MashupMaker {
       return best;
     }
 
-    final n = build(_Pair(m.vocal, m.beat, vg, bg, shift(vg.camelot, 3), 0, shift(bg.camelot, 2)));
+    final n = build(_Pair(m.vocal, m.beat, vg, bg, shift(vg.camelot, vocalShifts), 0, shift(bg.camelot, const [-2, -1, 0, 1, 2])));
     if (n == null) return m;
     n
       ..vocalDb = m.vocalDb

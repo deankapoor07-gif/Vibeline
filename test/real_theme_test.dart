@@ -36,7 +36,7 @@ void main() {
     await session.fill(lib, maker.mashupCount, (s) => statuses.add(s), () {});
     print('wanted ${maker.mashupCount}, made ${session.mashups.length}');
     for (final m in session.mashups) {
-      print('  ${m.vocal.title} OVER ${m.beat.title} · ${m.tempo.toStringAsFixed(0)} bpm');
+      print('  ${m.vocal.title} OVER ${m.beat.title} · ${m.tempo.toStringAsFixed(0)} bpm · voice speed ${((m.vocalSpeed - 1) * 100).toStringAsFixed(1)}% · key ${m.vocalShift} · pitch ${(m.vocalCents / 100).toStringAsFixed(2)} semitones');
     }
     print('last statuses: ${statuses.reversed.take(5).toList().reversed.join(' / ')}');
     final out = Platform.environment['VIBELINE_PLAN_OUT'];
