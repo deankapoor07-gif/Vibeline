@@ -25,6 +25,7 @@ class VibeProfile {
   bool strictEra = false;
   String? genreText; // a theme typed that isn't one of the above: matched against genre tags ("soundtrack", "k-pop")
   bool lengthSet = false; // the prompt said how long ("1 hour", "20 songs")
+  bool bpmSet = false; // the prompt named a tempo ("100 bpm")
   String? vocalFamily; // "country vocals over hip hop" -> country
   String? beatFamily; //                                 -> hiphop
   // Master "analog warmth" (tape saturation + vinyl crackle), set by the vibe.
@@ -369,7 +370,10 @@ VibeProfile parseVibe(String text) {
   }
 
   final bpm = RegExp(r'\b(\d{2,3})\s*bpm\b').firstMatch(t);
-  if (bpm != null) v.targetBpm = int.parse(bpm.group(1)!).toDouble().clamp(70, 180);
+  if (bpm != null) {
+    v.targetBpm = int.parse(bpm.group(1)!).toDouble().clamp(70, 180);
+    v.bpmSet = true;
+  }
 
   // Warmth character per vibe (Dean's profiles). Drive is applied at half
   // strength above clean, since the mix already runs close to full scale.
@@ -427,6 +431,30 @@ String? fitThemeLength(VibeProfile v, double available) {
   }
   v.trackCount = (v.minutes / 2.3).round().clamp(2, 160);
   return note;
+}
+
+/// A theme night plays at the tempo most of its songs sit at, not the
+/// preset for "party" (122 BPM would leave out most Kiwi songs, which sit
+/// around 80–100). Songs count at half or double time too. Call once the
+/// pool is analysed.
+void fitThemeTempo(VibeProfile v, List<LibraryTrack> pool) {
+  if (!v.themed || v.bpmSet) return;
+  final bpms = [for (final t in pool) if (t.analysis != null) t.analysis!.steadyBpm];
+  if (bpms.length < 4) return;
+  var best = v.targetBpm, bestScore = -1e9;
+  for (var t = 76.0; t <= 136; t += 1) {
+    var n = 0.0;
+    for (final b in bpms) {
+      final off = [0.5, 1.0, 2.0].map((f) => (math.log(t / (b * f))).abs()).reduce(math.min);
+      if (off < 0.06) n += 1 - off / 0.06; // closer counts for more (less stretching)
+    }
+    n -= (math.log(t / v.targetBpm)).abs(); // ties: stay near the vibe's tempo
+    if (n > bestScore) {
+      bestScore = n;
+      best = t;
+    }
+  }
+  v.targetBpm = best;
 }
 
 String _familyName(String f) => switch (f) {

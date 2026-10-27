@@ -21,6 +21,20 @@ class LibraryTrack {
   List<double> waveform = const [];
   bool analysisTried = false;
 
+  /// How much of source time [from]–[to] is sung (0..1), from the stems'
+  /// per-beat vocal levels; null until the song has been split.
+  double? vocalsBetweenSrc(double from, double to) {
+    final v = stems?.vocalBeats, beats = analysis?.beats;
+    if (v == null || v.isEmpty || beats == null || beats.isEmpty) return null;
+    var n = 0, sung = 0;
+    for (var i = 0; i < beats.length && i < v.length; i++) {
+      if (beats[i] < from || beats[i] >= to) continue;
+      n++;
+      if (v[i] > 0.3) sung++;
+    }
+    return n == 0 ? 0 : sung / n;
+  }
+
   LibraryTrack({
     required this.path,
     required this.title,
@@ -449,6 +463,10 @@ class PlannedTrack {
 
   /// Song position -> mix time.
   double mixAt(double srcTime) => outStart + (srcTime - srcStart) / rate;
+
+  /// How much of mix time [from]–[to] this song is singing (0..1), or null
+  /// when its stems (and so its vocals) aren't known yet.
+  double? vocalsBetween(double from, double to) => track.vocalsBetweenSrc(srcAt(from), srcAt(to));
 
   Map<String, dynamic> toJson() => {
         'path': track.path,

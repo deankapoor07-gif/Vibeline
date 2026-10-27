@@ -78,6 +78,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   String _status = 'Starting up…';
   String? _background; // long-set preparation running behind the scenes
   String? _themeNote; // a theme night that's short of songs
+  bool _preparing = false; // more mashups still being made behind the scenes
   double? _progress;
   bool _scanned = false;
   bool _mashupMode = true;
@@ -102,6 +103,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   double _position = 0;
   bool _playing = false;
   bool _waiting = false;
+  bool _heldAtEnd = false; // reached the end while the next mashup is still being made
   int _currentIndex = -1;
   Timer? _ticker;
   Timer? _relayout;
@@ -237,38 +239,51 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   Future<void> _makeBlendMix(VibeProfile vibe, List<LibraryTrack> ranked) async {
     final batch = math.max(48, vibe.trackCount * 5);
+    final seed = DateTime.now().millisecondsSinceEpoch; // same seed: same songs when planned again below
     MixPlan? plan;
+    var wanted = <LibraryTrack>[];
     for (var round = 0; round < 3; round++) {
-      final wanted = ranked.take(batch * (round + 1)).toList();
+      wanted = ranked.take(batch * (round + 1)).toList();
       await _library.analyze(wanted, (done, total) {
         _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
       });
       _set('Planning the set…');
-      plan = MixPlanner(vibe).plan(wanted);
+      fitThemeTempo(vibe, wanted);
+      plan = MixPlanner(vibe, seed: seed).plan(wanted);
       if (plan != null && plan.tracks.length >= math.min(vibe.trackCount, 4)) break;
     }
     if (plan == null) {
       _set('Couldn\'t find enough songs that mix together for that vibe. Try a broader vibe.', phase: Phase.error);
       return;
     }
+    // Where each chosen song sings, so no blend has two vocals at once: split
+    // them (first time only) and plan again with that known.
+    final chosen = plan.tracks.map((t) => t.track).toList();
+    if (chosen.any((t) => t.stems == null)) {
+      await _library.separate(chosen, (done, total, c) {
+        _set('Finding where the singing is · ${c?.title ?? ''} · $done / $total (first time only, about 20 s a song)',
+            progress: total == 0 ? null : done / total);
+      });
+      plan = MixPlanner(vibe, seed: seed).plan(wanted) ?? plan;
+    }
     setState(() => _plan = plan);
     await _publish(plan.toRenderJson(), plan.cuts, plan.duration, plan.summary, autoplay: true);
   }
 
-  /// "mix Poison", "mix Poison by Bell Biv DeVoe, party": the song it names
-  /// (title, optionally artist) and the rest of the prompt as the vibe.
-  Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed}) async {
+  Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed, bool anchor = true}) async {
     final maker = MashupMaker(vibe);
     final count = maker.mashupCount;
+    final anchorOn = _anchorOn && anchor;
     // Long sets need a bigger pool of songs to draw from. Anchor mode needs
     // more again: every beat has to fit the anchor's tempo and key (80 songs
     // left 2–3 mashups for a 5-mashup set).
-    final pool = ranked.take(_anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)).toList();
+    final pool = ranked.take(anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)).toList();
     await _library.analyze(pool, (done, total) {
       _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
     });
+    fitThemeTempo(vibe, pool);
     _set('Pairing vocals with beats…');
-    final session = MashupSession.start(maker, pool)..anchorMode = _anchorOn;
+    final session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
     setState(() {
       _session = session;
       _mashPlan = null;
@@ -300,8 +315,24 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         _scheduleRelayout();
       }
     });
-    await filling;
+    _preparing = true;
+    try {
+      await filling;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _preparing = false;
+          _heldAtEnd = false;
+        });
+      }
+    }
     if (session.cancelled) return;
+    // A theme night rarely has enough songs near one tempo for the anchor
+    // beat (Kiwi: 3 of 10 with it, 9 of 10 without). Make it without.
+    if (session.anchorMode && vibe.themed && session.mashups.length < count * 0.6) {
+      _themeNote = 'Anchor beat needs more songs at one tempo than this theme has, so this set is made without it.';
+      return _makeMashups(vibe, ranked, seed: seed, anchor: false);
+    }
     if (session.mashups.isEmpty) {
       _set('Couldn\'t find vocals and beats that fit together for that vibe. Try a broader vibe.', phase: Phase.error);
       return;
@@ -334,6 +365,12 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     });
     await _publish(plan.renderJson, plan.cuts, plan.duration, plan.summary,
         autoplay: autoplay, remap: autoplay ? null : _remapAround(p, before, beforeByIndex, plan.mashups));
+    // Held at the end waiting for this mashup: carry on.
+    if (_heldAtEnd && plan.duration > p + 1) {
+      _heldAtEnd = false;
+      await _mixer.play(from: p);
+      if (mounted) setState(() => _playing = true);
+    }
   }
 
   /// Old→new mix-time pairs around the playhead, or null if nothing under it moved.
@@ -607,6 +644,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         _playing = playing;
         _waiting = waiting;
       });
+      // The end of what's ready: wait there for the next mashup (and carry on
+      // from the same spot), or stop if the set is finished. Never run on
+      // into silence.
+      if (playing && _duration > 0 && pos >= _duration - 0.05) {
+        await _mixer.pause();
+        if (!mounted) return;
+        setState(() {
+          _playing = false;
+          _position = _duration;
+          _heldAtEnd = _mashupMode && _preparing;
+        });
+      }
       if (idx != _currentIndex) {
         setState(() => _currentIndex = idx);
         _scrollTo(idx);
@@ -654,7 +703,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       if (mounted) setState(() => _playing = false);
     } else {
       // Always pass the last known mix time so native resume can't start at 0 / empty.
-      final from = _position;
+      // At the end of a finished set, play starts it again.
+      final from = _duration > 0 && _position >= _duration - 0.1 && !_heldAtEnd ? 0.0 : _position;
       await _mixer.play(from: from);
       if (mounted) setState(() => _playing = true);
     }
@@ -937,11 +987,12 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     style: const TextStyle(color: Colors.white70, fontFeatures: [FontFeature.tabularFigures()]),
                   ),
                 ),
-                if (_waiting)
-                  const Row(children: [
-                    SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                    SizedBox(width: 8),
-                    Text('Mixing this part…', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                if (_waiting || _heldAtEnd)
+                  Row(children: [
+                    const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                    const SizedBox(width: 8),
+                    Text(_heldAtEnd ? 'Making the next mashup…' : 'Mixing this part…',
+                        style: const TextStyle(color: Colors.white54, fontSize: 12)),
                   ]),
                 const Spacer(),
                 Tooltip(
@@ -988,8 +1039,12 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             child: SizedBox(
               width: 200,
               child: Column(children: [
-                const CircularProgressIndicator(color: kMashupAccent),
-                const SizedBox(height: 12),
+                // Only while still working: a finished "ran out of pairings"
+                // note mustn't look like it's stuck loading.
+                if (_preparing) ...[
+                  const CircularProgressIndicator(color: kMashupAccent),
+                  const SizedBox(height: 12),
+                ],
                 Text(_background ?? '', textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, color: Colors.white54)),
               ]),
             ),

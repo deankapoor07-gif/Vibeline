@@ -185,22 +185,101 @@ class MixPlanner {
     return s / (b - a);
   }
 
-  /// Where to start mixing out of a song: a phrase boundary just after a big
-  /// section (chorus) ends, roughly [target] bars after it came in.
-  int _mixOutBar(Analysis g, int earliest, int latest, int target, int blend) {
-    if (latest <= earliest) return math.max(g.firstBar, latest);
-    var best = latest, bestScore = -1e9;
-    for (var m = earliest; m <= latest; m++) {
-      if ((m - g.firstBar) % 8 != 0) continue;
-      final before = _meanEnergy(g, m - 8, m);
-      final after = _meanEnergy(g, m, m + blend);
-      final s = 0.5 * before + (before - after) - (m - target).abs() / 32;
-      if (s > bestScore) {
-        bestScore = s;
-        best = m;
+  /// Source time of the start of [bar] (clamped to the song).
+  double _barTime(Analysis g, int bar) => g.beats[g.beatIndexOfBar(bar).clamp(0, g.beats.length - 1)];
+
+  /// How much of bars [from]–[to] are sung (0..1); null until the song's
+  /// stems are known.
+  double? _sung(LibraryTrack t, Analysis g, int from, int to) =>
+      t.vocalsBetweenSrc(_barTime(g, from), _barTime(g, to));
+
+  /// Bars a song is singing in (null when its stems aren't known yet).
+  final _sungCache = <LibraryTrack, List<bool>?>{};
+  List<bool>? _sungBars(LibraryTrack t, Analysis g) => _sungCache.putIfAbsent(t, () {
+        if (t.stems == null) return null;
+        return [for (var b = 0; b < g.barCount; b++) (_sung(t, g, b, b + 1) ?? 0) > 0.5];
+      });
+
+  /// How badly A (from bar [m]) and B (from bar [inB]) sing over each other
+  /// in a [blend]-bar overlap: each bar both sing counts by how loud the
+  /// quieter of the two is there (A fades out as B fades in), so a bar at
+  /// either edge barely counts and one mid-blend counts most. Unknown vocals
+  /// never clash.
+  double _vocalClash(List<bool>? a, int m, List<bool>? b, int inB, int blend) {
+    if (a == null || b == null) return 0;
+    var clash = 0.0;
+    for (var j = 0; j < blend; j++) {
+      final x = m + j, y = inB + j;
+      if (x < a.length && y < b.length && y >= 0 && a[x] && b[y]) {
+        final p = (j + 0.5) / blend;
+        clash += math.min(1 - p, p) * 2; // 0 at the edges, 1 in the middle
       }
     }
-    return best;
+    return clash;
+  }
+
+  /// How good a place bar [m] is to start mixing out of a song: a phrase
+  /// boundary just after a big section (chorus) ends, near [target].
+  double _mixOutScore(Analysis g, int m, int target, int blend) {
+    final before = _meanEnergy(g, m - 8, m);
+    final after = _meanEnergy(g, m, m + blend);
+    return 0.5 * before + (before - after) - (m - target).abs() / 32;
+  }
+
+  /// The transition into B: its type and length, the bar A starts mixing out
+  /// at, and the bar of B that comes in. Tries the longest blend the keys
+  /// allow first and takes the best spot where the two never sing at the same
+  /// time (B's intro under A's outro, or A's last chorus over B's instrumental
+  /// intro); shorter blends next; an echo-out (no overlap) last.
+  (TransitionType, int, int, int) _blendPoints(LibraryTrack ta, Analysis ga, LibraryTrack tb, Analysis gb, _Harmony h,
+      int earliest, int target, int solo) {
+    final sungA = _sungBars(ta, ga), sungB = _sungBars(tb, gb);
+    final drop = _dropBar(gb);
+    final preferred = _transition(h);
+    final options = <(TransitionType, int)>[
+      preferred,
+      if (preferred.$1 != TransitionType.echoOut && preferred.$2 > 8)
+        vibe.smooth ? (TransitionType.filterSweep, 8) : (TransitionType.dropSwap, 8),
+      // Songs whose beat wanders (live band takes) can't sit on top of each
+      // other for long without flamming: those get the 8-bar blend at most.
+    ].where((o) => o.$2 <= 8 || (ga.tempoDrift <= 0.03 && gb.tempoDrift <= 0.03)).toList();
+    for (final (type, blend) in options) {
+      if (type == TransitionType.echoOut) break;
+      final latest = ga.lastBar - blend;
+      (int, int)? best;
+      var bestScore = -1e9;
+      for (var m = math.min(earliest, latest); m <= latest; m++) {
+        if ((m - ga.firstBar) % 8 != 0 && m != latest) continue;
+        final base = _mixOutScore(ga, m, target, blend);
+        // B comes in so its main section lands as A leaves, or earlier in its
+        // intro if that's what keeps the vocals apart.
+        final ideal = math.max(gb.firstBar, drop - blend);
+        for (var inB = ideal; inB >= gb.firstBar; inB -= 4) {
+          if (inB + blend + solo + 8 > gb.lastBar) continue;
+          final clash = _vocalClash(sungA, m, sungB, inB, blend);
+          if (clash > 1.0) continue; // about a bar of both singing loud, at most
+          final s = base - (ideal - inB) / 16 - 2 * clash;
+          if (s > bestScore) {
+            bestScore = s;
+            best = (m, inB);
+          }
+        }
+      }
+      if (best != null) return (type, blend, best.$1, best.$2);
+    }
+    // No overlap without clashing singers: A echoes away and B drops in clean.
+    const blend = 4;
+    final latest = ga.lastBar - blend;
+    var m = latest, bestScore = -1e9;
+    for (var x = math.min(earliest, latest); x <= latest; x++) {
+      if ((x - ga.firstBar) % 8 != 0) continue;
+      final s = _mixOutScore(ga, x, target, blend);
+      if (s > bestScore) {
+        bestScore = s;
+        m = x;
+      }
+    }
+    return (TransitionType.echoOut, blend, m, gb.firstBar);
   }
 
   /// Playback rate for a song: set by the master tempo, fine-tuned to the
@@ -272,19 +351,12 @@ class MixPlanner {
 
       final next = order[i];
       final h = _bestHarmony(playedKey, next.grid.camelot);
-      final (type, blend) = _transition(h);
       final gb = next.grid;
 
-      // Where A starts mixing out.
+      // Where A starts mixing out and where B comes in: the longest blend
+      // the keys allow that never has both songs singing at once.
       final earliest = math.max(inBar + prevBlend + solo, inBar + (vibe.smooth ? 40 : 32));
-      final latest = ga.lastBar - blend;
-      final m = _mixOutBar(ga, earliest, latest, inBar + targetPlay, blend);
-
-      // Where B starts: overlapping blends bring in its intro so its main
-      // section lands as A leaves; an echo-out drops B in from the top.
-      final drop = _dropBar(gb);
-      var inB = type == TransitionType.echoOut ? gb.firstBar : math.max(gb.firstBar, drop - blend);
-      if (inB + blend + solo + 8 > gb.lastBar) inB = gb.firstBar;
+      final (type, blend, m, inB) = _blendPoints(a.track, ga, next.track, gb, h, earliest, inBar + targetPlay, solo);
 
       // Line the two songs' beats up using the beats around the blend.
       final fitA = ga.fit(ga.beatIndexOfBar(m), ga.beatIndexOfBar(m + math.max(blend, 8)));
