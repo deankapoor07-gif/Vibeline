@@ -805,8 +805,13 @@ final class TimelinePlayer {
     beatGain.globalGain = beatDb.toward(bdb, 0.25)
   }
 
+  /// Now, on the clock the player nodes schedule against (44.1 kHz). Not the
+  /// main mixer's: that one runs at the output device's rate (often 48 kHz),
+  /// which made the playhead run ~9% fast — a few minutes in it was far enough
+  /// ahead to let go of a section still playing and start the next one late,
+  /// so the sound dropped out at the blends.
   private var nowSample: AVAudioFramePosition? {
-    guard let t = engine.mainMixerNode.lastRenderTime, t.isSampleTimeValid else { return nil }
+    guard let t = beatBus.lastRenderTime, t.isSampleTimeValid else { return nil }
     return t.sampleTime
   }
 
@@ -983,6 +988,7 @@ func play(from pos: Double? = nil) {
         guard gen == self.generation, self.isPlaying, let beat else { self.play(from: pos); return }
         guard self.rawPosition < tOld - 0.02 else { self.play(from: pos); return }  // loading was too slow
         let old = Array(self.active.values)
+        let wait = tOld - self.rawPosition  // (before the clock moves to the new spot)
         for a in old { self.fadeOut(a, at: tOld, over: 0.06) }
         self.active.removeAll()
         self.loading.removeAll()
@@ -991,7 +997,7 @@ func play(from pos: Double? = nil) {
         self.anchorSample = switchSample
         self.anchorPos = pos
         self.start(j, beat: beat, vox: vox, path: path, at: pos)
-        DispatchQueue.main.asyncAfter(deadline: .now() + (tOld - self.rawPosition) + 0.4) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait + 0.4) {
           for a in old { self.recycle(a.beat, a.vox) }
         }
         self.tick()
