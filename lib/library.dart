@@ -62,7 +62,9 @@ class MusicLibrary {
   Stream<Map<String, dynamic>> _run(List<String> args) async* {
     final script = await _scriptPath();
     // The helper watches this app's process id and quits if the app closes.
-    final proc = await Process.start(python, ['-I', script, ...args],
+    // At lower priority, so playback and the screen stay smooth while it
+    // works flat out (splitting stems takes ~20 s a song).
+    final proc = await Process.start('/usr/bin/nice', ['-n', '10', python, '-I', script, ...args],
         environment: {'VIBELINE_APP_PID': '$pid'});
     proc.stderr.drain<void>();
     await for (final line in proc.stdout.transform(utf8.decoder).transform(const LineSplitter())) {

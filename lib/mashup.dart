@@ -1628,7 +1628,7 @@ class MashupSession {
     onStatus('Making "${t.title}" the anchor beat…');
     await lib.analyze([t], (d, n) {});
     if (t.analysis == null) return 'Couldn\'t find a steady beat in "${t.title}".';
-    await lib.separate([t], (d, n, c) => onStatus('Splitting stems · ${t.title}'));
+    await lib.separate([t], (d, n, c) => onStatus(splitting(c ?? t)));
     final a = maker.anchorFor(t);
     if (a == null) return 'Couldn\'t use "${t.title}" as the anchor.';
     anchor = a;
@@ -1764,6 +1764,11 @@ class MashupSession {
   }
 
   /// Puts [song] in after mashup [i]: as a beat break, or with an AI vocal on it.
+  /// What you see while a song is split into stems for the first time.
+  static String splitting(LibraryTrack? c) => c == null
+      ? 'Splitting stems…'
+      : 'Splitting "${c.title}" into vocals, drums, bass and melody · first time only, about 20 s…';
+
   Future<String?> insertBeat(int i, LibraryTrack song, bool withVocal, MusicLibrary lib, void Function(String) onStatus) async {
     onStatus('Listening to ${song.title}…');
     await lib.analyze([song], (d, t) {});
@@ -1772,7 +1777,7 @@ class MashupSession {
       final pairs = maker.rankPairs(pool, onlyBeat: song).where((p) => !_used.contains(p.vocal.path)).toList();
       for (final p in pairs.take(5)) {
         onStatus('Finding a vocal for ${song.title}…');
-        await lib.separate([p.vocal, song], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
+        await lib.separate([p.vocal, song], (d, t, c) => onStatus(splitting(c)));
         final m = maker.build(p);
         if (m != null) {
           mashups.insert(i + 1, _fit(m));
@@ -1781,7 +1786,7 @@ class MashupSession {
       }
       return 'Couldn\'t find a vocal that fits "${song.title}" — try Beat only.';
     }
-    await lib.separate([song], (d, t, c) => onStatus('Splitting stems · ${song.title}'));
+    await lib.separate([song], (d, t, c) => onStatus(splitting(c ?? song)));
     final m = maker.beatBreak(song, nearTempo: mashups.isEmpty ? null : mashups[i.clamp(0, mashups.length - 1)].tempo);
     if (m == null) return 'Couldn\'t split "${song.title}".';
     mashups.insert(i + 1, _fit(m));
@@ -1799,7 +1804,7 @@ class MashupSession {
     final vocal = asVocal ? song : (old.beatOnly ? null : old.vocal);
     final beat = asVocal ? old.beat : song;
     await lib.separate([song, if (vocal != null) vocal, beat],
-        (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
+        (d, t, c) => onStatus(splitting(c)));
     Mashup? m;
     if (vocal == null) {
       // Replacing the beat of a beat break: still a beat break.
