@@ -76,6 +76,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   Phase _phase = Phase.idle;
   String _status = 'Starting up…';
   String? _background; // long-set preparation running behind the scenes
+  String? _themeNote; // a theme night that's short of songs
   double? _progress;
   bool _scanned = false;
   bool _mashupMode = true;
@@ -216,7 +217,24 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         final mine = pool.where((t) => t.shazam).toList();
         if (mine.length >= 8) pool = mine;
       }
-      final ranked = pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
+      // A theme night ("80s", "punk", "Halloween"): only songs that fit, or if
+      // there aren't enough, those first and then the closest others.
+      _themeNote = null;
+      List<LibraryTrack>? themed;
+      if (vibe.themed) {
+        themed = pool.where(vibe.fits).toList();
+        final enough = _mashupMode ? 16 : math.max(8, vibe.trackCount);
+        if (themed.length < enough) {
+          final near = pool.where((t) => !vibe.fits(t) && vibe.nearlyFits(t)).length;
+          _themeNote = themed.isEmpty
+              ? 'None of your songs fit "${vibe.summary}" — add some to your music folder for this theme.'
+              : 'Only ${themed.length} of your songs fit the theme${near > 0 ? ' — filled out with dark, minor-key songs' : ' — mixed in the closest others'}. Add more to your music folder for a full theme set.';
+        }
+      }
+      double score(LibraryTrack t) =>
+          tagScore(t, vibe, rng) + (themed == null ? 0 : (vibe.fits(t) ? 20 : (vibe.nearlyFits(t) ? 10 : 0)));
+      var ranked = pool.map((t) => (t, score(t))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
+      if (themed != null && _themeNote == null) ranked = ranked.where((e) => vibe.fits(e.$1)).toList();
 
       if (_mashupMode) {
         await _makeMashups(vibe, ranked.map((e) => e.$1).toList(), seed: seed);
@@ -698,6 +716,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final parts = <String>[];
     if (!_sections.allReady) parts.add('${_sections.ready}/${_sections.sections.length} sections mixed · ${_clock(ahead)} ready ahead');
     if (_background != null) parts.add(_background!);
+    if (_themeNote != null) parts.add(_themeNote!);
     return parts.join(' · ');
   }
 

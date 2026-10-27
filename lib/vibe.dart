@@ -18,6 +18,11 @@ class VibeProfile {
   int? yearFrom;
   int? yearTo;
   final Set<String> genres = {}; // genre families wanted
+  // A theme night: only songs that fit are used (see [fits]). Genres you name
+  // outright, a decade, or one of [_themes].
+  final Set<String> themeGenres = {};
+  String? theme; // 'punk', 'rocknroll', 'halloween'
+  bool strictEra = false;
   String? vocalFamily; // "country vocals over hip hop" -> country
   String? beatFamily; //                                 -> hiphop
   // Master "analog warmth" (tape saturation + vinyl crackle), set by the vibe.
@@ -32,7 +37,73 @@ class VibeProfile {
   }
 
   String get summary => description.isEmpty ? 'All-rounder mix' : description.join(' · ');
+
+  bool get themed => themeGenres.isNotEmpty || theme != null || strictEra;
+
+  /// Whether a song belongs in this theme night (always true without one).
+  bool fits(LibraryTrack t) {
+    if (strictEra && (t.year <= 0 || (yearFrom != null && t.year < yearFrom!) || (yearTo != null && t.year > yearTo!))) {
+      return false;
+    }
+    final g = t.genre.toLowerCase(), a = t.artist.toLowerCase(), title = t.title.toLowerCase();
+    switch (theme) {
+      case 'punk':
+        if (!g.contains('punk') && !_punkArtists.any(a.contains)) return false;
+      case 'rocknroll':
+        final classic = RegExp(r"rock\s*(&|and|'?n'?)\s*roll|rockabilly|doo.?wop").hasMatch(g) || _rockNRollArtists.any(a.contains);
+        final era = t.year >= 1950 && t.year < 1966 && const {'rock', 'pop', 'rnb', 'country'}.contains(genreFamily(t.genre));
+        if (!classic && !era) return false;
+      case 'halloween':
+        if (!isSpooky(title, a)) return false;
+    }
+    if (themeGenres.isNotEmpty && !themeGenres.contains(genreFamily(t.genre))) return false;
+    return true;
+  }
+
+  /// Close enough to fill out a theme night that's short of songs: for
+  /// Halloween, dark-sounding (minor-key) songs.
+  bool nearlyFits(LibraryTrack t) {
+    if (theme == 'halloween') {
+      final c = t.analysis?.camelot ?? '';
+      return c.endsWith('A') && !t.genre.toLowerCase().contains('christmas');
+    }
+    return false;
+  }
 }
+
+/// Spooky by its title (or a classic Halloween song).
+bool isSpooky(String title, String artist) {
+  final t = title.toLowerCase();
+  if (_halloweenSongs.any(t.contains)) return true;
+  return RegExp(
+          r"\b(ghosts?|ghostbusters|monsters?|zombies?|witch(es|y)?|devils?|hells?|haunted|haunting|vampires?|halloween|spooky|scary|skeletons?|graveyard|grave|thriller|frankenstein|dracula|werewol(f|ves)|nightmare|psycho|demons?|voodoo|black magic|superstition|exorcist|horror|creep|reaper|coffin|cemetery|wicked|bury a friend|somebody'?s watching)\b")
+      .hasMatch(t.replaceAll('’', "'"));
+}
+
+const _halloweenSongs = [
+  'monster mash', 'time warp', 'this is halloween', 'bad moon rising', 'highway to hell', 'disturbia',
+  'psycho killer', "dead man's party", 'black magic woman', 'i put a spell on you', 'witchy woman',
+  'sympathy for the devil', 'enter sandman', "don't fear the reaper", 'people are strange', 'tubular bells',
+  'hall of the mountain king', 'danse macabre', 'addams family', 'purple people eater', 'ghost town',
+  'season of the witch', 'heads will roll', 'spooky, scary', 'rave in the grave', 'i was made for lovin',
+  'hungry like the wolf', 'killer queen', 'super freak', 'zombie', 'thriller', 'ghostbusters',
+];
+
+const _punkArtists = [
+  'ramones', 'sex pistols', 'the clash', 'green day', 'blink-182', 'blink 182', 'the offspring', 'sum 41',
+  'bad religion', 'rancid', 'misfits', 'dead kennedys', 'buzzcocks', 'the damned', 'nofx', 'pennywise',
+  'social distortion', 'bad brains', 'the stooges', 'iggy pop', 'billy idol', 'generation x', 'the jam',
+  'my chemical romance', 'paramore', 'good charlotte', 'simple plan', 'fall out boy', 'all time low',
+  'yellowcard', 'new found glory', 'the living end', 'the saints', 'radio birdman', 'the hives',
+  'jimmy eat world', 'avril lavigne', 'machine gun kelly', 'the distillers', 'x-ray spex', 'siouxsie',
+];
+
+const _rockNRollArtists = [
+  'elvis', 'chuck berry', 'little richard', 'buddy holly', 'jerry lee lewis', 'bill haley', 'everly brothers',
+  'eddie cochran', 'fats domino', 'ritchie valens', 'roy orbison', 'gene vincent', 'carl perkins',
+  "johnny o'keefe", 'stray cats', 'shakin\' stevens', 'showaddywaddy', 'brian setzer', 'the big bopper',
+  'del shannon', 'the crickets', 'wanda jackson', 'sha na na', 'the beach boys',
+];
 
 /// Broad genre families, from the genre tag in each file.
 String genreFamily(String genre) {
@@ -116,20 +187,37 @@ VibeProfile parseVibe(String text) {
     v.description.add('Party energy');
   }
 
-  // Genres.
+  // Themes.
+  final rockNRoll = RegExp(r"\brock(in['’]?g?\s*|\s*(&|and|['’]?n['’]?)\s*)roll|rockabilly|\b50['’]?s\b|fifties").hasMatch(t);
+  if (rockNRoll) {
+    v.theme = 'rocknroll';
+    v.description.add("Rock 'n' roll");
+  } else if (has(['punk', 'pop punk', 'pop-punk'])) {
+    v.theme = 'punk';
+    v.description.add('Punk');
+  } else if (has(['halloween', 'horror', 'spooky', 'scary', 'creepy', 'haunted', 'zombie', 'trick or treat', 'monster mash', 'fright night'])) {
+    v.theme = 'halloween';
+    v.description.add('Halloween');
+  }
+
+  // Genres. Named outright, they make a theme night (only those genres).
+  final before = {...v.genres};
   if (has(['hip hop', 'hip-hop', 'hiphop', 'rap', 'trap'])) {
     v.genres.add('hiphop');
     if (!has(['rave', 'club', 'techno'])) v.targetBpm = 96;
   }
   if (has(['r&b', 'rnb', 'soul', 'funk'])) v.genres.add('rnb');
-  if (has(['rock', 'guitar', 'pub'])) v.genres.add('rock');
+  if (!rockNRoll && has(['rock', 'guitar', 'pub'])) v.genres.add('rock');
   if (has(['country', 'cowboy', 'boots'])) v.genres.add('country');
   if (has(['reggae', 'dancehall', 'island', 'afrobeat'])) v.genres.add('reggae');
   if (has(['house', 'dance music', 'electronic'])) v.genres.add('dance');
   if (has(['pop', 'top 40', 'hits', 'chart'])) v.genres.add('pop');
+  final named = v.genres.difference(before);
   if (has(['jazz', 'blues'])) v.genres.add('jazz');
   if (has(['latin', 'reggaeton'])) v.genres.add('latin');
   if (v.genres.isNotEmpty) v.description.add(v.genres.map(_familyName).join(' + '));
+  v.themeGenres.addAll(named.where((g) => g != 'pop' || has(['pop'])));
+  if (v.theme == 'punk') v.themeGenres.remove('rock'); // "punk rock": the punk list decides
 
   // "country vocals over hip hop beats"
   final over = RegExp(r"([a-z&/ -]+?)\s+(?:vocals?|acapellas?|singing|singers?)\s+(?:over|on|with)\s+(?:a\s+|an\s+)?([a-z&/ -]+?)(?:\s+(?:beats?|instrumentals?|music|grooves?))?(?:$|[,.!])")
@@ -153,17 +241,22 @@ VibeProfile parseVibe(String text) {
   }
 
   // Eras.
-  final decade = RegExp(r"\b(19)?([5-9]0)'?s\b").firstMatch(t);
-  if (decade != null) {
-    final d = 1900 + int.parse(decade.group(2)!);
+  const decadeWords = {'fifties': '50', 'sixties': '60', 'seventies': '70', 'eighties': '80', 'nineties': '90'};
+  final word = decadeWords.keys.where((w) => has([w])).firstOrNull;
+  final decade = RegExp(r"\b(19)?([5-9]0)['’]?s\b").firstMatch(t);
+  final dd = word != null ? decadeWords[word] : decade?.group(2);
+  if (dd != null && !(rockNRoll && dd == '50')) {
+    final d = 1900 + int.parse(dd);
     v
       ..yearFrom = d
-      ..yearTo = d + 9;
-    v.description.add('${decade.group(2)}s');
+      ..yearTo = d + 9
+      ..strictEra = true;
+    v.description.add('${dd}s');
   } else if (has(['2000s', 'noughties'])) {
     v
       ..yearFrom = 2000
-      ..yearTo = 2009;
+      ..yearTo = 2009
+      ..strictEra = true;
     v.description.add('2000s');
   } else if (has(['throwback', 'old school', 'retro', 'classic'])) {
     v.yearTo = 2005;
