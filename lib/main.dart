@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'intros.dart';
 import 'library.dart';
 import 'library_panel.dart';
 import 'mashup.dart';
@@ -266,8 +267,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       });
       plan = MixPlanner(vibe, seed: seed).plan(wanted) ?? plan;
     }
+    // Prepared intros (scratches, drops) ride on their songs, on the beat.
+    plan.introClips = introClips(plan, await Intro.loadAll());
+    final intros = plan.introClips.length;
     setState(() => _plan = plan);
-    await _publish(plan.toRenderJson(), plan.cuts, plan.duration, plan.summary, autoplay: true);
+    await _publish(plan.toRenderJson(), plan.cuts, plan.duration,
+        intros == 0 ? plan.summary : '${plan.summary} · $intros intro${intros == 1 ? '' : 's'}',
+        autoplay: true);
   }
 
   Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed, bool anchor = true}) async {

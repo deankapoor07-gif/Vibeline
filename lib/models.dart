@@ -496,11 +496,13 @@ class MixPlan {
   final List<PlannedTransition> transitions;
   final double duration;
   final String summary;
+  /// Prepared intro overlays riding on their songs (see intros.dart).
+  List<Map<String, dynamic>> introClips = const [];
   MixPlan(this.tracks, this.transitions, this.duration, this.summary);
 
   Map<String, dynamic> toRenderJson() => {
         'duration': duration,
-        'clips': tracks.map((t) => t.toJson()).toList(),
+        'clips': [...tracks.map((t) => t.toJson()), ...introClips],
       };
 
   /// Section boundaries: just after each blend (and any echo tail) is over.
