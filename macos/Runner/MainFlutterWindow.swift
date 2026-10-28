@@ -179,6 +179,16 @@ struct Clip: Decodable {
   /// More stems summed with `path` before stretching (e.g. a beat's melody,
   /// bass and drums): one time-stretch instead of several.
   let mix: [String]?
+  /// Optional pitch glide [fromTime, toTime, toCents]: the pitch moves from
+  /// pitchCents to toCents over that stretch of the mix (a DJ riding a song
+  /// back to its own key after matching it to the last one).
+  let pitchRamp: [Double]?
+
+  func pitch(at t: Double) -> Double {
+    guard let r = pitchRamp, r.count == 3, r[1] > r[0] else { return pitchCents }
+    let x = min(1, max(0, (t - r[0]) / (r[1] - r[0])))
+    return pitchCents + (r[2] - pitchCents) * x
+  }
 
   /// Where in the song (seconds) playback should be at mix time t.
   func sourceTime(at t: Double) -> Double {
@@ -509,6 +519,7 @@ final class MixRenderer {
         if let c = d.clip {
           d.apply(c.automation(at: t))
           d.setRate(at: t, frames: Int(n), sampleRate: sampleRate)
+          if c.pitchRamp != nil { d.timePitch.pitch = Float(c.pitch(at: t)) }
         }
       }
       let status = try engine.renderOffline(AVAudioFrameCount(n), to: buffer)
@@ -561,7 +572,7 @@ final class MixRenderer {
     deck.timePitch.reset()
     deck.delay.reset()
     deck.timePitch.rate = Float((clip.rate * 512).rounded() / 512)
-    deck.timePitch.pitch = Float(clip.pitchCents)
+    deck.timePitch.pitch = Float(clip.pitch(at: t))
     deck.baseGainDb = max(-24, min(24, clip.gainDb))
     deck.delay.delayTime = max(0.05, min(2, clip.echoTime))
     deck.clip = clip

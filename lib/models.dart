@@ -21,6 +21,11 @@ class LibraryTrack {
   List<double> waveform = const [];
   bool analysisTried = false;
 
+  /// Its title without versions ("(Rap Remix)", "[Edit]", "feat. …"), so two
+  /// versions of one song are never both in a set.
+  String get songKey =>
+      'song:${title.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'\s(feat|ft)\..*$'), '').replaceAll(RegExp(r'\s-\s.*$'), '').replaceAll(RegExp(r'[^a-z0-9]'), '')}';
+
   /// How much of source time [from]–[to] is sung (0..1), from the stems'
   /// per-beat vocal levels; null until the song has been split.
   double? vocalsBetweenSrc(double from, double to) {
@@ -460,13 +465,55 @@ class PlannedTrack {
     required this.deck,
   });
 
-  double get playedBpm => grid.bpm * rate;
+  /// Riding it home: from mix time [rampFrom], over [rampLen] seconds, the
+  /// speed glides from [rate] (matched to the song before) to [homeRate], and
+  /// any key shift glides back to the song's own key.
+  double rampFrom = double.infinity;
+  double rampLen = 0;
+  late double homeRate = rate;
+
+  bool get rides => rampLen > 0 && rampFrom.isFinite;
+
+  double get playedBpm => grid.bpm * homeRate;
+
+  /// Playback speed at mix time [t].
+  double rateAt(double t) {
+    if (!rides || t <= rampFrom) return rate;
+    return rate + (homeRate - rate) * math.min(1.0, (t - rampFrom) / rampLen);
+  }
 
   /// Mix time -> position in the song (seconds).
-  double srcAt(double mixTime) => srcStart + (mixTime - outStart) * rate;
+  double srcAt(double mixTime) {
+    if (!rides || mixTime <= rampFrom) return srcStart + (mixTime - outStart) * rate;
+    final s0 = srcStart + (rampFrom - outStart) * rate;
+    final tau = math.min(mixTime - rampFrom, rampLen);
+    var s = s0 + rate * tau + (homeRate - rate) * tau * tau / (2 * rampLen);
+    if (mixTime > rampFrom + rampLen) s += (mixTime - rampFrom - rampLen) * homeRate;
+    return s;
+  }
 
   /// Song position -> mix time.
-  double mixAt(double srcTime) => outStart + (srcTime - srcStart) / rate;
+  double mixAt(double srcTime) {
+    if (!rides) return outStart + (srcTime - srcStart) / rate;
+    final s0 = srcStart + (rampFrom - outStart) * rate;
+    if (srcTime <= s0) return outStart + (srcTime - srcStart) / rate;
+    final s1 = srcAt(rampFrom + rampLen);
+    if (srcTime >= s1) return rampFrom + rampLen + (srcTime - s1) / homeRate;
+    final k = (homeRate - rate) / (2 * rampLen), d = srcTime - s0;
+    if (k.abs() < 1e-12) return rampFrom + d / rate;
+    return rampFrom + (-rate + math.sqrt(rate * rate + 4 * k * d)) / (2 * k);
+  }
+
+  /// The ride home as a beat map [[mixTime, songTime], …] (null if it
+  /// doesn't ride), song times shifted by [offset].
+  List<List<double>>? warp([double offset = 0]) {
+    if (!rides) return null;
+    final end = rampFrom + rampLen;
+    final ts = [outStart, for (var t = rampFrom; t < end; t += 0.5) t, end, end + 10];
+    return [for (final t in ts) [t, srcAt(t) - offset]];
+  }
+
+  double get _tuningCents => Tuning.toReference(track.analysis?.tuning);
 
   /// How much of mix time [from]–[to] this song is singing (0..1), or null
   /// when its stems (and so its vocals) aren't known yet.
@@ -478,11 +525,13 @@ class PlannedTrack {
         'srcEnd': srcEnd,
         'outStart': outStart,
         'rate': rate,
-        'pitchCents': pitchSemitones * 100.0 + Tuning.toReference(track.analysis?.tuning),
+        'pitchCents': pitchSemitones * 100.0 + _tuningCents,
         'gainDb': gainDb,
         'deck': deck,
         'echoTime': echoTime,
         'keys': keys.map((k) => k.toJson()).toList(),
+        if (rides) 'warp': warp(),
+        if (rides && pitchSemitones != 0) 'pitchRamp': [rampFrom, rampFrom + rampLen, _tuningCents],
       };
 
   /// [layers] as clips of their own.

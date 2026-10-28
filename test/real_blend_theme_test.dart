@@ -35,7 +35,7 @@ void main() {
     print('PLAN ${plan.summary} · ${(plan.duration / 60).toStringAsFixed(1)} min');
     for (final t in plan.tracks) {
       final g = t.grid;
-      print('  ${t.track.title} · own ${g.steadyBpm.toStringAsFixed(0)} bpm · rate ${t.rate.toStringAsFixed(3)} '
+      print('  ${t.track.title} · own ${g.steadyBpm.toStringAsFixed(0)} bpm · comes in at ${((t.rate - 1) * 100).toStringAsFixed(1)}% → home ${((t.homeRate - 1) * 100).toStringAsFixed(1)}% · key ${t.pitchSemitones} '
           '(${((t.rate - 1) * 100).toStringAsFixed(1)}%) · in ${t.outStart.toStringAsFixed(0)}s–${t.outEnd.toStringAsFixed(0)}s');
     }
     final out = Platform.environment['VIBELINE_PLAN_OUT'];

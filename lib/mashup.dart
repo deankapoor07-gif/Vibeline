@@ -380,8 +380,7 @@ class MashupMaker {
   /// end up in the same set.
   static List<String> usedKeys(LibraryTrack t) => [t.path, songKey(t)];
   static bool isUsed(Set<String> used, LibraryTrack t) => used.contains(t.path) || used.contains(songKey(t));
-  static String songKey(LibraryTrack t) =>
-      'song:${t.title.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'\s(feat|ft)\..*$'), '').replaceAll(RegExp(r'\s-\s.*$'), '').replaceAll(RegExp(r'[^a-z0-9]'), '')}';
+  static String songKey(LibraryTrack t) => t.songKey;
 
   /// Best pairing to follow [prev] at set position [p]: its beat must be
   /// within 6% of the tempo the set is at, so the blend can match it.

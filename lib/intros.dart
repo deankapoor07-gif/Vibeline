@@ -152,6 +152,8 @@ Map<String, dynamic>? overlayClip(PlannedTrack p, Intro intro, double bar0, doub
     'outStart': outStart,
     'rate': p.rate,
     'pitchCents': json['pitchCents'], // in key with the song as it's played
+    if (p.rides) 'warp': p.warp(fileStart), // and riding home with it
+    if (json['pitchRamp'] != null) 'pitchRamp': json['pitchRamp'],
     'gainDb': math.max(-24.0, math.min(24.0, intro.gainDb)),
     'deck': 2,
     'echoTime': p.echoTime,

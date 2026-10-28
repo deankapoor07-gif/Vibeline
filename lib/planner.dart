@@ -140,14 +140,18 @@ class MixPlanner {
       for (final b in beams) {
         final prev = cands[b.order.last];
         final usedArtists = {for (final i in b.order) cands[i].track.artist.toLowerCase()};
+        final usedSongs = {for (final i in b.order) cands[i].track.songKey};
         for (var j = 0; j < cands.length; j++) {
-          if (b.order.contains(j)) continue;
+          if (b.order.contains(j) || usedSongs.contains(cands[j].track.songKey)) continue;
           final c = cands[j];
           final h = _bestHarmony(b.playedKeys.last, c.grid.camelot);
           var s = c.tagScore;
           s += 1.4 * h.score;
           s -= 2.5 * (c.grid.energy - vibe.energyAt(p)).abs();
-          s -= 6 * (prev.bpm / c.bpm - 1).abs(); // less stretching = cleaner audio
+          // Each song is matched to the last one's own tempo, then ridden home
+          // to its own: neighbours more than 8% apart can't be matched cleanly.
+          final gap = (prev.bpm / c.bpm - 1).abs();
+          s -= 6 * gap + (gap > 0.08 ? 20 : 0);
           if (usedArtists.contains(c.track.artist.toLowerCase())) s -= 2.5;
           if (vibe.mixGenres) {
             if (c.family != prev.family) s += 0.6;
@@ -381,7 +385,7 @@ class MixPlanner {
     final first = PlannedTrack(
       track: c0.track,
       grid: g0,
-      rate: _anchoredRate(g0, fit0, tempo, 60 / tempo),
+      rate: 1.0, // the first song plays at its own speed and key
       pitchSemitones: 0,
       gainDb: gainFor(g0),
       deck: 0,
@@ -431,8 +435,9 @@ class MixPlanner {
       // within 2% of its steady tempo).
       final trustA = fitA.trustworthy ? 0.05 : 0.02;
       final periodA = fitA.period.clamp(60 / ga.steadyBpm * (1 - trustA), 60 / ga.steadyBpm * (1 + trustA));
-      final outBeat = periodA / a.rate;
-      final rateB = _anchoredRate(gb, fitB, tempo, outBeat);
+      final outBeat = periodA / a.rateAt(a.mixAt(fitA.timeOfBeat(ga.beatIndexOfBar(m))));
+      // B is matched to A as it plays now (A has ridden home to its own tempo).
+      final rateB = _anchoredRate(gb, fitB, 60 / outBeat, outBeat);
       double barX(int j) => a.mixAt(fitA.timeOfBeat(ga.beatIndexOfBar(m + j)));
 
       final b = PlannedTrack(
@@ -451,6 +456,12 @@ class MixPlanner {
       a.srcEnd = math.min(a.track.duration, fitA.timeOfBeat(ga.beatIndexOfBar(m + blend)) + 0.1);
       a.outEnd = a.mixAt(a.srcEnd);
       _automate(type, a, b, barX, outBeat, blend: blend, bassFits: h.score >= 0.4);
+      // Once B has the floor, ride it home to its own speed and key, done by
+      // the time it can start mixing out.
+      b
+        ..rampFrom = barX(blend)
+        ..rampLen = solo * 4 * outBeat
+        ..homeRate = 1.0;
       if (const [TransitionType.echoOut, TransitionType.dropSwap, TransitionType.stemBlend].contains(type)) a.outEnd += 2.5;
 
       transitions.add(PlannedTransition(type, blend, h.label, barX(0), barX(blend)));
@@ -461,7 +472,9 @@ class MixPlanner {
     }
 
     final duration = tracks.map((t) => t.outEnd).reduce(math.max) + 1.0;
-    final summary = '${vibe.summary} · ${tracks.length} songs · ${tempo.round()} BPM';
+    final bpms = tracks.map((t) => t.playedBpm).toList();
+    final lo = bpms.reduce(math.min).round(), hi = bpms.reduce(math.max).round();
+    final summary = '${vibe.summary} · ${tracks.length} songs · ${lo == hi ? '$lo' : '$lo–$hi'} BPM';
     return MixPlan(tracks, transitions, duration, summary);
   }
 
