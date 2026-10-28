@@ -396,7 +396,7 @@ class LocalGrid {
 // ---------------------------------------------------------
 // MIX PLAN
 // ---------------------------------------------------------
-enum TransitionType { bassSwap, filterSweep, dropSwap, echoOut }
+enum TransitionType { bassSwap, filterSweep, dropSwap, echoOut, stemBlend }
 
 extension TransitionLabel on TransitionType {
   String get label => switch (this) {
@@ -404,6 +404,7 @@ extension TransitionLabel on TransitionType {
         TransitionType.filterSweep => 'FILTER SWEEP',
         TransitionType.dropSwap => 'DROP SWAP',
         TransitionType.echoOut => 'ECHO OUT',
+        TransitionType.stemBlend => 'STEM BLEND',
       };
 }
 
@@ -446,6 +447,9 @@ class PlannedTrack {
   double srcEnd = 0;
   final List<Keyframe> keys = [];
   double echoTime = 0.25;
+  /// Stems played alongside (or instead of) the full song for a while, with
+  /// the song's timing: e.g. just its drums under the outgoing song.
+  final List<StemLayer> layers = [];
 
   PlannedTrack({
     required this.track,
@@ -480,6 +484,25 @@ class PlannedTrack {
         'echoTime': echoTime,
         'keys': keys.map((k) => k.toJson()).toList(),
       };
+
+  /// [layers] as clips of their own.
+  List<Map<String, dynamic>> layerJson() => [
+        for (final l in layers)
+          {
+            ...toJson(),
+            'path': l.path,
+            'srcEnd': math.min(srcEnd, l.srcEnd),
+            'keys': l.keys.map((k) => k.toJson()).toList(),
+          }
+      ];
+}
+
+/// One stem of a planned song, with its own volume automation.
+class StemLayer {
+  final String path;
+  final double srcEnd; // song time it can stop (it's silent after this)
+  final List<Keyframe> keys;
+  StemLayer(this.path, this.srcEnd, this.keys);
 }
 
 class PlannedTransition {
@@ -502,7 +525,7 @@ class MixPlan {
 
   Map<String, dynamic> toRenderJson() => {
         'duration': duration,
-        'clips': [...tracks.map((t) => t.toJson()), ...introClips],
+        'clips': [...tracks.map((t) => t.toJson()), for (final t in tracks) ...t.layerJson(), ...introClips],
       };
 
   /// Section boundaries: just after each blend (and any echo tail) is over.

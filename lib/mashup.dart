@@ -297,15 +297,12 @@ class MashupMaker {
 
   /// Key shifts a singer takes without sounding like a chipmunk (too far up)
   /// or a slowed-down tape (too far down): one semitone up, two down at most.
-  static const vocalShifts = [0, -1, 1, -2];
+  static const vocalShifts = [0, -1, 1];
 
-  /// A vocal scaled to [tempo], or null if it would have to be sped up more
-  /// than 7% (rushed and squeaky) or slowed down more than 12%.
-  static Analysis? fitVocal(Analysis a, double tempo) {
-    final g = fitTo(a, tempo, 0.12);
-    if (g == null || tempo / g.steadyBpm - 1 > 0.07) return null;
-    return g;
-  }
+  /// A vocal scaled to [tempo], or null if it would have to be sped up
+  /// (rushed and squeaky) or slowed down (dragging behind the beat) more
+  /// than 5%: then another beat or vocal is found instead.
+  static Analysis? fitVocal(Analysis a, double tempo) => fitTo(a, tempo, 0.05);
 
   /// The shift (from [vocalShifts]) that best puts a vocal in key [from]
   /// into key [to], and how well it then fits. Going up costs a little extra.
@@ -362,7 +359,7 @@ class MashupMaker {
         final (shift, compat) = vocalKey(bg.camelot, vg.camelot);
         if (compat < 0.6) continue;
         final stretch = (tb / vg.steadyBpm - 1).abs();
-        var s = 1.5 * compat - 4.0 * stretch + bScore;
+        var s = 1.5 * compat - 10.0 * stretch + bScore;
         s += 0.55 * (tags[v.path]! + (tags[b.path] ?? 0));
         if (vibe.vocalFamily != null) s += genreFamily(v.genre) == vibe.vocalFamily ? 2.0 : -2.0;
         if (vibe.beatFamily != null) s += genreFamily(b.genre) == vibe.beatFamily ? 2.0 : -2.0;

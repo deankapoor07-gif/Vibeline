@@ -1,6 +1,7 @@
 // Plans a theme-night blend mix (Mashup Mode off) the way the app does and
 // reports the tempo stretching and where vocals overlap in each blend.
 // Skipped unless VIBELINE_REAL=1. VIBELINE_THEME=Kiwi.
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -37,6 +38,8 @@ void main() {
       print('  ${t.track.title} · own ${g.steadyBpm.toStringAsFixed(0)} bpm · rate ${t.rate.toStringAsFixed(3)} '
           '(${((t.rate - 1) * 100).toStringAsFixed(1)}%) · in ${t.outStart.toStringAsFixed(0)}s–${t.outEnd.toStringAsFixed(0)}s');
     }
+    final out = Platform.environment['VIBELINE_PLAN_OUT'];
+    if (out != null) File(out).writeAsStringSync(jsonEncode(plan.toRenderJson()));
     String pct(double? v) => v == null ? '?' : '${(v * 100).round()}%';
     for (var i = 0; i < plan.transitions.length; i++) {
       final x = plan.transitions[i];

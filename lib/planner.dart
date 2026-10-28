@@ -267,7 +267,12 @@ class MixPlanner {
       }
       if (best != null) return (type, blend, best.$1, best.$2);
     }
-    // No overlap without clashing singers: A echoes away and B drops in clean.
+    // No overlap without clashing singers or keys. With B's stems known, just
+    // its drums come in under A (no vocals, no key to clash) and the rest of
+    // B lands on the phrase as A leaves: still a real blend.
+    final stemBlend = _stemBlendPoints(ga, tb, gb, sungB, drop, earliest, target, solo);
+    if (stemBlend != null) return stemBlend;
+    // Otherwise A echoes away and B drops in clean.
     const blend = 4;
     final latest = ga.lastBar - blend;
     var m = latest, bestScore = -1e9;
@@ -280,6 +285,67 @@ class MixPlanner {
       }
     }
     return (TransitionType.echoOut, blend, m, gb.firstBar);
+  }
+
+  /// A stem blend into B: B's drums alone under A for the blend, everything
+  /// of B from the bar A leaves. B comes in where its drums are playing all
+  /// through the blend, landing (ideally) on its main section and at the
+  /// start of a line rather than mid-sentence. Null without B's stems.
+  (TransitionType, int, int, int)? _stemBlendPoints(
+      Analysis ga, LibraryTrack tb, Analysis gb, List<bool>? sungB, int drop, int earliest, int target, int solo) {
+    final drums = tb.stems?.curves['drums'];
+    if (tb.stems?.paths['drums'] == null || drums == null || drums.isEmpty) return null;
+    final hop = tb.stems!.curveHop;
+    final sorted = [...drums]..sort();
+    final usual = sorted[sorted.length * 2 ~/ 3]; // the drums' level once they're going
+    // Share of bars [from, to) with the drums going.
+    double drumsShare(int from, int to) {
+      var n = 0;
+      for (var bar = from; bar < to; bar++) {
+        final i = (_barTime(gb, bar) / hop).round().clamp(0, drums.length - 1);
+        final j = (_barTime(gb, bar + 1) / hop).round().clamp(i + 1, drums.length);
+        if (drums.sublist(i, j).reduce((a, b) => a + b) / (j - i) >= usual - 9) n++;
+      }
+      return n / (to - from);
+    }
+
+    for (final blend in [if (ga.tempoDrift <= 0.03 && gb.tempoDrift <= 0.03) 16, 8]) {
+      final at = _stemBlendAt(ga, gb, sungB, drop, earliest, target, solo, blend, drumsShare);
+      if (at != null) return at;
+    }
+    return null;
+  }
+
+  (TransitionType, int, int, int)? _stemBlendAt(Analysis ga, Analysis gb, List<bool>? sungB, int drop, int earliest,
+      int target, int solo, int blend, double Function(int, int) drumsShare) {
+    final latest = ga.lastBar - blend;
+    var m = latest, bestM = -1e9;
+    for (var x = math.min(earliest, latest); x <= latest; x++) {
+      if ((x - ga.firstBar) % 8 != 0) continue;
+      final s = _mixOutScore(ga, x, target, blend);
+      if (s > bestM) {
+        bestM = s;
+        m = x;
+      }
+    }
+    final ideal = math.max(gb.firstBar, drop - blend);
+    int? inB;
+    var best = -1e9;
+    for (var b = gb.firstBar; b <= ideal + 16; b += 4) {
+      if (b + blend + solo + 8 > gb.lastBar) continue;
+      // Drums through most of the blend, and in the first bars (or B is silent).
+      final share = drumsShare(b, b + blend);
+      if (share < 0.7 || drumsShare(b, b + 2) < 0.5) continue;
+      final land = b + blend;
+      final midLine = sungB != null && land > 0 && land < sungB.length && sungB[land - 1] && sungB[land];
+      final s = 3 * share - (b - ideal).abs() / 8 - (midLine ? 1.0 : 0);
+      if (s > best) {
+        best = s;
+        inB = b;
+      }
+    }
+    if (inB == null) return null;
+    return (TransitionType.stemBlend, blend, m, inB);
   }
 
   /// Playback rate for a song: set by the master tempo, fine-tuned to the
@@ -384,8 +450,8 @@ class MixPlanner {
       // A leaves.
       a.srcEnd = math.min(a.track.duration, fitA.timeOfBeat(ga.beatIndexOfBar(m + blend)) + 0.1);
       a.outEnd = a.mixAt(a.srcEnd);
-      _automate(type, a, b, barX, outBeat);
-      if (type == TransitionType.echoOut || type == TransitionType.dropSwap) a.outEnd += 2.5;
+      _automate(type, a, b, barX, outBeat, blend: blend, bassFits: h.score >= 0.4);
+      if (const [TransitionType.echoOut, TransitionType.dropSwap, TransitionType.stemBlend].contains(type)) a.outEnd += 2.5;
 
       transitions.add(PlannedTransition(type, blend, h.label, barX(0), barX(blend)));
       tracks.add(b);
@@ -401,9 +467,40 @@ class MixPlanner {
 
   /// The DJ moves for each transition type, as EQ / filter / volume / echo
   /// automation on both decks. [x] gives the mix time of bar j of the blend.
-  void _automate(TransitionType type, PlannedTrack a, PlannedTrack b, double Function(int) x, double beat) {
+  void _automate(TransitionType type, PlannedTrack a, PlannedTrack b, double Function(int) x, double beat,
+      {int blend = 16, bool bassFits = false}) {
     const kill = -30.0;
     switch (type) {
+      case TransitionType.stemBlend:
+        // B's drums ride under A (and its bassline swaps in halfway when the
+        // keys allow); on the last beat all of B crossfades in and A throws
+        // an echo and filters away.
+        final half = x(blend ~/ 2), land = x(blend);
+        final stems = b.track.stems!.paths;
+        final until = b.srcAt(land) + 1;
+        b.layers.add(StemLayer(stems['drums']!, until, [
+          Keyframe(x(0), gain: 0, high: -6),
+          Keyframe(x(4), gain: 0.9),
+          Keyframe(land - beat),
+          Keyframe(land, gain: 0),
+        ]));
+        if (bassFits && stems['bass'] != null) {
+          b.layers.add(StemLayer(stems['bass']!, until, [
+            Keyframe(half - beat * 0.25, gain: 0),
+            Keyframe(half),
+            Keyframe(land - beat),
+            Keyframe(land, gain: 0),
+          ]));
+        }
+        b.keys.addAll([Keyframe(x(0), gain: 0), Keyframe(land - beat, gain: 0), Keyframe(land)]);
+        a.echoTime = beat * 0.75;
+        a.keys.addAll([
+          Keyframe(x(0)),
+          if (bassFits) ...[Keyframe(half - beat * 0.25), Keyframe(half, low: kill)],
+          Keyframe(x(blend - 2), low: bassFits ? kill : 0),
+          Keyframe(land - beat, gain: 0.85, low: kill, hpf: 300, echo: 0.4),
+          Keyframe(land, gain: 0, low: kill, hpf: 600, echo: 0.5),
+        ]);
       case TransitionType.bassSwap:
         // B creeps in with no bass; on bar 8 the basslines swap; A filters away.
         a.keys.addAll([
