@@ -546,6 +546,20 @@ class MashupMaker {
   bool _placeVocal(Mashup m) {
     final vg = m.vocalGrid, bg = m.beatGrid;
     final beatRoom = bg.lastBar - bg.firstBar - Mashup.introBars - Mashup.outroBars;
+    // Where the vocal song's timing jumps (a pause, a loose moment) the voice
+    // would have to lurch faster or slower to stay on the beat: such
+    // sections are never used.
+    final period = 60 / vg.steadyBpm;
+    final pos = [for (var k = 0; k < vg.beats.length; k++) vg.fit(k - 6, k + 6).timeOfBeat(k)];
+    bool lurches(int fromBar, int toBar) {
+      final a = (vg.beatIndexOfBar(fromBar) - 2).clamp(0, pos.length - 1);
+      final b = vg.beatIndexOfBar(toBar).clamp(0, pos.length - 1);
+      for (var k = a; k < b; k++) {
+        if (((pos[k + 1] - pos[k]) / period - 1).abs() > 0.06) return true;
+      }
+      return false;
+    }
+
     var best = -1e9;
     var bestStart = -1, bestLen = 0;
     for (final len in const [48, 40, 32, 24, 16]) {
@@ -569,7 +583,7 @@ class MashupMaker {
           gap = _vocalAt(m, b) < 0.15 ? gap + 1 : 0;
           longest = math.max(longest, gap);
         }
-        if (longest >= 6) continue;
+        if (longest >= 6 || lurches(s, s + len + 2)) continue;
         final gapPenalty = longest >= 3 ? 0.4 : 0.0;
         // Prefer sections that open into more energy (verse → chorus feel).
         final open = _meanEnergy(vg, s, s + 4);
@@ -725,7 +739,10 @@ class MashupMaker {
       // Beat map: song time of each beat -> mix time, with the tempo ramp.
       final bBase = bg.beatIndexOfBar(m.beatStart);
       final totalBeats = m.totalBars * 4;
-      double src(int n) => bg.smoothBeat(bBase + n);
+      // Beat-song beats from a straight line through their neighbours too (a
+      // misplaced beat would jerk both songs).
+      final srcCache = <int, double>{};
+      double src(int n) => srcCache[n] ??= bg.fit(bBase + n - 6, bBase + n + 6).timeOfBeat(bBase + n) + bg.gridOffset;
       // During the blend (first 32 beats) every beat is pinned to the matching
       // beat of the outgoing song, so even drifting live recordings stay locked;
       // afterwards the tempo eases to this song's own speed over 16 bars.
@@ -740,10 +757,24 @@ class MashupMaker {
       final rEntry = pinned
           ? ((src(32) - src(28)) / (outT[32] - outT[28])).clamp(0.8, 1.2)
           : s;
+      // The tempo travels in the outro, where nobody sings: from bar 1 to bar
+      // 7 of it this beat eases to the next mashup's own tempo, so the next
+      // vocal comes in at its natural speed instead of gliding mid-line.
+      final outroBar = Mashup.introBars + m.vocalBars;
+      final next = i + 1 < ms.length ? ms[i + 1] : null;
+      final rEnd = next == null || next.beatGrid.steadyBpm <= 0
+          ? s
+          : s * next.beatGrid.steadyBpm * next.tempoScale / (bg.steadyBpm * s);
       double rateAt(int n) {
-        if (n < 32) return rEntry;
-        if (n < 96) return rEntry + (s - rEntry) * (n - 32) / 64;
-        return s;
+        var r = s;
+        if (n < 32) {
+          r = rEntry;
+        } else if (n < 96) {
+          r = rEntry + (s - rEntry) * (n - 32) / 64;
+        }
+        final o = outroBar * 4 + 4;
+        if (n >= o) r += (rEnd - s) * ((n - o) / 24).clamp(0.0, 1.0);
+        return r;
       }
 
       for (var n = outT.length - 1; n <= totalBeats; n++) {
@@ -756,15 +787,18 @@ class MashupMaker {
       double beatLen(int bar) => (barX(bar + 1) - barX(bar)) / 4;
       final srcStartB = src(0);
       final srcEndB = src(totalBeats) + 0.05;
-      final outroBar = Mashup.introBars + m.vocalBars;
 
       // Vocal: each beat of the vocal song pinned to the matching beat of the
       // beat song (warp map), so even a drifting live vocal stays locked. Two
       // beats of pre-roll catch pickup notes sung just before the line.
       final vEntryBeat = vg.beatIndexOfBar(m.vocalStart);
+      // Each vocal beat from a straight line through its neighbours: a beat
+      // the tracker misplaced would otherwise jerk the voice faster or slower
+      // for a beat, while a real drift of the band is still followed.
+      double vocalBeat(int k) => vg.fit(k - 6, k + 6).timeOfBeat(k) + vg.gridOffset;
       final warp = <List<double>>[
         for (var n = -2; n <= m.vocalBars * 4 + m.vocalTailBeats + 4; n++)
-          [n + 32 >= 0 ? outT[n + 32] : start - (src(0) - bg.smoothBeat(bBase + n + 32)), vg.smoothBeat(vEntryBeat + n)]
+          [n + 32 >= 0 ? outT[n + 32] : start - (src(0) - bg.smoothBeat(bBase + n + 32)), vocalBeat(vEntryBeat + n)]
       ];
       final vIn = barX(Mashup.introBars);
       final vOut = barX(outroBar);
