@@ -43,6 +43,11 @@ void main() {
     if (out != null && session.mashups.isNotEmpty) {
       final plan = session.layout();
       File(out).writeAsStringSync(jsonEncode({...plan.renderJson, 'cuts': plan.cuts}));
+      print(plan.summary);
+      for (final m in session.mashups) {
+        print('  ${m.vocal.title}: in ${m.start.toStringAsFixed(1)}s · vocal ${m.vocalIn.toStringAsFixed(1)}s'
+            '${m.acapellaBars > 0 ? ' · ACAPELLA ${m.acapellaBars} bars, drop ${m.beatTimes[(Mashup.introBars + m.acapellaBars) * 4].toStringAsFixed(1)}s' : ''}');
+      }
     }
   }, skip: Platform.environment['VIBELINE_REAL'] != '1', timeout: const Timeout(Duration(minutes: 60)));
 }

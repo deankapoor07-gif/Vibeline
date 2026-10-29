@@ -65,6 +65,9 @@ class Mashup {
   int vocalStart = 0; // vocal song bar the singing starts on
   int vocalBars = 32;
   int vocalTailBeats = 0; // the last word ringing on past the section end
+  /// Bars the vocal sings alone before the beat drops in (0 = the usual
+  /// blend, where the beat comes in first). Set when the set is laid out.
+  int acapellaBars = 0;
   static const introBars = 8;
   static const outroBars = 8;
 
@@ -730,10 +733,53 @@ class MashupMaker {
     double? nextStart;
     const kill = -30.0;
 
+    // Acapella drops, the way a DJ does it: the outgoing beat echoes out,
+    // the new vocal sings alone for a few bars, a two-beat drum pickup, then
+    // the whole beat slams in on the bar. At most every other changeover,
+    // and only where the vocal opens singing.
+    //
+    // Bars it can sing alone for: 8 or 4, as long as the singing never stops
+    // for two beats in a row (with no beat under it, a gap is dead silence).
+    int soloBars(Mashup m) {
+      final g = m.vocalGrid, b0 = g.beatIndexOfBar(m.vocalStart);
+      for (final bars in [if (m.vocalBars >= 32) 8, 4]) {
+        var quiet = 0, ok = b0 >= 0;
+        for (var k = 0; ok && k < bars * 4; k++) {
+          if (b0 + k + 1 >= g.beats.length) {
+            ok = false;
+            break;
+          }
+          final v = m.vocal.stems!.vocalBetween(m.vocal.analysis!.beats, g.beats[b0 + k], g.beats[b0 + k + 1]);
+          quiet = v < 0.2 ? quiet + 1 : 0;
+          if (quiet >= 2) ok = false;
+        }
+        if (ok) return bars;
+      }
+      return 0;
+    }
+
+    final drops = <bool>[];
+    for (var i = 0; i < ms.length; i++) {
+      final m = ms[i];
+      final bars = i > 0 &&
+              !drops[i - 1] &&
+              !m.beatOnly &&
+              m.vocalBars >= 16 &&
+              m.laneAudible(m.lanes.first) &&
+              m.vocal.stems != null &&
+              _meanVocal(m, m.vocalStart, m.vocalStart + 2) >= 0.5
+          ? soloBars(m)
+          : 0;
+      drops.add(bars > 0);
+      m.acapellaBars = bars;
+    }
+
     for (var i = 0; i < ms.length; i++) {
       final m = ms[i];
       final bg = m.beatGrid, vg = m.vocalGrid;
       final group = (i % 2) * 8;
+      final drop = drops[i];
+      final dropBar = Mashup.introBars + m.acapellaBars;
       final start = nextStart ?? 0.0;
 
       // Beat map: song time of each beat -> mix time, with the tempo ramp.
@@ -823,6 +869,7 @@ class MashupMaker {
       // Blend keyframes shared by every stem of this mashup.
       List<Keyframe> head() {
         if (i == 0) return [Keyframe(start)];
+        if (drop) return [Keyframe(barX(0), gain: 0), Keyframe(barX(dropBar) - 0.01, gain: 0), Keyframe(barX(dropBar))];
         return [
           Keyframe(barX(0), gain: 0, low: kill, high: -6),
           Keyframe(barX(3), gain: 0.8, low: kill),
@@ -834,6 +881,16 @@ class MashupMaker {
       List<Keyframe> tail({required bool last}) {
         final o = outroBar;
         if (last) return [Keyframe(barX(o + 4)), Keyframe(barX(o + 8), gain: 0, lpf: 2500)];
+        // Into an acapella drop: the full beat to the last bar, then a quick
+        // sweep up and away into an echo as the next vocal comes in alone.
+        if (drops[i + 1]) {
+          return [
+            Keyframe(barX(o)),
+            Keyframe(barX(o + 7)),
+            Keyframe(barX(o + 8) - beatLen(o + 7) * 0.5, gain: 0.6, low: kill, hpf: 500, echo: 0.4),
+            Keyframe(barX(o + 8), gain: 0, low: kill, hpf: 1000, echo: 0.5),
+          ];
+        }
         return [
           Keyframe(barX(o)),
           Keyframe(barX(o + 4) - beatLen(o + 3) * 0.25),
@@ -852,13 +909,28 @@ class MashupMaker {
         final path = song.stems!.paths[lane.stem]!;
 
         if (lane.fromVocalSong && !m.beatOnly) {
-          final keys = lane.stem == 'vocals'
+          var keys = lane.stem == 'vocals'
               // The featured vocal: rides in over the groove, leaves smoothly.
               ? vocalKeys(outStartV, outStartV + preRollOut * 0.5, vOut, m.vocalTailBeats, vBeat)
               // Vocal song's own backing stems (only when unmuted).
               : [Keyframe(outStartV, gain: 0), Keyframe(vIn, gain: 1), Keyframe(vOut - vBeat), Keyframe(vOut, gain: 0)];
+          // Acapella drop: 3 dB up while it sings alone (so the set doesn't
+          // go quiet), back to its usual level as the beat lands.
+          final lift = drop && lane.stem == 'vocals' ? 3.0 : 0.0;
+          if (lift > 0) {
+            final d = barX(dropBar);
+            keys = [
+              for (final k in keys)
+                if (k.t < d) k,
+              Keyframe(d - 0.02),
+              Keyframe(d, gain: 0.708),
+              for (final k in keys)
+                if (k.t > d) Keyframe(k.t, gain: k.gain * 0.708, echo: k.echo, verb: k.verb),
+            ];
+          }
           clips.add(_clip(path, srcStartV, srcEndV, outStartV, m.vocalRate, m.vocalCents, group + li, vBeat * 0.75,
-              keys, gainDb: m.beatGainDb + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5), warp: warp, bus: 1));
+              keys, gainDb: m.beatGainDb + lift + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5),
+              warp: warp, bus: 1));
           continue;
         }
         if (lane.fromVocalSong) continue; // beat break: no vocal-song lanes
@@ -887,6 +959,16 @@ class MashupMaker {
         final pocketed = m.beatOnly || !m.laneAudible(m.lanes.first) ? keys : _withPocket(keys, vIn, vOut, beatLen(8));
         clips.add(_clip(beatStems.first, srcStartB, srcEndB, start, 1.0, m.beatCents, group, beatLen(0) * 0.5, pocketed,
             gainDb: m.beatGainDb, warp: beatWarp, mix: beatStems.skip(1).toList()));
+        // The drum pickup: the beat song's own drums for the two beats
+        // before the drop, handing over to the full beat on the downbeat.
+        final drums = m.beat.stems!.paths['drums'];
+        if (drop && drums != null && m.laneAudible(m.lanes[3])) {
+          final d = barX(dropBar), p0 = d - 2 * beatLen(dropBar - 1);
+          clips.add(_clip(drums, srcStartB, src(dropBar * 4) + 0.2, start, 1.0, m.beatCents, group + 7, beatLen(0) * 0.5,
+              [Keyframe(start, gain: 0), Keyframe(p0 - 0.01, gain: 0), Keyframe(p0, gain: 0.9), Keyframe(d - 0.01, gain: 0.9),
+                Keyframe(d, gain: 0)],
+              gainDb: m.beatGainDb, warp: beatWarp));
+        }
       }
       nextStart = barX(outroBar);
       prevOutro = outT.sublist(outroBar * 4, math.min(outT.length, outroBar * 4 + 33));
@@ -901,7 +983,9 @@ class MashupMaker {
 
     final duration = ms.isEmpty ? 0.0 : ms.last.end + 1.5;
     final mins = (duration / 60).round();
-    final summary = '${vibe.summary} · ${ms.length} mashups · ${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
+    final nDrops = drops.where((d) => d).length;
+    final summary = '${vibe.summary} · ${ms.length} mashups${nDrops > 0 ? ' · $nDrops acapella drops' : ''} · '
+        '${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
     final json = <String, dynamic>{'duration': duration, 'clips': clips, if (warmth != null) 'warmth': warmth};
     return MashupSetPlan(ms, duration, summary, json, cuts);
   }
