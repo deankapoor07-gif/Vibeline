@@ -139,7 +139,8 @@ class Mashup {
     return 'clash';
   }
 
-  double get tempo => beatGrid.steadyBpm;
+  /// The tempo the beat is played at.
+  double get tempo => beatGrid.steadyBpm * tempoScale;
 
   /// The tempo at which the vocal plays at its own natural speed (no stretch).
   double get vocalNaturalScale => beatOnly ? 1.0 : (vocalGrid.steadyBpm / beatGrid.steadyBpm).clamp(0.85, 1.15);
@@ -275,7 +276,7 @@ class _Pair {
   final double score;
   final int beatShift;
   _Pair(this.vocal, this.beat, this.vGrid, this.bGrid, this.shift, this.score, [this.beatShift = 0]);
-  double get tempo => bGrid.steadyBpm;
+  double get tempo => bGrid.steadyBpm * MashupMaker.startScale(vGrid, bGrid);
   String get key => '${vocal.path}|${beat.path}';
 }
 
@@ -296,6 +297,15 @@ class MashupMaker {
     }
     if ((tempo / (a.steadyBpm * best) - 1).abs() > maxStretch) return null;
     return a.scaled(best);
+  }
+
+  /// How far the beat is sped up or slowed down so the vocal comes in at its
+  /// own speed or a touch faster, never dragged slower: the beat matches the
+  /// singer, and the set's tempo travels on from there in the outros.
+  static double startScale(Analysis vg, Analysis bg) {
+    if (vg.steadyBpm <= 0 || bg.steadyBpm <= 0) return 1.0;
+    final speed = bg.steadyBpm / vg.steadyBpm; // the vocal's speed on the untouched beat
+    return (speed.clamp(1.0, 1.03) / speed).clamp(0.85, 1.15);
   }
 
   /// Key shifts a singer takes without sounding like a chipmunk (too far up)
@@ -354,7 +364,7 @@ class MashupMaker {
       if (b.analysis!.tempoDrift > 0.03) bScore -= 1.2;
       bScore -= 1.5 * (math.log(tb / vibe.targetBpm)).abs();
       for (final v in vocals) {
-        if (identical(v, b) || v.artist.toLowerCase() == b.artist.toLowerCase()) continue;
+        if (identical(v, b) || v.artist.toLowerCase() == b.artist.toLowerCase() || songKey(v) == songKey(b)) continue;
         // A vocal that would have to go squeaky to fit: find another pairing.
         final vg = fitVocal(v.analysis!, tb);
         if (vg == null) continue;
@@ -414,7 +424,8 @@ class MashupMaker {
     final m = Mashup(p.vocal, p.beat, p.vGrid, p.bGrid)
       ..vocalShift = p.shift
       ..autoShift = p.shift
-      ..beatShift = p.beatShift;
+      ..beatShift = p.beatShift
+      ..tempoScale = startScale(p.vGrid, p.bGrid);
     if (!_placeVocal(m)) return null;
     return m;
   }
