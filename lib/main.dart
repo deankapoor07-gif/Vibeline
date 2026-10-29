@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'fx_deck.dart';
 import 'intros.dart';
 import 'library.dart';
 import 'library_panel.dart';
@@ -108,6 +109,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   int _currentIndex = -1;
   Timer? _ticker;
   Timer? _relayout;
+
+  // Live FX panel
+  late final FxSettings _fx = FxSettings(_mixer);
+  bool _fxOpen = false;
+  List<double> _beatGrid = const []; // mix time of every beat
 
   @override
   void initState() {
@@ -423,6 +429,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       {bool autoplay = false, List<List<double>>? remap}) async {
     if (_warmth != null) json['warmth'] = _warmth;
     _duration = duration;
+    _beatGrid = _computeBeatGrid();
+    await _mixer.setBeatGrid(_beatGrid);
     await _mixer.setLiveMap(_liveMap);
     await _sections.setPlan(json, cuts, remap: remap);
     _set('Ready · ${_clock(duration)} · $summary', phase: Phase.ready);
@@ -431,6 +439,48 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _autoplayPending = true;
       _sectionsChanged();
     }
+  }
+
+  /// Mix time of every beat in the set (for the Beat FX and the BPM readout).
+  List<double> _computeBeatGrid() {
+    final out = <double>[];
+    if (_mashupMode) {
+      for (final m in _mashPlan?.mashups ?? const <Mashup>[]) {
+        out.addAll(m.beatTimes);
+      }
+    } else {
+      for (final p in _plan?.tracks ?? const <PlannedTrack>[]) {
+        final a = p.track.analysis;
+        if (a == null) continue;
+        for (final t in a.beats) {
+          if (t >= p.srcStart && t <= p.srcEnd) out.add(p.mixAt(t));
+        }
+      }
+    }
+    out.sort();
+    // Where two songs overlap their beats coincide: keep one of each.
+    final clean = <double>[];
+    for (final t in out) {
+      if (clean.isEmpty || t - clean.last > 0.18) clean.add(t);
+    }
+    return clean;
+  }
+
+  /// Tempo at the playhead, averaged over a few beats.
+  double? get _bpmNow {
+    final g = _beatGrid;
+    if (g.length < 6) return null;
+    var lo = 0, hi = g.length - 1;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) ~/ 2;
+      if (g[mid] <= _position) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    final a = lo.clamp(0, g.length - 5);
+    return 60 * 4 / (g[a + 4] - g[a]);
   }
 
   Future<void> _stopPlayback() async {
@@ -959,7 +1009,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             ),
           ),
 
-          // 4. PLAYBACK & TRANSPORT DOCK
+          // 4. LIVE FX
+          if (_fxOpen && _playable) FxDeck(fx: _fx, hasVocal: _mashupMode, bpm: _bpmNow, accent: _accent),
+
+          // 5. PLAYBACK & TRANSPORT DOCK
           Container(
             height: 72,
             color: const Color(0xFF181820),
@@ -1001,6 +1054,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                         style: const TextStyle(color: Colors.white54, fontSize: 12)),
                   ]),
                 const Spacer(),
+                Tooltip(
+                  message: 'Live effects: Colour FX knobs and Beat FX pads',
+                  child: TextButton.icon(
+                    onPressed: !_playable
+                        ? null
+                        : () {
+                            // Closing the panel puts everything back to clean.
+                            if (_fxOpen) _fx.reset();
+                            setState(() => _fxOpen = !_fxOpen);
+                          },
+                    icon: Icon(Icons.graphic_eq, size: 18, color: _fxOpen ? _accent : Colors.white70),
+                    label: Text('FX', style: TextStyle(fontWeight: FontWeight.bold, color: _fxOpen ? _accent : Colors.white70)),
+                  ),
+                ),
+                const SizedBox(width: 12),
                 Tooltip(
                   message: 'Tape saturation + vinyl crackle on the master output, flavoured by your vibe',
                   child: Row(

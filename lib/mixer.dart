@@ -39,6 +39,19 @@ class Mixer {
   /// {vocal: [{start, end, cents, db}], beat: [{start, end, db}]}.
   Future<void> setLiveMap(Map<String, dynamic> live) => _channel.invokeMethod('liveMap', live);
 
+  /// Colour FX: [kind] 0 filter, 1 crush, 2 noise, 3 gate/comp; a knob per
+  /// layer from -1 to 1 (0 = off).
+  Future<void> setColourFx(int kind, double beat, double vocal) =>
+      _channel.invokeMethod('colourFx', {'kind': kind, 'beat': beat, 'vocal': vocal});
+
+  /// Beat FX on the master: [kind] (see BeatFx in fx_deck.dart), on/off, its
+  /// length in beats and its level/depth (0..1).
+  Future<void> setBeatFx(int kind, bool on, double beats, double depth) =>
+      _channel.invokeMethod('beatFx', {'kind': kind, 'on': on, 'beats': beats, 'depth': depth});
+
+  /// Mix time of every beat, so the Beat FX keep time with the music.
+  Future<void> setBeatGrid(List<double> beats) => _channel.invokeMethod('beatGrid', {'beats': beats});
+
   Future<void> exportTimeline(List<Map<String, dynamic>> segments, Map<String, dynamic> live, String out) =>
       _channel.invokeMethod('export', {'segments': segments, 'live': live, 'out': out});
 

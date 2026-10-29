@@ -104,6 +104,23 @@ final class MixerChannel {
     case "liveMap":
       player.live = TimelinePlayer.LiveMap(args)
       result(nil)
+    case "colourFx":
+      let kind = ColourFX.Kind(rawValue: (args["kind"] as? Int) ?? 0) ?? .filter
+      player.colourBeat.kind = kind
+      player.colourVox.kind = kind
+      player.colourBeat.knob = Float((args["beat"] as? Double) ?? 0)
+      player.colourVox.knob = Float((args["vocal"] as? Double) ?? 0)
+      result(nil)
+    case "beatFx":
+      let fx = player.beatFX
+      fx.kind = BeatFX.Kind(rawValue: (args["kind"] as? Int) ?? 0) ?? .echo
+      fx.beats = (args["beats"] as? Double) ?? 1
+      fx.depth = Float((args["depth"] as? Double) ?? 0.6)
+      fx.on = (args["on"] as? Bool) ?? false
+      result(nil)
+    case "beatGrid":
+      player.beatGrid = (args["beats"] as? [Double]) ?? []
+      result(nil)
     case "play":
       player.play(from: args["from"] as? Double)
       result(nil)
@@ -737,6 +754,13 @@ final class TimelinePlayer {
   private var voxDb = Smoothed()
   private var beatDb = Smoothed()
 
+  // Live effects: a Colour FX knob on each layer, Beat FX on the master.
+  let colourBeat = ColourFX(sr: 44100)
+  let colourVox = ColourFX(sr: 44100)
+  let beatFX = BeatFX(sr: 44100)
+  /// Mix time of every beat, so the Beat FX keep time with the music.
+  var beatGrid: [Double] = []
+
   private var segments: [Segment] = []
   private var active: [Int: Active] = [:]
   private var loading: Set<Int> = []
@@ -761,8 +785,12 @@ final class TimelinePlayer {
   private var generation = 0  // bumps on every restart so stale loads are dropped
 
   init() {
+    let fx = (
+      beat: FXUnit.make(FXUnit.colourDesc, colourBeat.process),
+      vox: FXUnit.make(FXUnit.colourDesc, colourVox.process),
+      master: FXUnit.make(FXUnit.beatDesc, beatFX.process))
     Self.wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxGain: voxGain,
-      master: master, limiter: limiter, format: format)
+      master: master, limiter: limiter, format: format, fx: fx)
     // All player nodes are created up front: attaching nodes to a running
     // engine stalls audio (and, on this app's shared thread, the screen).
     for _ in 0..<16 {
@@ -782,21 +810,23 @@ final class TimelinePlayer {
     liveTimer = pt
   }
 
-  /// main layer → gain ─┐
-  /// vocal layer → gain ─┴→ master → limiter → out
+  /// main layer → gain → (colour FX) ─┐
+  /// vocal layer → gain → (colour FX) ─┴→ master → (beat FX) → limiter → out
   static func wire(
     _ engine: AVAudioEngine, beatBus: AVAudioMixerNode, beatGain: AVAudioUnitEQ, voxBus: AVAudioMixerNode,
     voxGain: AVAudioUnitEQ, master: AVAudioMixerNode, limiter: AVAudioUnitEffect,
-    format: AVAudioFormat
+    format: AVAudioFormat, fx: (beat: AVAudioNode, vox: AVAudioNode, master: AVAudioNode)? = nil
   ) {
     for g in [voxGain, beatGain] { g.bands[0].bypass = true }
     [beatBus, beatGain, voxBus, voxGain, master, limiter].forEach { engine.attach($0) }
-    engine.connect(beatBus, to: beatGain, format: format)
-    engine.connect(beatGain, to: master, format: format)
-    engine.connect(voxBus, to: voxGain, format: format)
-    engine.connect(voxGain, to: master, format: format)
-    engine.connect(master, to: limiter, format: format)
-    engine.connect(limiter, to: engine.mainMixerNode, format: format)
+    if let fx { [fx.beat, fx.vox, fx.master].forEach { engine.attach($0) } }
+    func chain(_ nodes: [AVAudioNode?]) {
+      let n = nodes.compactMap { $0 }
+      for i in 0..<(n.count - 1) { engine.connect(n[i], to: n[i + 1], format: format) }
+    }
+    chain([beatBus, beatGain, fx?.beat, master])
+    chain([voxBus, voxGain, fx?.vox, master])
+    chain([master, fx?.master, limiter, engine.mainMixerNode])
   }
 
   static func makeLimiter() -> AVAudioUnitEffect {
@@ -811,9 +841,25 @@ final class TimelinePlayer {
   }
 
   private func applyLive() {
-    let (vdb, bdb) = live.at(position)
+    let p = position
+    let (vdb, bdb) = live.at(p)
     voxGain.globalGain = voxDb.toward(vdb, 0.25)
     beatGain.globalGain = beatDb.toward(bdb, 0.25)
+    syncBeat(p)
+  }
+
+  /// Tells the Beat FX where the playhead is on the beat grid.
+  private func syncBeat(_ p: Double) {
+    let g = beatGrid
+    guard g.count > 1 else { return }
+    var lo = 0, hi = g.count - 2
+    while lo < hi {
+      let mid = (lo + hi + 1) / 2
+      if g[mid] <= p { lo = mid } else { hi = mid - 1 }
+    }
+    let len = g[lo + 1] - g[lo]
+    guard len > 0.05 else { return }
+    beatFX.sync(phase: Double(lo) + (p - g[lo]) / len, beatLen: len)
   }
 
   /// Now, on the clock the player nodes schedule against (44.1 kHz). Not the
