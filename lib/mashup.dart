@@ -881,21 +881,26 @@ class MashupMaker {
       List<Keyframe> tail({required bool last}) {
         final o = outroBar;
         if (last) return [Keyframe(barX(o + 4)), Keyframe(barX(o + 8), gain: 0, lpf: 2500)];
-        // Into an acapella drop: the full beat to the last bar, then a quick
-        // sweep up and away into an echo as the next vocal comes in alone.
+        // Into an acapella drop: the full beat, then over the last two bars
+        // a growing echo and, on the final beat, a sweep up and away as the
+        // next vocal comes in alone. (The bass stays to the end: thin the
+        // beat any sooner and the set goes quiet before the vocal.)
         if (drops[i + 1]) {
           return [
             Keyframe(barX(o)),
-            Keyframe(barX(o + 7)),
-            Keyframe(barX(o + 8) - beatLen(o + 7) * 0.5, gain: 0.6, low: kill, hpf: 500, echo: 0.4),
-            Keyframe(barX(o + 8), gain: 0, low: kill, hpf: 1000, echo: 0.5),
+            Keyframe(barX(o + 6)),
+            Keyframe(barX(o + 7), echo: 0.1),
+            Keyframe(barX(o + 8) - beatLen(o + 7), gain: 0.9, low: -6, hpf: 120, echo: 0.3),
+            Keyframe(barX(o + 8), gain: 0, low: kill, hpf: 900, echo: 0.5),
           ];
         }
+        // Bass hands over on bar 4, then the rest of the beat melts away
+        // under the new one over four bars.
         return [
           Keyframe(barX(o)),
           Keyframe(barX(o + 4) - beatLen(o + 3) * 0.25),
-          Keyframe(barX(o + 4), low: kill),
-          Keyframe(barX(o + 6), low: kill),
+          Keyframe(barX(o + 4), gain: 0.9, low: kill),
+          Keyframe(barX(o + 6), gain: 0.55, low: kill, hpf: 200),
           Keyframe(barX(o + 8), gain: 0, low: kill, hpf: 450),
         ];
       }
