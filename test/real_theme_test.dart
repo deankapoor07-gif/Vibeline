@@ -18,19 +18,19 @@ void main() {
     final theme = Platform.environment['VIBELINE_THEME'] ?? 'Kiwi';
     final vibe = parseTheme(Platform.environment['VIBELINE_VIBE'] ?? 'party, mix genres, my shazams', theme);
     final anchorOn = Platform.environment['VIBELINE_ANCHOR_ON'] == '1';
-    var pool = lib.tracks.where(vibe.fits).toList();
+    final singers = lib.tracks.where(vibe.fits).toList();
+    var pool = lib.tracks.toList();
     final note = fitThemeLength(vibe, vibe.minutesAvailable(lib.tracks, mashups: true));
     print('THEME $theme: ${pool.length} songs · note: $note · target ${vibe.minutes.toStringAsFixed(0)} min');
     final maker = MashupMaker(vibe, seed: 5);
     final rng = math.Random(5);
     final ranked = pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
-    pool = ranked.map((e) => e.$1).toList();
+    final all = ranked.map((e) => e.$1).toList();
+    // As the app does: every song in theme (they sing) plus the best others as beats.
+    pool = {...singers, ...all.where((t) => !vibe.fits(t)).take(math.max(80, maker.mashupCount * 4))}.toList();
     await lib.analyze(pool, (d, t) {});
-    fitThemeTempo(vibe, pool);
-    print('TEMPO ${vibe.targetBpm}');
-    final ok = pool.where((t) => t.analysis != null).toList();
-    print('analysed ${ok.length}/${pool.length}: '
-        '${ok.map((t) => '${t.title} ${t.analysis!.steadyBpm.toStringAsFixed(0)}bpm ${t.analysis!.camelot}').join(' | ')}');
+    fitThemeTempo(vibe, singers);
+    print('TEMPO ${vibe.targetBpm} · ${singers.length} singers · ${pool.length} songs in the pool');
     final session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
     final statuses = <String>[];
     await session.fill(lib, maker.mashupCount, (s) => statuses.add(s), () {});

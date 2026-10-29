@@ -67,10 +67,11 @@ class VibeProfile {
   }
 
   /// Roughly how many minutes of mix the songs that fit can make: a mashup
-  /// (~2.1 min) uses two songs; a blend mix plays ~2.3 min of each.
+  /// (~2.1 min) sings one song that fits over any beat; a blend mix plays
+  /// ~2.3 min of each.
   double minutesAvailable(List<LibraryTrack> tracks, {required bool mashups}) {
     final n = tracks.where((t) => fits(t) && t.duration >= 100).length;
-    return mashups ? n / 2 * 2.1 : n * 2.3;
+    return mashups ? n * 2.1 : n * 2.3;
   }
 }
 

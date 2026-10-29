@@ -231,7 +231,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       // A theme night ("80s", "punk", "Halloween"): only songs that fit, at
       // least 20 minutes, or as long as those songs allow (and say so).
       _themeNote = fitThemeLength(vibe, vibe.minutesAvailable(pool, mashups: _mashupMode));
-      if (vibe.themed) pool = pool.where(vibe.fits).toList();
+      // Mashups only need the vocals in theme; beats come from the whole library.
+      if (vibe.themed && !_mashupMode) pool = pool.where(vibe.fits).toList();
       final ranked = pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
 
       if (_mashupMode) {
@@ -289,11 +290,17 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // Long sets need a bigger pool of songs to draw from. Anchor mode needs
     // more again: every beat has to fit the anchor's tempo and key (80 songs
     // left 2–3 mashups for a 5-mashup set).
-    final pool = ranked.take(anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)).toList();
+    // A theme night: every song that fits the theme (they sing), plus the
+    // best of the rest of the library as beats.
+    final singers = ranked.where(vibe.fits).toList();
+    final pool = {
+      ...singers,
+      ...ranked.where((t) => !vibe.themed || !vibe.fits(t)).take(anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)),
+    }.toList();
     await _library.analyze(pool, (done, total) {
       _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
     });
-    fitThemeTempo(vibe, pool);
+    fitThemeTempo(vibe, singers);
     _set('Pairing vocals with beats…');
     final session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
     setState(() {

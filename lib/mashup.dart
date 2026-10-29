@@ -352,7 +352,9 @@ class MashupMaker {
     final tags = {for (final t in [...songs, ?onlyVocal, ?onlyBeat]) t.path: tagScore(t, vibe, rng)};
     final pairs = <_Pair>[];
     final beats = onlyBeat != null ? [onlyBeat] : songs;
-    final vocals = onlyVocal != null ? [onlyVocal] : songs;
+    // A theme night is about the singing: the vocals fit the theme, the beats
+    // can come from anywhere.
+    final vocals = onlyVocal != null ? [onlyVocal] : songs.where(vibe.fits).toList();
     for (final b in beats) {
       if (b.analysis == null) continue;
       final bg = _natural(b.analysis!);
