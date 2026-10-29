@@ -27,7 +27,7 @@ class VibelineApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Vibeline',
+      title: 'D-Jay Noodles',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0E0E12),
@@ -737,18 +737,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _set('Still preparing ${_sections.sections.length - _sections.ready} sections — save again in a moment.', phase: Phase.ready);
       return;
     }
-    final dir = Directory('${MusicLibrary.home}/Music/Vibeline');
+    final dir = Directory('${MusicLibrary.home}/Music/D-Jay Noodles');
     await dir.create(recursive: true);
     final now = DateTime.now();
     final stamp =
         '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}.${now.minute.toString().padLeft(2, '0')}';
     final name = _currentVibePrompt.replaceAll(RegExp(r'[^A-Za-z0-9 ,&-]'), '').trim();
     final kind = _mashupMode ? 'Mashups' : 'Mix';
-    final dest = '${dir.path}/Vibeline $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp.m4a';
+    final dest = '${dir.path}/D-Jay Noodles $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp.m4a';
     _set('Saving…', phase: Phase.ready);
     await _sections.export(dest, _liveMap);
     await Process.run('open', ['-R', dest]);
-    _set('Saved to Music › Vibeline', phase: Phase.ready);
+    _set('Saved to Music › D-Jay Noodles', phase: Phase.ready);
   }
 
   // ------------------------------------------------------------- UI
@@ -780,7 +780,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final statusLine = [_status, if (_readiness.isNotEmpty) _readiness].join('   ·   ');
     return Scaffold(
       appBar: AppBar(
-        title: Text(_mashupMode ? 'Vibeline — Timeline & Mashup Studio' : 'Vibeline'),
+        title: Text(_mashupMode ? 'D-Jay Noodles — Timeline & Mashup Studio' : 'D-Jay Noodles'),
         backgroundColor: const Color(0xFF181820),
         actions: [
           if (_mashupMode)
