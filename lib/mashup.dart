@@ -865,14 +865,16 @@ class MashupMaker {
       }
 
       // Beat song stems: summed into one clip (one time-stretch instead of
-      // three — much faster), with a little build into the drop.
+      // three — much faster). The opening mashup gets a little build into
+      // the drop; later ones don't, as the outgoing song is fading out under
+      // those same bars and the two together left a hole before the vocal.
       final beatStems = [
         for (final lane in m.lanes)
           if (!lane.fromVocalSong && m.laneAudible(lane)) m.beat.stems!.paths[lane.stem]!
       ];
       if (beatStems.isNotEmpty) {
         final keys = <Keyframe>[...head()];
-        if (!m.beatOnly) {
+        if (!m.beatOnly && i == 0) {
           keys.addAll([
             Keyframe(barX(Mashup.introBars - 2)),
             Keyframe(barX(Mashup.introBars) - beatLen(Mashup.introBars - 1) * 0.25, low: kill, hpf: 250),
