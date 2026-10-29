@@ -27,7 +27,16 @@ void main() {
     print('TEMPO ${vibe.targetBpm}');
     if (Platform.environment['VIBELINE_SEPARATE'] == '1') await lib.separate(pool.where((t) => t.analysis != null).toList(), (d, n, c) {});
     print('THEME $theme · ${pool.length} songs · target ${vibe.minutes.round()} min / ${vibe.trackCount} songs · $note');
-    final plan = MixPlanner(vibe, seed: 5).plan(pool);
+    final bridges = lib.tracks.where((t) => !vibe.fits(t)).toList()
+      ..sort((a, b) => tagScore(b, vibe, rng).compareTo(tagScore(a, vibe, rng)));
+    bridges.removeRange(math.min(60, bridges.length), bridges.length);
+    await lib.analyze(bridges, (d, t) {});
+    var plan = MixPlanner(vibe, seed: 5).plan(pool, bridges: bridges);
+    // As the app does: split the chosen songs, then plan again.
+    if (plan != null) {
+      await lib.separate(plan.tracks.map((t) => t.track).toList(), (d, n, c) {});
+      plan = MixPlanner(vibe, seed: 5).plan(pool, bridges: bridges) ?? plan;
+    }
     if (plan == null) {
       print('NO PLAN');
       return;
@@ -35,7 +44,7 @@ void main() {
     print('PLAN ${plan.summary} · ${(plan.duration / 60).toStringAsFixed(1)} min');
     for (final t in plan.tracks) {
       final g = t.grid;
-      print('  ${t.track.title} · own ${g.steadyBpm.toStringAsFixed(0)} bpm · comes in at ${((t.rate - 1) * 100).toStringAsFixed(1)}% → home ${((t.homeRate - 1) * 100).toStringAsFixed(1)}% · key ${t.pitchSemitones} '
+      print('  ${t.bridge ? 'BRIDGE ' : ''}${t.track.title} · own ${g.steadyBpm.toStringAsFixed(0)} bpm · comes in at ${((t.rate - 1) * 100).toStringAsFixed(1)}% → home ${((t.homeRate - 1) * 100).toStringAsFixed(1)}% · key ${t.pitchSemitones} '
           '(${((t.rate - 1) * 100).toStringAsFixed(1)}%) · in ${t.outStart.toStringAsFixed(0)}s–${t.outEnd.toStringAsFixed(0)}s');
     }
     final out = Platform.environment['VIBELINE_PLAN_OUT'];

@@ -62,7 +62,8 @@ class _Cand {
   final LibraryTrack track;
   final Analysis grid;
   final double tagScore;
-  _Cand(this.track, this.grid, this.tagScore);
+  final bool bridge;
+  _Cand(this.track, this.grid, this.tagScore, {this.bridge = false});
   double get bpm => grid.steadyBpm;
   String get family => genreFamily(track.genre);
 }
@@ -101,7 +102,12 @@ class MixPlanner {
     return out;
   }
 
-  MixPlan? plan(List<LibraryTrack> pool) {
+  /// Songs playing as beat bridges in this plan.
+  final _bridges = <LibraryTrack>{};
+
+  /// [bridges]: songs (outside a theme) whose beat may carry the mix between
+  /// two songs that don't blend well on their own.
+  MixPlan? plan(List<LibraryTrack> pool, {List<LibraryTrack> bridges = const []}) {
     // Settle on a master tempo near the vibe's target that most songs can reach.
     var tempo = vibe.targetBpm;
     var bestCount = -1;
@@ -117,8 +123,49 @@ class MixPlanner {
     if (cands.length < vibe.trackCount) cands = _candidates(pool, tempo, 0.09);
     if (cands.length < 2) return null;
 
-    final order = _sequence(cands, math.min(vibe.trackCount, cands.length));
-    return _build(order.map((i) => cands[i]).toList(), tempo);
+    final order = _sequence(cands, math.min(vibe.trackCount, cands.length)).map((i) => cands[i]).toList();
+    return _build(_withBridges(order, _candidates(bridges, tempo, 0.12)), tempo);
+  }
+
+  /// Where two neighbours don't blend well (tempos more than 4% apart, or
+  /// keys that would force an echo-out), a 16-bar snippet of another song's
+  /// beat goes between them: its tempo and key sit between the two, so the
+  /// mix moves across in two easy steps instead of one hard one.
+  List<_Cand> _withBridges(List<_Cand> order, List<_Cand> pool) {
+    _bridges.clear();
+    if (pool.isEmpty) return order;
+    final used = {for (final c in order) c.track.songKey};
+    final out = <_Cand>[order.first];
+    for (var i = 1; i < order.length; i++) {
+      final a = order[i - 1], b = order[i];
+      final gap = (a.bpm / b.bpm - 1).abs();
+      final h = _bestHarmony(a.grid.camelot, b.grid.camelot).score;
+      if (gap > 0.04 || h < 0.4) {
+        _Cand? best;
+        var bestScore = -1e9;
+        for (final x in pool) {
+          if (used.contains(x.track.songKey) || x.track.artist.toLowerCase() == a.track.artist.toLowerCase()) continue;
+          final gA = (a.bpm / x.bpm - 1).abs(), gB = (x.bpm / b.bpm - 1).abs();
+          final hA = _bestHarmony(a.grid.camelot, x.grid.camelot).score;
+          final hB = _bestHarmony(x.grid.camelot, b.grid.camelot).score;
+          if (gA > 0.05 || gB > 0.05 || hA < 0.4 || hB < 0.4) continue;
+          // It has to make the move easier than going straight across.
+          if (math.max(gA, gB) >= gap && math.min(hA, hB) <= h) continue;
+          final s = hA + hB - 6 * (gA + gB) + 0.3 * x.tagScore - 1.5 * (x.grid.energy - b.grid.energy).abs();
+          if (s > bestScore) {
+            bestScore = s;
+            best = x;
+          }
+        }
+        if (best != null) {
+          out.add(_Cand(best.track, best.grid, best.tagScore, bridge: true));
+          used.add(best.track.songKey);
+          _bridges.add(best.track);
+        }
+      }
+      out.add(b);
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- order
@@ -201,6 +248,7 @@ class MixPlanner {
   final _sungCache = <LibraryTrack, List<bool>?>{};
   List<bool>? _sungBars(LibraryTrack t, Analysis g) => _sungCache.putIfAbsent(t, () {
         if (t.stems == null) return null;
+        if (_bridges.contains(t)) return List.filled(g.barCount, false); // its vocals are muted
         return [for (var b = 0; b < g.barCount; b++) (_sung(t, g, b, b + 1) ?? 0) > 0.5];
       });
 
@@ -424,9 +472,11 @@ class MixPlanner {
       final gb = next.grid;
 
       // Where A starts mixing out and where B comes in: the longest blend
-      // the keys allow that never has both songs singing at once.
-      final earliest = math.max(inBar + prevBlend + solo, inBar + (vibe.smooth ? 40 : 32));
-      final (type, blend, m, inB) = _blendPoints(a.track, ga, next.track, gb, h, earliest, inBar + targetPlay, solo);
+      // the keys allow that never has both songs singing at once. A bridge
+      // plays about 16 bars once it has the floor.
+      final earliest = a.bridge ? inBar + prevBlend + 8 : math.max(inBar + prevBlend + solo, inBar + (vibe.smooth ? 40 : 32));
+      final target = a.bridge ? inBar + prevBlend + 16 : inBar + targetPlay;
+      final (type, blend, m, inB) = _blendPoints(a.track, ga, next.track, gb, h, earliest, target, next.bridge ? 8 : solo);
 
       // Line the two songs' beats up using the beats around the blend.
       final fitA = ga.fit(ga.beatIndexOfBar(m), ga.beatIndexOfBar(m + math.max(blend, 8)));
@@ -447,7 +497,7 @@ class MixPlanner {
         pitchSemitones: h.shift,
         gainDb: gainFor(gb),
         deck: i % 2,
-      );
+      )..bridge = next.bridge;
       final entryBar = type == TransitionType.echoOut ? blend : 0;
       b.srcStart = math.max(0, fitB.timeOfBeat(gb.beatIndexOfBar(inB)));
       b.outStart = barX(entryBar);
@@ -458,10 +508,11 @@ class MixPlanner {
       _automate(type, a, b, barX, outBeat, blend: blend, bassFits: h.score >= 0.4);
       // Once B has the floor, ride it home to its own speed and key, done by
       // the time it can start mixing out.
+      // A bridge glides instead toward the tempo of the song after it.
       b
         ..rampFrom = barX(blend)
-        ..rampLen = solo * 4 * outBeat
-        ..homeRate = 1.0;
+        ..rampLen = (next.bridge ? 8 : solo) * 4 * outBeat
+        ..homeRate = next.bridge && i + 1 < order.length ? (order[i + 1].bpm / gb.steadyBpm).clamp(0.85, 1.15) : 1.0;
       if (const [TransitionType.echoOut, TransitionType.dropSwap, TransitionType.stemBlend].contains(type)) a.outEnd += 2.5;
 
       transitions.add(PlannedTransition(type, blend, h.label, barX(0), barX(blend)));
@@ -474,7 +525,9 @@ class MixPlanner {
     final duration = tracks.map((t) => t.outEnd).reduce(math.max) + 1.0;
     final bpms = tracks.map((t) => t.playedBpm).toList();
     final lo = bpms.reduce(math.min).round(), hi = bpms.reduce(math.max).round();
-    final summary = '${vibe.summary} · ${tracks.length} songs · ${lo == hi ? '$lo' : '$lo–$hi'} BPM';
+    final bridges = tracks.where((t) => t.bridge).length;
+    final summary = '${vibe.summary} · ${tracks.length - bridges} songs'
+        '${bridges == 0 ? '' : ' · $bridges beat bridge${bridges == 1 ? '' : 's'}'} · ${lo == hi ? '$lo' : '$lo–$hi'} BPM';
     return MixPlan(tracks, transitions, duration, summary);
   }
 

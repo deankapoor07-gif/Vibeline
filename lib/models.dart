@@ -455,6 +455,9 @@ class PlannedTrack {
   /// Stems played alongside (or instead of) the full song for a while, with
   /// the song's timing: e.g. just its drums under the outgoing song.
   final List<StemLayer> layers = [];
+  /// A beat bridge: a snippet of this song with its vocals muted, carrying
+  /// the mix from one song to the next.
+  bool bridge = false;
 
   PlannedTrack({
     required this.track,
@@ -517,10 +520,19 @@ class PlannedTrack {
 
   /// How much of mix time [from]–[to] this song is singing (0..1), or null
   /// when its stems (and so its vocals) aren't known yet.
-  double? vocalsBetween(double from, double to) => track.vocalsBetweenSrc(srcAt(from), srcAt(to));
+  double? vocalsBetween(double from, double to) => bridge ? 0 : track.vocalsBetweenSrc(srcAt(from), srcAt(to));
+
+  /// Everything but the vocals, for a bridge (null: play the song itself).
+  List<String>? get _beatStems {
+    final paths = track.stems?.paths;
+    if (!bridge || paths == null) return null;
+    final beat = [for (final e in paths.entries) if (e.key != 'vocals') e.value];
+    return beat.isEmpty ? null : beat;
+  }
 
   Map<String, dynamic> toJson() => {
-        'path': track.path,
+        'path': _beatStems?.first ?? track.path,
+        if (_beatStems != null && _beatStems!.length > 1) 'mix': _beatStems!.skip(1).toList(),
         'srcStart': srcStart,
         'srcEnd': srcEnd,
         'outStart': outStart,
@@ -542,7 +554,7 @@ class PlannedTrack {
             'path': l.path,
             'srcEnd': math.min(srcEnd, l.srcEnd),
             'keys': l.keys.map((k) => k.toJson()).toList(),
-          }
+          }..remove('mix')
       ];
 }
 

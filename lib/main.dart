@@ -231,8 +231,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       // A theme night ("80s", "punk", "Halloween"): only songs that fit, at
       // least 20 minutes, or as long as those songs allow (and say so).
       _themeNote = fitThemeLength(vibe, vibe.minutesAvailable(pool, mashups: _mashupMode));
-      // Mashups only need the vocals in theme; beats come from the whole library.
-      if (vibe.themed && !_mashupMode) pool = pool.where(vibe.fits).toList();
+      // A theme night themes the singing: mashup beats and blend bridges can
+      // come from the whole library.
       final ranked = pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2));
 
       if (_mashupMode) {
@@ -245,7 +245,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     }
   }
 
-  Future<void> _makeBlendMix(VibeProfile vibe, List<LibraryTrack> ranked) async {
+  Future<void> _makeBlendMix(VibeProfile vibe, List<LibraryTrack> all) async {
+    // A theme night: its songs play, and other songs' beats can bridge
+    // between two that don't blend well.
+    final ranked = vibe.themed ? all.where(vibe.fits).toList() : all;
+    final bridges = vibe.themed ? all.where((t) => !vibe.fits(t)).take(60).toList() : <LibraryTrack>[];
+    await _library.analyze(bridges, (done, total) {
+      _set('Finding beats to bridge with… $done / $total', progress: total == 0 ? null : done / total);
+    });
     final batch = math.max(48, vibe.trackCount * 5);
     final seed = DateTime.now().millisecondsSinceEpoch; // same seed: same songs when planned again below
     MixPlan? plan;
@@ -257,7 +264,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       });
       _set('Planning the set…');
       fitThemeTempo(vibe, wanted);
-      plan = MixPlanner(vibe, seed: seed).plan(wanted);
+      plan = MixPlanner(vibe, seed: seed).plan(wanted, bridges: bridges);
       if (plan != null && plan.tracks.length >= math.min(vibe.trackCount, 4)) break;
     }
     if (plan == null) {
@@ -272,7 +279,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         _set('Finding where the singing is · ${c?.title ?? ''} · $done / $total (first time only, about 20 s a song)',
             progress: total == 0 ? null : done / total);
       });
-      plan = MixPlanner(vibe, seed: seed).plan(wanted) ?? plan;
+      plan = MixPlanner(vibe, seed: seed).plan(wanted, bridges: bridges) ?? plan;
     }
     // Prepared intros (scratches, drops) ride on their songs, on the beat.
     plan.introClips = introClips(plan, await Intro.loadAll());
@@ -1312,6 +1319,14 @@ class TrackTimelineNode extends StatelessWidget {
                         style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
                       ),
                     ),
+                  if (planned.bridge) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(color: Colors.orangeAccent.withValues(alpha: 0.25), borderRadius: BorderRadius.circular(4)),
+                      child: const Text('BEAT BRIDGE', style: TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                    ),
+                  ],
                   if (t.shazam) ...[
                     const SizedBox(width: 8),
                     Container(

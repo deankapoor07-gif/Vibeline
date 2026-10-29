@@ -102,7 +102,7 @@ List<Map<String, dynamic>> introClips(MixPlan plan, Map<String, Intro> intros) {
     final p = plan.tracks[i];
     final intro = intros[p.track.path];
     final a = p.track.analysis;
-    if (intro == null || a == null || a.beats.length < 16) continue;
+    if (intro == null || a == null || a.beats.length < 16 || p.bridge) continue;
     if (intro.when == 'setOpener' && i != 0) continue;
     if (intro.when == 'afterBlend' && i == 0) continue;
     final at = introBar0(p, a, intro.anchor, i == 0 ? null : plan.transitions[i - 1].end);
