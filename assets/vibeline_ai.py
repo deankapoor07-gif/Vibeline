@@ -438,7 +438,7 @@ def separate_file(path):
         if "levels" not in meta:  # stems made before levels were measured
             meta["levels"] = _stem_levels(meta["stems"])
             changed = True
-        if "gridTight" not in meta:  # stems made before the grid was checked
+        if "beatShift" not in meta:  # stems made before the grid was checked beat by beat
             meta.update(_grid_check(path, meta["stems"]))
             changed = True
         if "curves" not in meta:  # stems made before drum/bass curves were measured
@@ -573,7 +573,31 @@ def _grid_check(path, stems):
     strong = offs[strength > np.median(strength)]
     offset = float(np.clip(np.median(strong), -0.03, 0.03))
     tight = float(np.mean(np.abs(strong) < 0.025))
-    return {"gridOffset": round(offset, 4), "gridTight": round(tight, 3)}
+    return {"gridOffset": round(offset, 4), "gridTight": round(tight, 3), "beatShift": _beat_shift(beats, flux, fps, w)}
+
+
+def _beat_shift(beats, flux, fps, w):
+    """Where the drums really hit, beat by beat: [time, offset] pairs, each
+    the median offset of the strong hits within 8 beats either side. A band
+    (or the beat tracker) that drifts partway through a song stays pinned to
+    its own drums, not just to the song's overall offset."""
+    import numpy as np
+    floor = np.median(flux[flux > 0]) * 3 if np.any(flux > 0) else 0
+    offs = np.full(len(beats), np.nan)
+    for i, b in enumerate(beats):
+        c = int(b * fps)
+        if c - w < 0 or c + w >= len(flux):
+            continue
+        seg = flux[c - w : c + w + 1]
+        if seg.max() > floor:
+            offs[i] = (seg.argmax() - w) / fps
+    out = []
+    for i, b in enumerate(beats):
+        near = offs[max(0, i - 8) : i + 9]
+        near = near[~np.isnan(near)]
+        if len(near) >= 6:
+            out.append([round(float(b), 3), round(float(np.clip(np.median(near), -0.08, 0.08)), 4)])
+    return out
 
 
 def _stem_levels(stems):

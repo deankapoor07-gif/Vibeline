@@ -72,6 +72,8 @@ class StemSet {
   /// grid: ~0.95 for a drum machine, lower for a loose live band.
   final double gridOffset;
   final double gridTight;
+  /// The same, beat by beat: [time, offset] pairs (see [Analysis.offsetAt]).
+  final List<List<double>> beatShift;
   /// Level (dB) of 'drums', 'bass' and the ear-weighted 'inst'rumental every
   /// [curveHop] seconds of the song.
   final Map<String, List<double>> curves;
@@ -79,7 +81,7 @@ class StemSet {
 
   StemSet(this.paths, this.vocalBeats, this.vocalShare,
       [this.tuning = const {}, this.levels = const {}, this.gridOffset = 0, this.gridTight = 1,
-      this.curves = const {}, this.curveHop = 0.5]);
+      this.curves = const {}, this.curveHop = 0.5, this.beatShift = const []]);
 
   factory StemSet.fromJson(Map<String, dynamic> j) => StemSet(
         ((j['stems'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, v as String)),
@@ -94,6 +96,10 @@ class StemSet {
             if (e.value is List) e.key as String: (e.value as List).map((x) => (x as num).toDouble()).toList()
         },
         ((j['curves'] as Map?)?['hop'] as num?)?.toDouble() ?? 0.5,
+        [
+          for (final p in (j['beatShift'] as List?) ?? const [])
+            [((p as List)[0] as num).toDouble(), (p[1] as num).toDouble()]
+        ],
       );
 
   bool get hasCurves => const ['drums', 'bass', 'inst'].every((k) => (curves[k]?.length ?? 0) > 16);
@@ -205,6 +211,35 @@ class Analysis {
   /// Added to every [smoothBeat] so beats land where the drums really hit
   /// (set from the stems' measurement once a song is split).
   double gridOffset = 0;
+  /// The same measured beat by beat ([time, offset] pairs), for bands and
+  /// beat tracking that drift partway through a song.
+  List<List<double>> beatShift = const [];
+
+  /// Where the drums really hit around [t], relative to the beat grid.
+  double offsetAt(double t) {
+    final s = beatShift;
+    if (s.isEmpty) return gridOffset;
+    if (t <= s.first[0]) return s.first[1];
+    if (t >= s.last[0]) return s.last[1];
+    var lo = 0, hi = s.length - 1;
+    while (hi - lo > 1) {
+      final mid = (lo + hi) >> 1;
+      if (s[mid][0] <= t) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    final u = (t - s[lo][0]) / (s[hi][0] - s[lo][0]);
+    return s[lo][1] + (s[hi][1] - s[lo][1]) * u;
+  }
+
+  /// Takes the stems' drum measurements.
+  void pinTo(StemSet? s) {
+    gridOffset = s?.gridOffset ?? 0;
+    beatShift = s?.beatShift ?? const [];
+    _smooth = null;
+  }
 
   Analysis({
     required this.bpm,
@@ -288,7 +323,9 @@ class Analysis {
         danceability: danceability,
         waveform: waveform,
         tuning: tuning,
-      )..gridOffset = gridOffset;
+      )
+        ..gridOffset = gridOffset
+        ..beatShift = beatShift;
 
   int beatIndexOfBar(int bar) => barPhase + 4 * bar;
 
@@ -343,11 +380,11 @@ class Analysis {
     _smooth ??= List<double>.filled(beats.length, double.nan);
     if (i < 0 || i >= beats.length) {
       final edge = i < 0 ? 0 : beats.length - 1;
-      final g = fit(edge - 8, edge + 8);
-      return g.timeOfBeat(i) + gridOffset;
+      final t = fit(edge - 8, edge + 8).timeOfBeat(i);
+      return t + offsetAt(t);
     }
     if (_smooth![i].isNaN) _smooth![i] = fit(i - 8, i + 8).timeOfBeat(i);
-    return _smooth![i] + gridOffset;
+    return _smooth![i] + offsetAt(_smooth![i]);
   }
 
   List<double>? _windowTempos;

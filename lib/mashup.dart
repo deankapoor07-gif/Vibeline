@@ -801,7 +801,10 @@ class MashupMaker {
       // Beat-song beats from a straight line through their neighbours too (a
       // misplaced beat would jerk both songs).
       final srcCache = <int, double>{};
-      double src(int n) => srcCache[n] ??= bg.fit(bBase + n - 6, bBase + n + 6).timeOfBeat(bBase + n) + bg.gridOffset;
+      double src(int n) => srcCache[n] ??= () {
+            final t = bg.fit(bBase + n - 6, bBase + n + 6).timeOfBeat(bBase + n);
+            return t + bg.offsetAt(t);
+          }();
       // During the blend (first 32 beats) every beat is pinned to the matching
       // beat of the outgoing song, so even drifting live recordings stay locked;
       // afterwards the tempo eases to this song's own speed over 16 bars.
@@ -854,7 +857,10 @@ class MashupMaker {
       // Each vocal beat from a straight line through its neighbours: a beat
       // the tracker misplaced would otherwise jerk the voice faster or slower
       // for a beat, while a real drift of the band is still followed.
-      double vocalBeat(int k) => vg.fit(k - 6, k + 6).timeOfBeat(k) + vg.gridOffset;
+      double vocalBeat(int k) {
+        final t = vg.fit(k - 6, k + 6).timeOfBeat(k);
+        return t + vg.offsetAt(t);
+      }
       final warp = <List<double>>[
         for (var n = -2; n <= m.vocalBars * 4 + m.vocalTailBeats + 4; n++)
           [n + 32 >= 0 ? outT[n + 32] : start - (src(0) - bg.smoothBeat(bBase + n + 32)), vocalBeat(vEntryBeat + n)]

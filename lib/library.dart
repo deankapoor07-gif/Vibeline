@@ -137,7 +137,7 @@ class MusicLibrary {
         t.waveform = ((row['waveform'] as List?) ?? const []).map((e) => (e as num).toDouble()).toList();
         if (row['ok'] == true) {
           try {
-            t.analysis = Analysis.fromJson(row)..gridOffset = t.stems?.gridOffset ?? 0;
+            t.analysis = Analysis.fromJson(row)..pinTo(t.stems);
           } catch (_) {}
         }
       }
@@ -160,7 +160,7 @@ class MusicLibrary {
         final s = StemSet.fromJson(row);
         if (s.complete) {
           t.stems = s;
-          t.analysis?.gridOffset = s.gridOffset;
+          t.analysis?.pinTo(s);
         }
       }
       onProgress(done, todo.length, done < todo.length ? todo[done] : null);
