@@ -863,6 +863,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       return true;
     }
     if (e is! KeyDownEvent) return false;
+    if (k == LogicalKeyboardKey.keyS) {
+      _scratch();
+      return true;
+    }
     if (k == LogicalKeyboardKey.space) {
       _togglePlay();
       return true;
@@ -1005,15 +1009,20 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           heading: _heading,
           upNext: _upNext,
         )),
-        if (_mashupMode && decks.length == 2) ...[
+        ...[
           const SizedBox(height: 8),
           Row(children: [
-            _muteButton('Vocal', _muteVocal, kPink, () => _setMute(vocal: !_muteVocal),
-                'Cut the singer out for an instrumental moment'),
-            const SizedBox(width: 8),
-            _muteButton('Beat', _muteBeat, kTeal, () => _setMute(beat: !_muteBeat), 'Cut the beat out for an acapella moment'),
+            if (_mashupMode && decks.length == 2) ...[
+              _muteButton('Vocal', _muteVocal, kPink, () => _setMute(vocal: !_muteVocal),
+                  'Cut the singer out for an instrumental moment'),
+              const SizedBox(width: 8),
+              _muteButton('Beat', _muteBeat, kTeal, () => _setMute(beat: !_muteBeat),
+                  'Cut the beat out for an acapella moment'),
+              const SizedBox(width: 8),
+            ],
+            _scratchButton(),
             const Spacer(),
-            const Text('Space play · ← → skip · 1–8 FX', style: TextStyle(fontSize: 11, color: Colors.white38)),
+            const Text('Space play · ← → skip · 1–8 FX · S scratch', style: TextStyle(fontSize: 11, color: Colors.white38)),
           ]),
         ],
         const SizedBox(height: 10),
@@ -1039,6 +1048,39 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       ]),
     );
   }
+
+  bool _scratchLit = false;
+
+  /// One push-and-pull of the record per tap; tap quickly to scratch.
+  void _scratch() {
+    if (!_playable || !_playing) return;
+    _mixer.scratch();
+    setState(() => _scratchLit = true);
+    Future.delayed(const Duration(milliseconds: 120), () {
+      if (mounted) setState(() => _scratchLit = false);
+    });
+  }
+
+  Widget _scratchButton() => Tooltip(
+        message: 'Tap quickly a few times to scratch the record (key S)',
+        child: Listener(
+          onPointerDown: (_) => _scratch(),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 60),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: _scratchLit ? kYellow : kPanel,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _scratchLit ? kYellow : kYellow.withValues(alpha: 0.5)),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.album, size: 15, color: _scratchLit ? kInk : kYellow),
+              const SizedBox(width: 6),
+              Text('Scratch', style: TextStyle(fontSize: 12, color: _scratchLit ? kInk : kYellow)),
+            ]),
+          ),
+        ),
+      );
 
   Widget _muteButton(String what, bool muted, Color c, void Function() onTap, String hint) => Tooltip(
         message: hint,

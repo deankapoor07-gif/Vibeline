@@ -45,6 +45,26 @@ void main() {
     if (out != null && session.mashups.isNotEmpty) {
       final plan = session.layout();
       File(out).writeAsStringSync(jsonEncode({...plan.renderJson, 'cuts': plan.cuts}));
+      // Timing check data: for each mashup beat, the matching moment in the
+      // vocal song and in the beat song (from the warp maps), with the drums.
+      final align = <Map<String, dynamic>>[];
+      final clips = (plan.renderJson['clips'] as List).cast<Map<String, dynamic>>();
+      for (final m in session.mashups) {
+        if (m.beatOnly || m.vocal.stems == null || m.beat.stems == null) continue;
+        final vp = m.vocal.stems!.paths, bp = m.beat.stems!.paths;
+        final vClip = clips.where((c) => c['path'] == vp['vocals'] && c['warp'] != null).firstOrNull;
+        final bClip = clips
+            .where((c) => bp.values.contains(c['path']) && c['warp'] != null)
+            .fold<Map<String, dynamic>?>(null, (a, c) => a == null || (c['warp'] as List).length > (a['warp'] as List).length ? c : a);
+        if (vClip == null || bClip == null || vp['drums'] == null || bp['drums'] == null) continue;
+        align.add({
+          'vocal': m.vocal.title, 'beat': m.beat.title,
+          'vocalDrums': vp['drums'], 'beatDrums': bp['drums'],
+          'vocalWarp': vClip['warp'], 'beatWarp': bClip['warp'],
+          'vocalBars': m.vocalBars, 'acapella': m.acapellaBars,
+        });
+      }
+      File('$out.align.json').writeAsStringSync(jsonEncode(align));
       final cues = mashupFx(session.mashups);
       File('$out.fx.json').writeAsStringSync(jsonEncode({
         'fx': cues,

@@ -55,6 +55,9 @@ class Mixer {
   Future<Float32List> waveform(List<String> paths) async =>
       await _channel.invokeMethod<Float32List>('waveform', {'paths': paths}) ?? Float32List(0);
 
+  /// One scratch: the record pushed forward and pulled back.
+  Future<void> scratch() => _channel.invokeMethod('scratch');
+
   /// Mix time of every beat, so the Beat FX keep time with the music.
   Future<void> setBeatGrid(List<double> beats) => _channel.invokeMethod('beatGrid', {'beats': beats});
 

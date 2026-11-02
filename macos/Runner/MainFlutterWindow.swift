@@ -120,6 +120,9 @@ final class MixerChannel {
       fx.on = (args["on"] as? Bool) ?? false
       player.manualBeat = fx.on
       result(nil)
+    case "scratch":
+      player.beatFX.scratchTaps &+= 1
+      result(nil)
     case "waveform":
       let paths = (args["paths"] as? [String]) ?? []
       waveQueue.async {
