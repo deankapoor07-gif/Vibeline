@@ -29,9 +29,11 @@ class DeckInfo {
   const DeckInfo(this.role, this.title, this.artist, this.color, this.tags);
 }
 
-/// The bass / mid / high loudness of each rendered section, fetched from the
-/// native side once per file.
+/// The bass / mid / high loudness and peak of each rendered section, every
+/// 10 ms, fetched from the native side once per file and layer choice (a
+/// muted singer or beat drops out of the picture too).
 class WaveCache {
+  static const binsPerSecond = 100;
   final Mixer mixer;
   void Function()? onLoaded;
   WaveCache(this.mixer);
@@ -39,17 +41,19 @@ class WaveCache {
   final _data = <String, Float32List>{};
   final _pending = <String>{};
 
-  Float32List? of(Section s) {
+  Float32List? of(Section s, {bool vocal = true, bool beat = true}) {
     final p = s.path;
     if (p == null) return null;
-    final d = _data[p];
-    if (d != null || !_pending.add(p)) return d;
-    mixer.waveform([p, ?s.voxPath]).then((v) {
-      _pending.remove(p);
+    final paths = [if (beat) p, if (vocal) ?s.voxPath];
+    final key = '$p|$vocal|$beat';
+    final d = _data[key];
+    if (d != null || !_pending.add(key)) return d;
+    mixer.waveform(paths).then((v) {
+      _pending.remove(key);
       if (_data.length > 80) _data.remove(_data.keys.first);
-      _data[p] = v;
+      _data[key] = v;
       onLoaded?.call();
-    }, onError: (_) => _pending.remove(p));
+    }, onError: (_) => _pending.remove(key));
     return null;
   }
 }
@@ -63,6 +67,9 @@ class NowPlayingView extends StatefulWidget {
   final bool playing;
   final String heading;
   final String upNext;
+  final List<double> beats; // mix time of every beat
+  final Set<double> downbeats; // the ones that start a bar
+  final bool vocalMuted, beatMuted;
 
   const NowPlayingView({
     super.key,
@@ -73,6 +80,10 @@ class NowPlayingView extends StatefulWidget {
     required this.playing,
     required this.heading,
     required this.upNext,
+    this.beats = const [],
+    this.downbeats = const {},
+    this.vocalMuted = false,
+    this.beatMuted = false,
   });
 
   @override
@@ -85,7 +96,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
   late final Ticker _ticker = createTicker((_) => setState(() {}));
   double _base = 0;
   DateTime _baseAt = DateTime.now();
-  double _window = 7; // seconds each side of the playhead; scroll to zoom
+  double _window = 4; // seconds each side of the playhead; scroll to zoom
 
   double get _pos {
     if (!widget.playing) return _base;
@@ -162,7 +173,10 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
                         }
                       },
                       child: SizedBox.expand(
-                        child: CustomPaint(painter: _WavePainter(widget.sections, widget.waves, pos, _window)),
+                        child: CustomPaint(
+                        painter: _WavePainter(widget.sections, widget.waves, pos, _window, widget.beats, widget.downbeats,
+                            vocal: !widget.vocalMuted, beat: !widget.beatMuted),
+                      ),
                       ),
                     ),
                   ),
@@ -290,52 +304,105 @@ class _PlatterPainter extends CustomPainter {
   bool shouldRepaint(_PlatterPainter old) => old.pos != pos || old.color != color;
 }
 
-/// The mix around the playhead, coloured by what's sounding: red bass, green
-/// mids (most singing), blue highs (hats, cymbals). Ahead of the playhead
-/// it's dimmer.
+/// The mix around the playhead, drawn the way DJ software does: the overall
+/// peaks in grey, then the bass in red, the mids (most singing) in green and
+/// the highs (hats, cymbals) in blue-white on top, each as tall as that part
+/// is loud. Beat lines run behind it, brighter on the first beat of a bar;
+/// ahead of the playhead it's dimmer.
 class _WavePainter extends CustomPainter {
   final List<Section> sections;
   final WaveCache waves;
   final double pos;
   final double window; // seconds each side of the playhead
-  _WavePainter(this.sections, this.waves, this.pos, this.window);
+  final List<double> beats;
+  final Set<double> downbeats;
+  final bool vocal, beat;
+  _WavePainter(this.sections, this.waves, this.pos, this.window, this.beats, this.downbeats,
+      {required this.vocal, required this.beat});
+
+  static const _layers = [
+    (Color(0xFF8A8A99), 0.95), // peak
+    (Color(0xFF3DDC6A), 3.4), // mid
+    (Color(0xFFFF3B30), 2.6), // low
+    (Color(0xFF7FD8FF), 5.0), // high
+  ];
 
   @override
   void paint(Canvas canvas, Size size) {
     final mid = size.height / 2;
-    final paint = Paint()..strokeWidth = 2;
-    for (var x = 0.0; x < size.width; x += 2) {
-      final t = pos + (x / size.width * 2 - 1) * window;
+    final t0 = pos - window, span = 2 * window;
+    double xOf(double t) => (t - t0) / span * size.width;
+
+    // Beat lines.
+    final tick = Paint()..strokeWidth = 1;
+    for (final b in beats) {
+      if (b < t0 || b > t0 + span) continue;
+      final x = xOf(b);
+      tick.color = Colors.white.withValues(alpha: downbeats.contains(b) ? 0.28 : 0.09);
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), tick);
+    }
+
+    // One sample per pixel column: [low, mid, high, peak].
+    final cols = size.width.floor();
+    final vals = List<List<double>?>.filled(cols, null);
+    for (var x = 0; x < cols; x++) {
+      final t = t0 + x / size.width * span;
       Section? s;
       for (final q in sections) {
         if (t >= q.start && t < q.end) s = q;
       }
       if (s == null) continue;
-      final d = waves.of(s);
+      final d = waves.of(s, vocal: vocal, beat: beat);
       if (d == null) continue;
-      final i = ((t - s.start) * 50).floor() * 3;
-      if (i < 0 || i + 2 >= d.length) continue;
-      final l = d[i] * 1.3, m = d[i + 1], h = d[i + 2] * 2.0;
-      final sum = l + m + h;
-      if (sum <= 1e-6) continue;
-      final amp = (math.sqrt(d[i] * d[i] + d[i + 1] * d[i + 1] + d[i + 2] * d[i + 2]) * 3.4).clamp(0.02, 1.0);
-      final a = x >= size.width / 2 ? 0.5 : 1.0;
-      paint.color = Color.fromRGBO(
-        (40 + 215 * (l / sum) * 1.5).clamp(0, 255).round(),
-        (40 + 215 * (m / sum) * 1.5).clamp(0, 255).round(),
-        (60 + 195 * (h / sum) * 1.8).clamp(0, 255).round(),
-        a,
-      );
-      final hgt = amp * mid;
-      canvas.drawLine(Offset(x, mid - hgt), Offset(x, mid + hgt), paint);
+      final i = ((t - s.start) * WaveCache.binsPerSecond).floor() * 4;
+      if (i < 0 || i + 3 >= d.length) continue;
+      vals[x] = [d[i], d[i + 1], d[i + 2], d[i + 3]];
     }
+
+    final half = size.width / 2;
+    for (final (layer, (color, gain)) in [(3, _layers[0]), (1, _layers[1]), (0, _layers[2]), (2, _layers[3])]) {
+      for (final ahead in [false, true]) {
+        final path = Path();
+        var open = false;
+        final xs = <int>[];
+        for (var x = ahead ? half.floor() : 0; x < (ahead ? cols : half.ceil()); x++) {
+          final v = vals[x];
+          if (v == null) {
+            if (open) _close(path, xs, vals, layer, gain, mid);
+            open = false;
+            xs.clear();
+            continue;
+          }
+          final h = (v[layer] * gain).clamp(0.0, 1.0) * mid;
+          if (!open) {
+            path.moveTo(x.toDouble(), mid - h);
+            open = true;
+          } else {
+            path.lineTo(x.toDouble(), mid - h);
+          }
+          xs.add(x);
+        }
+        if (open) _close(path, xs, vals, layer, gain, mid);
+        canvas.drawPath(path, Paint()..color = color.withValues(alpha: ahead ? 0.45 : 1.0));
+      }
+    }
+
     canvas.drawLine(
-      Offset(size.width / 2, 0),
-      Offset(size.width / 2, size.height),
+      Offset(half, 0),
+      Offset(half, size.height),
       Paint()
         ..color = Colors.white
         ..strokeWidth = 2,
     );
+  }
+
+  /// Back along the bottom edge (the mirror image), closing the shape.
+  void _close(Path path, List<int> xs, List<List<double>?> vals, int layer, double gain, double mid) {
+    for (final x in xs.reversed) {
+      final h = (vals[x]![layer] * gain).clamp(0.0, 1.0) * mid;
+      path.lineTo(x.toDouble(), mid + h);
+    }
+    path.close();
   }
 
   @override

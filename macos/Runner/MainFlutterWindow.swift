@@ -168,9 +168,10 @@ final class MixerChannel {
 // MARK: - Colour waveform
 
 /// How loud the bass, mids and highs are in a rendered stretch of the mix,
-/// every 20 ms, for the colour waveform on screen: [low, mid, high, low, …].
+/// and its peak, every 10 ms, for the colour waveform on screen:
+/// [low, mid, high, peak, low, …].
 enum Waveform {
-  static let binsPerSecond = 50.0
+  static let binsPerSecond = 100.0
 
   static func bands(_ paths: [String]) -> [Float] {
     let sr = 44100.0
@@ -183,8 +184,8 @@ enum Waveform {
     let aHigh = Float(1 - exp(-2 * Double.pi * 2500 / sr))
     var lp1: Float = 0, lp2: Float = 0
     var out = [Float]()
-    out.reserveCapacity(n / hop * 3 + 3)
-    var sl: Float = 0, sm: Float = 0, sh: Float = 0, k = 0
+    out.reserveCapacity(n / hop * 4 + 4)
+    var sl: Float = 0, sm: Float = 0, sh: Float = 0, pk: Float = 0, k = 0
     for i in 0..<n {
       var x: Float = 0
       for b in bufs where i < Int(b.frameLength) {
@@ -195,11 +196,12 @@ enum Waveform {
       lp2 += (x - lp2) * aHigh
       let low = lp1, high = x - lp2, mid = lp2 - lp1
       sl += low * low; sm += mid * mid; sh += high * high
+      pk = max(pk, abs(x))
       k += 1
       if k == hop {
         let f = Float(k)
-        out.append(sqrt(sl / f)); out.append(sqrt(sm / f)); out.append(sqrt(sh / f))
-        sl = 0; sm = 0; sh = 0; k = 0
+        out.append(sqrt(sl / f)); out.append(sqrt(sm / f)); out.append(sqrt(sh / f)); out.append(pk)
+        sl = 0; sm = 0; sh = 0; pk = 0; k = 0
       }
     }
     return out
@@ -419,6 +421,9 @@ private final class Deck {
     delay.wetDryMix = 0
     delay.feedback = 45
     delay.lowPassCutoff = 5000
+    // Highest quality the stretcher has: steadier, cleaner voices (3x steadier
+    // pitch on a held note than the default 8, and still ~100x real time).
+    timePitch.overlap = 32
   }
 
   func resetRate(srcBase: Double) {

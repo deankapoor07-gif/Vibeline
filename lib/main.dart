@@ -120,6 +120,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   bool _autoFxOn = true;
   List<Map<String, dynamic>> _autoCues = const []; // Auto FX moves in this set
   List<double> _beatGrid = const []; // mix time of every beat
+  Set<double> _downbeats = const {}; // the beats in it that start a bar
 
   // Simple: the Now Playing decks. Pro: every card, knob and slider.
   bool _pro = false;
@@ -477,25 +478,42 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   /// Mix time of every beat in the set (for the Beat FX and the BPM readout).
   List<double> _computeBeatGrid() {
     final out = <double>[];
+    final bars = <double>[];
     if (_mashupMode) {
       for (final m in _mashPlan?.mashups ?? const <Mashup>[]) {
         out.addAll(m.beatTimes);
+        for (var k = 0; k < m.beatTimes.length; k += 4) {
+          bars.add(m.beatTimes[k]);
+        }
       }
     } else {
       for (final p in _plan?.tracks ?? const <PlannedTrack>[]) {
         final a = p.track.analysis;
         if (a == null) continue;
-        for (final t in a.beats) {
-          if (t >= p.srcStart && t <= p.srcEnd) out.add(p.mixAt(t));
+        for (var i = 0; i < a.beats.length; i++) {
+          final t = a.beats[i];
+          if (t < p.srcStart || t > p.srcEnd) continue;
+          out.add(p.mixAt(t));
+          if ((i - a.barPhase) % 4 == 0) bars.add(p.mixAt(t));
         }
       }
     }
     out.sort();
+    bars.sort();
     // Where two songs overlap their beats coincide: keep one of each.
     final clean = <double>[];
     for (final t in out) {
       if (clean.isEmpty || t - clean.last > 0.18) clean.add(t);
     }
+    final down = <double>{};
+    var j = 0;
+    for (final t in clean) {
+      while (j < bars.length && bars[j] < t - 0.06) {
+        j++;
+      }
+      if (j < bars.length && (bars[j] - t).abs() <= 0.06) down.add(t);
+    }
+    _downbeats = down;
     return clean;
   }
 
@@ -1008,6 +1026,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           playing: _playing,
           heading: _heading,
           upNext: _upNext,
+          beats: _beatGrid,
+          downbeats: _downbeats,
+          vocalMuted: _muteVocal,
+          beatMuted: _muteBeat,
         )),
         ...[
           const SizedBox(height: 8),

@@ -23,8 +23,11 @@ List<Map<String, dynamic>> mashupFx(List<Mashup> ms) {
   for (var i = 1; i < ms.length; i++) {
     final m = ms[i], prev = ms[i - 1];
     final bt = m.beatTimes;
-    if (bt.length < 40) continue;
-    final beat = (bt[32] - bt[28]) / 4;
+    // The beat the singer comes in on (bar 8 of a blend, later in an
+    // anchored set).
+    final vi = bt.indexWhere((t) => t >= m.vocalIn - 0.02);
+    if (bt.length < 40 || vi < 8) continue;
+    final beat = (bt[vi] - bt[vi - 4]) / 4;
     // An acapella drop already has its own moment.
     if (m.acapellaBars > 0) continue;
     switch (i % 3) {
@@ -32,8 +35,8 @@ List<Map<String, dynamic>> mashupFx(List<Mashup> ms) {
         if (!prev.beatOnly) cues.add(_cue(prev.vocalOut - beat, prev.vocalOut, BeatFx.echo, 0.75, 0.45));
       case 2:
         if (!m.beatOnly) {
-          cues.add(_cue(bt[26], bt[28], BeatFx.roll, 0.5, 0.6));
-          cues.add(_cue(bt[28], bt[30], BeatFx.roll, 0.25, 0.6));
+          cues.add(_cue(bt[vi - 6], bt[vi - 4], BeatFx.roll, 0.5, 0.6));
+          cues.add(_cue(bt[vi - 4], bt[vi - 2], BeatFx.roll, 0.25, 0.6));
         }
       default:
         if (!prev.beatOnly) cues.add(_cue(prev.vocalOut - beat, prev.vocalOut, BeatFx.spiral, 1, 0.35));

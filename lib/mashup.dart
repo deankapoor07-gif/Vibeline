@@ -1155,8 +1155,9 @@ class MashupMaker {
   ///   anchor intro → vocal 1 enters over the anchor → 4–8 bars in, beat 1
   ///   rises in (no bass) for 2 bars and takes over on the downbeat (bass
   ///   swap, the anchor drops out) → the vocal sings over beat 1 → beat 1
-  ///   plays on alone for 8 bars → vocal 2 enters over beat 1 → beat 2 takes
-  ///   over the same way … Mid-set (5+ mashups) and for the outro the set
+  ///   plays on alone for 4 bars → beat 2 takes over the same way and plays
+  ///   alone for 8 bars, so it has settled → vocal 2 enters over its own
+  ///   beat … Mid-set (5+ mashups) and for the outro the set
   ///   comes home (8 bars of beat solo, the home groove swaps back in, 4 bars
   ///   of it, next vocal) to a promoted anchor: the strongest beat used so
   ///   far. The original anchor is heard at most twice, so the set travels.
@@ -1168,7 +1169,10 @@ class MashupMaker {
     final barLen = 4 * p;
     double bt(num bar) => bar * barLen;
     const kill = -30.0;
-    const rise = 2, solo = 8, gap = 4; // bars
+    // rise: a beat coming in; after: the old beat alone once its singer
+    // stops; lead: the new beat alone before its singer starts; gap: the
+    // home groove between mashups.
+    const rise = 2, after = 4, lead = 8, gap = 4; // bars
     final clips = <Map<String, dynamic>>[];
     final cuts = <double>[];
 
@@ -1204,11 +1208,17 @@ class MashupMaker {
     var cursor = 8; // 8 bars of anchor first
     for (var i = 0; i < ms.length; i++) {
       final len = ms[i].vocalBars;
-      final settle = ms[i].beatOnly ? rise : (len >= 32 ? 8 : 4);
-      vIn.add(cursor);
-      beatIn.add(cursor + settle);
-      beatEnd.add(cursor + len + solo);
-      cursor += len + solo + (home[i] ? gap : 0);
+      if (i == 0 || ms[i].beatOnly) {
+        // The opener sings over the anchor first; a beat break has no singer.
+        final settle = ms[i].beatOnly ? rise : (len >= 32 ? 8 : 4);
+        vIn.add(cursor);
+        beatIn.add(cursor + settle);
+      } else {
+        beatIn.add(cursor);
+        vIn.add(cursor + lead);
+      }
+      beatEnd.add(vIn[i] + len + after);
+      cursor = beatEnd[i] + (home[i] ? gap : 0);
     }
     for (var i = 0; i + 1 < ms.length; i++) {
       if (!home[i]) beatEnd[i] = beatIn[i + 1]; // carries the next vocal in
@@ -1373,7 +1383,8 @@ class MashupMaker {
         m.vocalRate = (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]);
       }
 
-      final first = i == 0 ? 0 : vIn[i] - (home[i - 1] ? gap : 0);
+      // A mashup starts where its beat starts coming in (or its home groove).
+      final first = i == 0 ? 0 : (home[i - 1] ? beatIn[i] - gap : math.min(vIn[i], beatIn[i] - rise));
       m
         ..start = bt(first)
         ..vocalIn = vInT
