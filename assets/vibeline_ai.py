@@ -96,22 +96,72 @@ def read_tags(path):
     return info
 
 
+TAGS_CACHE = os.path.expanduser("~/Library/Caches/Vibeline/tags.json")
+
+
 def cmd_tags(folders):
+    # Song details are remembered by path, size and date, so searching the
+    # whole Mac again only reads files that are new or changed.
+    try:
+        with open(TAGS_CACHE) as f:
+            old = json.load(f)
+    except Exception:
+        old = {}
+    new = {}
     seen = set()
     for folder in folders:
-        _scan(folder, seen)
+        _scan(folder, seen, old, new)
+    try:
+        os.makedirs(os.path.dirname(TAGS_CACHE), exist_ok=True)
+        with open(TAGS_CACHE + ".tmp", "w") as f:
+            json.dump(new, f)
+        os.replace(TAGS_CACHE + ".tmp", TAGS_CACHE)
+    except Exception:
+        pass
     emit({"type": "done"})
 
 
-def _scan(folder, seen):
-    for root, _, files in os.walk(folder):
+# Folders that never hold your music: system and app innards, code projects,
+# photo / video / music-making libraries, and this app's own saved mixes.
+SKIP_DIRS = {"Library", "Applications", "System", "node_modules", "build", "venv", ".venv", "site-packages",
+             "Pods", "DerivedData", "__pycache__", "Backups.backupdb", "D-Jay Noodles", "Vibeline", "Apple Loops"}
+SKIP_PACKAGES = (".app", ".bundle", ".framework", ".plugin", ".photoslibrary", ".imovielibrary", ".logicx",
+                 ".band", ".fcpbundle", ".tvlibrary", ".musiclibrary", ".xcodeproj", ".xcworkspace")
+
+
+PROJECT_FILES = {"pubspec.yaml", "package.json", "Package.swift", "Podfile", "Cargo.toml", "pyproject.toml",
+                 "setup.py", "build.gradle", "CMakeLists.txt", "Makefile"}
+
+
+def _is_project(dirs, files):
+    return (".git" in dirs or any(f in PROJECT_FILES for f in files)
+            or any(d.endswith((".xcodeproj", ".xcworkspace")) for d in dirs))
+
+
+def _scan(folder, seen, old, new):
+    for root, dirs, files in os.walk(folder):
+        # An app or code project (sound effects, test tones, demo renders):
+        # not your music. The folder you picked yourself is always searched.
+        if root != folder and _is_project(dirs, files):
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".") and d not in SKIP_DIRS and not d.lower().endswith(SKIP_PACKAGES)]
         for name in sorted(files):
             if name.startswith("."):
                 continue
             path = os.path.join(root, name)
             if os.path.splitext(name)[1].lower() in AUDIO_EXT and path not in seen:
                 seen.add(path)
-                emit({"type": "tags", **read_tags(path)})
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                key = f"{st.st_size}|{int(st.st_mtime)}"
+                hit = old.get(path)
+                info = hit[1] if hit and hit[0] == key else read_tags(path)
+                new[path] = [key, info]
+                emit({"type": "tags", **info})
 
 
 # ---------------------------------------------------------------- analysis

@@ -21,6 +21,9 @@ class MusicLibrary {
   final List<LibraryTrack> tracks = [];
   String folder = defaultFolder;
   bool useMusicApp = true; // also scan the Music app's own files
+  /// Look for music everywhere in your home folder and on plugged-in drives,
+  /// instead of one folder.
+  bool wholeMac = true;
   int shazamMatches = 0;
   String? _script;
 
@@ -31,13 +34,14 @@ class MusicLibrary {
         final j = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
         folder = (j['folder'] as String?) ?? folder;
         useMusicApp = (j['useMusicApp'] as bool?) ?? useMusicApp;
+        wholeMac = (j['wholeMac'] as bool?) ?? wholeMac;
       }
     } catch (_) {}
   }
 
   Future<void> saveSettings() async {
     await Directory(supportDir).create(recursive: true);
-    await File('$supportDir/settings.json').writeAsString(jsonEncode({'folder': folder, 'useMusicApp': useMusicApp}));
+    await File('$supportDir/settings.json').writeAsString(jsonEncode({'folder': folder, 'useMusicApp': useMusicApp, 'wholeMac': wholeMac}));
   }
 
   /// Problems that stop Vibeline from mixing, in plain words, or null if ready.
@@ -45,7 +49,7 @@ class MusicLibrary {
     if (!await File(python).exists()) {
       return 'The music analyser isn\'t installed (expected at $python).';
     }
-    if (!await Directory(folder).exists()) {
+    if (!wholeMac && !await Directory(folder).exists()) {
       return 'Can\'t find your music folder: $folder';
     }
     return null;
@@ -79,17 +83,36 @@ class MusicLibrary {
   Future<void> scan() async {
     final previous = {for (final t in tracks) t.path: t.analysis};
     tracks.clear();
-    final folders = [
-      folder,
-      if (useMusicApp && musicAppFolder != folder && Directory(musicAppFolder).existsSync()) musicAppFolder,
-    ];
+    final folders = wholeMac
+        ? [home, ...externalDrives()]
+        : [
+            folder,
+            if (useMusicApp && musicAppFolder != folder && Directory(musicAppFolder).existsSync()) musicAppFolder,
+          ];
     await for (final row in _run(['tags', ...folders])) {
       if (row['type'] != 'tags') continue;
       final t = LibraryTrack.fromJson(row);
+      // Searching everywhere turns up alert sounds and short clips: songs only.
+      if (wholeMac && t.duration > 0 && t.duration < 60) continue;
       t.analysis = previous[t.path];
       tracks.add(t);
     }
     await _markShazam();
+  }
+
+  /// Plugged-in drives (not the Mac's own disk, and not Time Machine).
+  static List<String> externalDrives() {
+    final out = <String>[];
+    try {
+      for (final e in Directory('/Volumes').listSync(followLinks: false)) {
+        if (e is! Directory || e.path.split('/').last.startsWith('.')) continue;
+        if (Directory('${e.path}/Backups.backupdb').existsSync() || File('${e.path}/.com.apple.timemachine.supported').existsSync()) {
+          continue;
+        }
+        out.add(e.path);
+      }
+    } catch (_) {}
+    return out;
   }
 
   /// Analyses any of [wanted] not yet analysed. Cached on disk by the script,

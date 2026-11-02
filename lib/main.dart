@@ -188,6 +188,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final path = (r.stdout as String).trim();
     if (r.exitCode != 0 || path.isEmpty) return;
     _library.folder = path.endsWith('/') ? path.substring(0, path.length - 1) : path;
+    _library.wholeMac = false;
     await _library.saveSettings();
     await _scan();
   }
@@ -860,10 +861,24 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               icon: Icon(Icons.library_music, color: _libraryOpen ? kMashupAccent : Colors.white70, size: 18),
               label: Text('Songs', style: TextStyle(color: _libraryOpen ? kMashupAccent : Colors.white70)),
             ),
-          IconButton(
-            tooltip: 'Choose music folder',
+          PopupMenuButton<bool>(
+            tooltip: 'Where to find your music',
+            enabled: !_busy,
             icon: const Icon(Icons.folder_open),
-            onPressed: _busy ? null : _chooseFolder,
+            onSelected: (whole) async {
+              if (!whole) return _chooseFolder();
+              _library.wholeMac = true;
+              await _library.saveSettings();
+              await _scan();
+            },
+            itemBuilder: (_) => [
+              CheckedPopupMenuItem(value: true, checked: _library.wholeMac, child: const Text('Search the whole Mac')),
+              CheckedPopupMenuItem(
+                value: false,
+                checked: !_library.wholeMac,
+                child: Text(_library.wholeMac ? 'Just one folder…' : 'Just one folder: ${_library.folder.split('/').last}…'),
+              ),
+            ],
           ),
           IconButton(
             tooltip: _playing ? 'Pause' : 'Play',
