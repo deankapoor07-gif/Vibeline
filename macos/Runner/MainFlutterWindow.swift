@@ -493,6 +493,7 @@ final class MixRenderer {
     engine.attach(limiter)
     engine.connect(bus, to: limiter, format: format)
     engine.connect(limiter, to: engine.mainMixerNode, format: format)
+    engine.mainMixerNode.outputVolume = TimelinePlayer.ceiling
     AudioUnitSetParameter(limiter.audioUnit, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, 0.004, 0)
     AudioUnitSetParameter(limiter.audioUnit, kLimiterParam_DecayTime, kAudioUnitScope_Global, 0, 0.08, 0)
     AudioUnitSetParameter(limiter.audioUnit, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, 0, 0)
@@ -919,7 +920,13 @@ final class TimelinePlayer {
     chain([beatBus, beatGain, fx?.beat, master])
     chain([voxBus, voxGain, fx?.vox, master])
     chain([master, fx?.master, limiter, engine.mainMixerNode])
+    engine.mainMixerNode.outputVolume = ceiling
   }
+
+  /// The limiter holds peaks at full scale, but saving to AAC (and the
+  /// speakers' own filters) overshoot that by up to 0.6 dB, which then clips.
+  /// Mastering's usual -1.5 dB ceiling leaves room for it.
+  static let ceiling: Float = 0.84
 
   static func makeLimiter() -> AVAudioUnitEffect {
     let l = AVAudioUnitEffect(
