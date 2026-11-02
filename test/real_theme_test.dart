@@ -5,6 +5,8 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vibeline/auto_fx.dart';
+import 'package:vibeline/fx_deck.dart';
 import 'package:vibeline/library.dart';
 import 'package:vibeline/mashup.dart';
 import 'package:vibeline/vibe.dart';
@@ -43,6 +45,14 @@ void main() {
     if (out != null && session.mashups.isNotEmpty) {
       final plan = session.layout();
       File(out).writeAsStringSync(jsonEncode({...plan.renderJson, 'cuts': plan.cuts}));
+      final cues = mashupFx(session.mashups);
+      File('$out.fx.json').writeAsStringSync(jsonEncode({
+        'fx': cues,
+        'grid': [for (final m in session.mashups) ...m.beatTimes],
+      }));
+      for (final c in cues) {
+        print('  FX ${BeatFx.values[c['kind'] as int].label} ${c['beats']} beat · ${(c['start'] as double).toStringAsFixed(1)}–${(c['end'] as double).toStringAsFixed(1)}s');
+      }
       print(plan.summary);
       for (final m in session.mashups) {
         print('  ${m.vocal.title}: in ${m.start.toStringAsFixed(1)}s · vocal ${m.vocalIn.toStringAsFixed(1)}s'

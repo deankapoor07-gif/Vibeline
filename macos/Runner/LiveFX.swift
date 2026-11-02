@@ -374,6 +374,13 @@ final class BeatFX {
       heldFor = 0
       brakePos = Double(history.w) - 1
       brakeSpeed = 1
+    } else if on && (kind == .roll || kind == .pitchRoll) {
+      // Shortening the length mid-roll tightens the loop (1/2 → 1/4 → …).
+      let want = max(0.03 * sr, min(4 * sr, length * sr))
+      if want < loopLen - 1 {
+        loopLen = want
+        loopPos = loopPos.truncatingRemainder(dividingBy: loopLen)
+      }
     }
     wasOn = on
 

@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'auto_fx.dart';
 import 'fx_deck.dart';
 import 'intros.dart';
 import 'library.dart';
@@ -113,6 +114,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   // Live FX panel
   late final FxSettings _fx = FxSettings(_mixer);
   bool _fxOpen = false;
+  bool _autoFxOn = true;
+  List<Map<String, dynamic>> _autoCues = const []; // Auto FX moves in this set
   List<double> _beatGrid = const []; // mix time of every beat
 
   @override
@@ -444,6 +447,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     if (_warmth != null) json['warmth'] = _warmth;
     _duration = duration;
     _beatGrid = _computeBeatGrid();
+    _autoCues = _mashupMode ? mashupFx(_mashPlan?.mashups ?? const []) : (_plan == null ? const [] : blendFx(_plan!));
     await _mixer.setBeatGrid(_beatGrid);
     await _mixer.setLiveMap(_liveMap);
     await _sections.setPlan(json, cuts, remap: remap);
@@ -522,7 +526,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _pushLive();
   }
 
-  Map<String, dynamic> get _liveMap => (_mashupMode ? _mashPlan?.liveMap : null) ?? const {'vocal': [], 'beat': []};
+  Map<String, dynamic> get _liveMap => {
+        ...(_mashupMode ? _mashPlan?.liveMap : null) ?? const {'vocal': [], 'beat': []},
+        'fx': _autoFxOn ? _autoCues : const [],
+      };
 
   // Slider moves are sent at most every 50 ms (the last value always goes),
   // so dragging never floods the audio side with messages.
@@ -810,7 +817,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final kind = _mashupMode ? 'Mashups' : 'Mix';
     final dest = '${dir.path}/D-Jay Noodles $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp.m4a';
     _set('Saving…', phase: Phase.ready);
-    await _sections.export(dest, _liveMap);
+    await _sections.export(dest, {..._liveMap, 'grid': _beatGrid});
     await Process.run('open', ['-R', dest]);
     _set('Saved to Music › D-Jay Noodles', phase: Phase.ready);
   }
@@ -1081,6 +1088,20 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     icon: Icon(Icons.graphic_eq, size: 18, color: _fxOpen ? _accent : Colors.white70),
                     label: Text('FX', style: TextStyle(fontWeight: FontWeight.bold, color: _fxOpen ? _accent : Colors.white70)),
                   ),
+                ),
+                Tooltip(
+                  message: 'Auto FX: the set throws in echoes, rolls and sweeps by itself at the changeovers',
+                  child: Row(children: [
+                    Text('Auto FX', style: TextStyle(color: _autoFxOn ? _accent : Colors.white54, fontSize: 12)),
+                    Switch(
+                      value: _autoFxOn,
+                      activeColor: _accent,
+                      onChanged: (on) {
+                        setState(() => _autoFxOn = on);
+                        _mixer.setLiveMap(_liveMap);
+                      },
+                    ),
+                  ]),
                 ),
                 const SizedBox(width: 12),
                 Tooltip(

@@ -117,6 +117,7 @@ final class MixerChannel {
       fx.beats = (args["beats"] as? Double) ?? 1
       fx.depth = Float((args["depth"] as? Double) ?? 0.6)
       fx.on = (args["on"] as? Bool) ?? false
+      player.manualBeat = fx.on
       result(nil)
     case "beatGrid":
       player.beatGrid = (args["beats"] as? [Double]) ?? []
@@ -705,15 +706,38 @@ final class TimelinePlayer {
     }
   }
 
+  /// A Beat FX move the set makes by itself (Auto FX).
+  struct FxCue {
+    let start: Double
+    let end: Double
+    let kind: BeatFX.Kind
+    let beats: Double
+    let depth: Float
+
+    init(row: [String: Any]) {
+      start = (row["start"] as? Double) ?? 0
+      end = (row["end"] as? Double) ?? 0
+      kind = BeatFX.Kind(rawValue: (row["kind"] as? Int) ?? 0) ?? .echo
+      beats = (row["beats"] as? Double) ?? 1
+      depth = Float((row["depth"] as? Double) ?? 0.5)
+    }
+  }
+
   struct LiveMap {
     var vocal: [LiveRegion] = []
     var beat: [LiveRegion] = []
+    var fx: [FxCue] = []
+    var grid: [Double] = []  // beat grid, for saving (the player gets its own)
 
     init() {}
     init(_ args: [String: Any]) {
       vocal = (args["vocal"] as? [[String: Any]] ?? []).map(LiveRegion.init(row:))
       beat = (args["beat"] as? [[String: Any]] ?? []).map(LiveRegion.init(row:))
+      fx = (args["fx"] as? [[String: Any]] ?? []).map(FxCue.init(row:))
+      grid = args["grid"] as? [Double] ?? []
     }
+
+    func cue(at t: Double) -> FxCue? { fx.first(where: { t >= $0.start && t < $0.end }) }
 
     /// (vocal dB, beat dB) at mix time t.
     func at(_ t: Double) -> (Float, Float) {
@@ -760,6 +784,9 @@ final class TimelinePlayer {
   let beatFX = BeatFX(sr: 44100)
   /// Mix time of every beat, so the Beat FX keep time with the music.
   var beatGrid: [Double] = []
+  /// A pad is down on the FX panel: your moves win over Auto FX.
+  var manualBeat = false
+  private var autoBeat = false
 
   private var segments: [Segment] = []
   private var active: [Int: Active] = [:]
@@ -845,12 +872,12 @@ final class TimelinePlayer {
     let (vdb, bdb) = live.at(p)
     voxGain.globalGain = voxDb.toward(vdb, 0.25)
     beatGain.globalGain = beatDb.toward(bdb, 0.25)
-    syncBeat(p)
+    Self.syncBeat(beatFX, beatGrid, p)
+    if !manualBeat { autoBeat = Self.applyCue(beatFX, live.cue(at: p), wasOn: autoBeat) }
   }
 
   /// Tells the Beat FX where the playhead is on the beat grid.
-  private func syncBeat(_ p: Double) {
-    let g = beatGrid
+  static func syncBeat(_ fx: BeatFX, _ g: [Double], _ p: Double) {
     guard g.count > 1 else { return }
     var lo = 0, hi = g.count - 2
     while lo < hi {
@@ -859,7 +886,21 @@ final class TimelinePlayer {
     }
     let len = g[lo + 1] - g[lo]
     guard len > 0.05 else { return }
-    beatFX.sync(phase: Double(lo) + (p - g[lo]) / len, beatLen: len)
+    fx.sync(phase: Double(lo) + (p - g[lo]) / len, beatLen: len)
+  }
+
+  /// Plays an Auto FX cue (or lets go when there's none). The effect's kind
+  /// stays set after letting go, so echoes ring out. Returns whether it's on.
+  static func applyCue(_ fx: BeatFX, _ cue: FxCue?, wasOn: Bool) -> Bool {
+    guard let cue else {
+      if wasOn { fx.on = false }
+      return false
+    }
+    fx.kind = cue.kind
+    fx.beats = cue.beats
+    fx.depth = cue.depth
+    fx.on = true
+    return true
   }
 
   /// Now, on the clock the player nodes schedule against (44.1 kHz). Not the
@@ -1330,8 +1371,16 @@ func play(from pos: Double? = nil) {
     let beatBus = AVAudioMixerNode(), voxBus = AVAudioMixerNode(), master = AVAudioMixerNode()
     let voxGain = AVAudioUnitEQ(numberOfBands: 1), beatGain = AVAudioUnitEQ(numberOfBands: 1)
     let limiter = makeLimiter()
+    // Auto FX are part of the set, so they're saved too (your live knobs aren't).
+    let beatFX = BeatFX(sr: sr)
+    let fx = live.fx.isEmpty
+      ? nil
+      : (beat: FXUnit.make(FXUnit.colourDesc, ColourFX(sr: sr).process) as AVAudioNode,
+        vox: FXUnit.make(FXUnit.colourDesc, ColourFX(sr: sr).process) as AVAudioNode,
+        master: FXUnit.make(FXUnit.beatDesc, beatFX.process) as AVAudioNode)
+    var autoBeat = false
     wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxGain: voxGain,
-      master: master, limiter: limiter, format: format)
+      master: master, limiter: limiter, format: format, fx: fx)
     var voxDb = Smoothed(), beatDb = Smoothed()
     try engine.start()
 
@@ -1375,6 +1424,11 @@ func play(from pos: Double? = nil) {
       let (vdb, bdb) = live.at(Double(frame) / sr)
       voxGain.globalGain = voxDb.toward(vdb, 0.12)
       beatGain.globalGain = beatDb.toward(bdb, 0.12)
+      if fx != nil {
+        let t = Double(frame) / sr
+        syncBeat(beatFX, live.grid, t)
+        autoBeat = applyCue(beatFX, live.cue(at: t), wasOn: autoBeat)
+      }
       let status = try engine.renderOffline(AVAudioFrameCount(n), to: buffer)
       if status == .success || status == .insufficientDataFromInputNode { try out.write(from: buffer) }
       frame += n
