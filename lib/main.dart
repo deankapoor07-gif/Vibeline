@@ -1017,14 +1017,24 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           ]),
         ],
         const SizedBox(height: 10),
-        QuickPads(
-          fx: _fx,
-          onChanged: () => setState(() {}),
-          moreOpen: _fxOpen,
-          onMore: () {
-            if (_fxOpen) _fx.reset();
-            setState(() => _fxOpen = !_fxOpen);
-          },
+        SizedBox(
+          height: 128,
+          child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Expanded(child: QuickPads(fx: _fx, onChanged: () => setState(() {}))),
+            const SizedBox(width: 10),
+            SizedBox(
+              width: 230,
+              child: XYPad(
+                fx: _fx,
+                onChanged: () => setState(() {}),
+                moreOpen: _fxOpen,
+                onMore: () {
+                  if (_fxOpen) _fx.reset();
+                  setState(() => _fxOpen = !_fxOpen);
+                },
+              ),
+            ),
+          ]),
         ),
       ]),
     );

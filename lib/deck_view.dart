@@ -357,36 +357,17 @@ class QuickPads extends StatelessWidget {
 
   final FxSettings fx;
   final void Function() onChanged;
-  final void Function() onMore;
-  final bool moreOpen;
-  const QuickPads({super.key, required this.fx, required this.onChanged, required this.onMore, required this.moreOpen});
+  const QuickPads({super.key, required this.fx, required this.onChanged});
 
+  /// Two rows of four, so the XY pad fits beside them.
   @override
   Widget build(BuildContext context) {
-    return Row(
+    Widget row(int from) => Row(
       children: [
-        for (var i = 0; i < pads.length; i++) ...[if (i > 0) const SizedBox(width: 6), Expanded(child: _pad(i))],
-        const SizedBox(width: 6),
-        Tooltip(
-          message: 'All 13 effects, lengths and the Colour FX knobs',
-          child: InkWell(
-            onTap: onMore,
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              height: 52,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: moreOpen ? Colors.white : kPanel,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.white24),
-              ),
-              child: Text('More FX', style: TextStyle(fontSize: 12, color: moreOpen ? kInk : Colors.white70)),
-            ),
-          ),
-        ),
+        for (var i = from; i < from + 4; i++) ...[if (i > from) const SizedBox(width: 6), Expanded(child: _pad(i))],
       ],
     );
+    return Column(children: [row(0), const SizedBox(height: 6), row(4)]);
   }
 
   Widget _pad(int i) {
@@ -555,4 +536,178 @@ class SetOverview extends StatelessWidget {
       ],
     );
   }
+}
+
+/// The XY pad: press and drag to play an effect. Left to right is its length
+/// (snapped to the beat, 1/16 up to 16 beats), bottom to top how strong it
+/// is. Let go and it stops; the pads' own settings come back.
+class XYPad extends StatefulWidget {
+  final FxSettings fx;
+  final void Function() onChanged;
+  final void Function() onMore;
+  final bool moreOpen;
+  const XYPad({super.key, required this.fx, required this.onChanged, required this.onMore, required this.moreOpen});
+
+  @override
+  State<XYPad> createState() => _XYPadState();
+}
+
+class _XYPadState extends State<XYPad> {
+  int _pick = 0; // which of the eight pad effects the square plays
+  Offset? _at; // 0..1 each way while held
+  double _keepLength = 1, _keepDepth = 0.6;
+
+  FxSettings get fx => widget.fx;
+  (BeatFx, Color) get _effect => QuickPads.pads[_pick];
+
+  void _apply(Offset p, Size size) {
+    final x = (p.dx / size.width).clamp(0.0, 0.999), y = (p.dy / size.height).clamp(0.0, 1.0);
+    final f = _effect.$1;
+    fx.beatFx = f;
+    fx.lengths[f] = kFxLengths[(x * kFxLengths.length).floor()];
+    fx.depth = (1 - y).clamp(0.08, 1.0);
+    fx.on = true;
+    fx.sendBeat();
+    setState(() => _at = Offset(x, y));
+    widget.onChanged();
+  }
+
+  void _down(Offset p, Size size) {
+    final f = _effect.$1;
+    _keepLength = fx.lengths[f]!;
+    _keepDepth = fx.depth;
+    _apply(p, size);
+  }
+
+  void _up() {
+    final f = _effect.$1;
+    fx.on = false;
+    fx.sendBeat();
+    fx.lengths[f] = _keepLength;
+    fx.depth = _keepDepth;
+    setState(() => _at = null);
+    widget.onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final (f, c) = _effect;
+    final at = _at;
+    return Column(
+      children: [
+        Row(
+          children: [
+            Tooltip(
+              message: 'Click to choose which effect the square plays',
+              child: InkWell(
+                onTap: () => setState(() => _pick = (_pick + 1) % QuickPads.pads.length),
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        f == BeatFx.vinylBrake ? 'Brake' : f.label,
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c),
+                      ),
+                      Icon(Icons.unfold_more, size: 14, color: c),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const Spacer(),
+            if (at != null)
+              Text(
+                '${fxLengthLabel(fx.lengths[f]!)} beat · ${(fx.depth * 100).round()}%',
+                style: const TextStyle(fontSize: 11, color: Colors.white70),
+              ),
+            if (at == null)
+              InkWell(
+                onTap: widget.onMore,
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Text(
+                    'More FX',
+                    style: TextStyle(fontSize: 11, color: widget.moreOpen ? Colors.white : Colors.white54),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, box) {
+              final size = box.biggest;
+              return Tooltip(
+                message: 'Press and drag: left to right is the length, bottom to top how strong. Let go to stop.',
+                waitDuration: const Duration(seconds: 1),
+                child: Listener(
+                  onPointerDown: (e) => _down(e.localPosition, size),
+                  onPointerMove: (e) => _apply(e.localPosition, size),
+                  onPointerUp: (_) => _up(),
+                  onPointerCancel: (_) => _up(),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.precise,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: kPanel,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: at != null ? c : c.withValues(alpha: 0.35)),
+                      ),
+                      child: CustomPaint(painter: _XYPainter(c, at), size: size),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _XYPainter extends CustomPainter {
+  final Color c;
+  final Offset? at;
+  _XYPainter(this.c, this.at);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final line = Paint()
+      ..color = c.withValues(alpha: 0.12)
+      ..strokeWidth = 1;
+    for (var i = 1; i < kFxLengths.length; i++) {
+      final x = size.width * i / kFxLengths.length;
+      canvas.drawLine(Offset(x, 4), Offset(x, size.height - 4), line);
+    }
+    void label(String s, Offset o) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: s,
+          style: const TextStyle(fontSize: 10, color: Colors.white38),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, o);
+    }
+
+    label('short', Offset(6, size.height - 16));
+    label('long', Offset(size.width - 28, size.height - 16));
+    label('strong', const Offset(6, 4));
+    final p = at;
+    if (p == null) return;
+    final o = Offset(p.dx * size.width, p.dy * size.height);
+    canvas.drawLine(Offset(o.dx, 0), Offset(o.dx, size.height), Paint()..color = c.withValues(alpha: 0.35));
+    canvas.drawLine(Offset(0, o.dy), Offset(size.width, o.dy), Paint()..color = c.withValues(alpha: 0.35));
+    canvas.drawCircle(o, 16, Paint()..color = c.withValues(alpha: 0.25));
+    canvas.drawCircle(o, 10, Paint()..color = c);
+  }
+
+  @override
+  bool shouldRepaint(_XYPainter old) => old.at != at || old.c != c;
 }

@@ -39,9 +39,9 @@ enum BeatFx {
   const BeatFx(this.label, this.beats, this.hint, {this.timed = true});
 }
 
-const _lengths = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 3 / 4, 1.0, 2.0, 4.0, 8.0, 16.0];
+const kFxLengths = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 3 / 4, 1.0, 2.0, 4.0, 8.0, 16.0];
 
-String _lengthLabel(double b) {
+String fxLengthLabel(double b) {
   if (b >= 1) return '${b.round()}';
   if (b == 0.75) return '3/4';
   return '1/${(1 / b).round()}';
@@ -118,9 +118,9 @@ class _FxDeckState extends State<FxDeck> {
   void _padUp(BeatFx f) => setState(() => fx.release(f));
 
   void _step(int d) {
-    var i = _lengths.indexWhere((x) => (x - fx.length).abs() < 1e-6);
+    var i = kFxLengths.indexWhere((x) => (x - fx.length).abs() < 1e-6);
     if (i < 0) i = 5;
-    setState(() => fx.lengths[fx.beatFx] = _lengths[(i + d).clamp(0, _lengths.length - 1)]);
+    setState(() => fx.lengths[fx.beatFx] = kFxLengths[(i + d).clamp(0, kFxLengths.length - 1)]);
     fx.sendBeat();
   }
 
@@ -219,7 +219,7 @@ class _FxDeckState extends State<FxDeck> {
                         _SmallButton(icon: Icons.chevron_left, onTap: fx.beatFx.timed ? () => _step(-1) : null),
                         SizedBox(
                           width: 64,
-                          child: Text('${_lengthLabel(fx.length)} beat${fx.length > 1 ? 's' : ''}',
+                          child: Text('${fxLengthLabel(fx.length)} beat${fx.length > 1 ? 's' : ''}',
                               textAlign: TextAlign.center,
                               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                         ),
