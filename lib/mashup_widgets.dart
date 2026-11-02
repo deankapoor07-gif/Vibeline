@@ -7,7 +7,7 @@ import 'models.dart';
 import 'planner.dart' show shiftCamelot;
 import 'tuning.dart';
 
-const kMashupAccent = Colors.purpleAccent;
+const kMashupAccent = Color(0xFFFF3DBB); // the singer's pink (see deck_view.dart)
 
 // ---------------------------------------------------------
 // MASHUP & SAMPLE LANE (the acapellas placed across the set)

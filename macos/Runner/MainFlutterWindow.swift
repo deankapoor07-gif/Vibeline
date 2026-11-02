@@ -26,6 +26,7 @@ final class MixerChannel {
 
   private var channel: FlutterMethodChannel?
   private let renderQueue = DispatchQueue(label: "vibeline.render", qos: .userInitiated)
+  private let waveQueue = DispatchQueue(label: "vibeline.wave", qos: .utility)
   private var cancelRequested = false
   private var currentOut: String?
   private let player = TimelinePlayer()
@@ -119,6 +120,13 @@ final class MixerChannel {
       fx.on = (args["on"] as? Bool) ?? false
       player.manualBeat = fx.on
       result(nil)
+    case "waveform":
+      let paths = (args["paths"] as? [String]) ?? []
+      waveQueue.async {
+        let bins = Waveform.bands(paths)
+        let data = bins.withUnsafeBufferPointer { Data(buffer: $0) }
+        DispatchQueue.main.async { result(FlutterStandardTypedData(float32: data)) }
+      }
     case "beatGrid":
       player.beatGrid = (args["beats"] as? [Double]) ?? []
       result(nil)
@@ -151,6 +159,47 @@ final class MixerChannel {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+}
+
+// MARK: - Colour waveform
+
+/// How loud the bass, mids and highs are in a rendered stretch of the mix,
+/// every 20 ms, for the colour waveform on screen: [low, mid, high, low, …].
+enum Waveform {
+  static let binsPerSecond = 50.0
+
+  static func bands(_ paths: [String]) -> [Float] {
+    let sr = 44100.0
+    let format = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
+    let bufs = paths.compactMap { try? TimelinePlayer.read($0, from: 0, format: format) }
+    guard let n = bufs.map({ Int($0.frameLength) }).max(), n > 0 else { return [] }
+    let hop = Int(sr / binsPerSecond)
+    // One-pole splits: below ~200 Hz is bass, above ~2.5 kHz is highs.
+    let aLow = Float(1 - exp(-2 * Double.pi * 200 / sr))
+    let aHigh = Float(1 - exp(-2 * Double.pi * 2500 / sr))
+    var lp1: Float = 0, lp2: Float = 0
+    var out = [Float]()
+    out.reserveCapacity(n / hop * 3 + 3)
+    var sl: Float = 0, sm: Float = 0, sh: Float = 0, k = 0
+    for i in 0..<n {
+      var x: Float = 0
+      for b in bufs where i < Int(b.frameLength) {
+        let d = b.floatChannelData!
+        x += (d[0][i] + d[1][i]) * 0.5
+      }
+      lp1 += (x - lp1) * aLow
+      lp2 += (x - lp2) * aHigh
+      let low = lp1, high = x - lp2, mid = lp2 - lp1
+      sl += low * low; sm += mid * mid; sh += high * high
+      k += 1
+      if k == hop {
+        let f = Float(k)
+        out.append(sqrt(sl / f)); out.append(sqrt(sm / f)); out.append(sqrt(sh / f))
+        sl = 0; sm = 0; sh = 0; k = 0
+      }
+    }
+    return out
   }
 }
 
@@ -728,6 +777,9 @@ final class TimelinePlayer {
     var beat: [LiveRegion] = []
     var fx: [FxCue] = []
     var grid: [Double] = []  // beat grid, for saving (the player gets its own)
+    // Deck mute buttons (live only): cut the singer or the beat right out.
+    var muteVocal = false
+    var muteBeat = false
 
     init() {}
     init(_ args: [String: Any]) {
@@ -735,6 +787,8 @@ final class TimelinePlayer {
       beat = (args["beat"] as? [[String: Any]] ?? []).map(LiveRegion.init(row:))
       fx = (args["fx"] as? [[String: Any]] ?? []).map(FxCue.init(row:))
       grid = args["grid"] as? [Double] ?? []
+      muteVocal = (args["muteVocal"] as? Bool) ?? false
+      muteBeat = (args["muteBeat"] as? Bool) ?? false
     }
 
     func cue(at t: Double) -> FxCue? { fx.first(where: { t >= $0.start && t < $0.end }) }
@@ -743,7 +797,7 @@ final class TimelinePlayer {
     func at(_ t: Double) -> (Float, Float) {
       let v = vocal.first(where: { t >= $0.start && t < $0.end })
       let b = beat.first(where: { t >= $0.start && t < $0.end })
-      return (Float(v?.db ?? 0), Float(b?.db ?? 0))
+      return (muteVocal ? -90 : Float(v?.db ?? 0), muteBeat ? -90 : Float(b?.db ?? 0))
     }
   }
 

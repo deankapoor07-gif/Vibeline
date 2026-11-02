@@ -66,6 +66,28 @@ class FxSettings {
   void sendColour() => mixer.setColourFx(colour.index, beatKnob, vocalKnob);
   void sendBeat() => mixer.setBeatFx(beatFx.index, on, length, depth);
 
+  DateTime? _downAt;
+  bool _wasOn = false;
+
+  /// A pad (or its key) goes down. Tap: it stays on until tapped again.
+  /// Hold: it's on only while held. Pressing another pad switches to that one.
+  void press(BeatFx f) {
+    _wasOn = on && beatFx == f;
+    beatFx = f;
+    on = !_wasOn;
+    _downAt = DateTime.now();
+    sendBeat();
+  }
+
+  void release(BeatFx f) {
+    final held = _downAt != null && DateTime.now().difference(_downAt!).inMilliseconds > 300;
+    _downAt = null;
+    if (held && !_wasOn && beatFx == f && on) {
+      on = false;
+      sendBeat();
+    }
+  }
+
   /// Everything back to centre / off.
   void reset() {
     beatKnob = 0;
@@ -91,29 +113,9 @@ class FxDeck extends StatefulWidget {
 
 class _FxDeckState extends State<FxDeck> {
   FxSettings get fx => widget.fx;
-  DateTime? _downAt;
-  bool _wasOn = false;
 
-  // Tap a pad: it stays on until tapped again. Hold it: it's on only while
-  // held. Pressing another pad switches to that one.
-  void _padDown(BeatFx f) {
-    setState(() {
-      _wasOn = fx.on && fx.beatFx == f;
-      fx.beatFx = f;
-      fx.on = !_wasOn;
-      _downAt = DateTime.now();
-    });
-    fx.sendBeat();
-  }
-
-  void _padUp(BeatFx f) {
-    final held = _downAt != null && DateTime.now().difference(_downAt!).inMilliseconds > 300;
-    _downAt = null;
-    if (held && !_wasOn && fx.beatFx == f && fx.on) {
-      setState(() => fx.on = false);
-      fx.sendBeat();
-    }
-  }
+  void _padDown(BeatFx f) => setState(() => fx.press(f));
+  void _padUp(BeatFx f) => setState(() => fx.release(f));
 
   void _step(int d) {
     var i = _lengths.indexWhere((x) => (x - fx.length).abs() < 1e-6);

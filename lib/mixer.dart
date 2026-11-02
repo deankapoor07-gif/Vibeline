@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Talks to the native mixer (macos/Runner/MainFlutterWindow.swift): renders
@@ -48,6 +49,11 @@ class Mixer {
   /// length in beats and its level/depth (0..1).
   Future<void> setBeatFx(int kind, bool on, double beats, double depth) =>
       _channel.invokeMethod('beatFx', {'kind': kind, 'on': on, 'beats': beats, 'depth': depth});
+
+  /// Bass / mid / high loudness of rendered audio files played together,
+  /// every 20 ms: [low, mid, high, low, …].
+  Future<Float32List> waveform(List<String> paths) async =>
+      await _channel.invokeMethod<Float32List>('waveform', {'paths': paths}) ?? Float32List(0);
 
   /// Mix time of every beat, so the Beat FX keep time with the music.
   Future<void> setBeatGrid(List<double> beats) => _channel.invokeMethod('beatGrid', {'beats': beats});

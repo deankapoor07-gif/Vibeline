@@ -3,8 +3,10 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'auto_fx.dart';
+import 'deck_view.dart';
 import 'fx_deck.dart';
 import 'intros.dart';
 import 'library.dart';
@@ -32,8 +34,9 @@ class VibelineApp extends StatelessWidget {
       title: 'D-Jay Noodles',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0E0E12),
-        primaryColor: const Color(0xFF6200EE),
+        scaffoldBackgroundColor: kInk,
+        primaryColor: kPink,
+        colorScheme: const ColorScheme.dark(primary: kPink, secondary: kTeal, surface: kPanel),
       ),
       home: const TimelineWorkspaceScreen(),
     );
@@ -118,15 +121,26 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   List<Map<String, dynamic>> _autoCues = const []; // Auto FX moves in this set
   List<double> _beatGrid = const []; // mix time of every beat
 
+  // Simple: the Now Playing decks. Pro: every card, knob and slider.
+  bool _pro = false;
+  late final WaveCache _waves = WaveCache(_mixer)
+    ..onLoaded = () {
+      if (mounted && !_pro) setState(() {});
+    };
+  // Deck mute buttons: cut the singer or the beat out, live.
+  bool _muteVocal = false, _muteBeat = false;
+
   @override
   void initState() {
     super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
     SectionEngine.prune();
     _startup();
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
     _ticker?.cancel();
     _relayout?.cancel();
     _vibeController.dispose();
@@ -530,6 +544,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   Map<String, dynamic> get _liveMap => {
         ...(_mashupMode ? _mashPlan?.liveMap : null) ?? const {'vocal': [], 'beat': []},
         'fx': _autoFxOn ? _autoCues : const [],
+        'muteVocal': _muteVocal,
+        'muteBeat': _muteBeat,
       };
 
   // Slider moves are sent at most every 50 ms (the last value always goes),
@@ -818,14 +834,222 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final kind = _mashupMode ? 'Mashups' : 'Mix';
     final dest = '${dir.path}/D-Jay Noodles $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp.m4a';
     _set('Saving…', phase: Phase.ready);
-    await _sections.export(dest, {..._liveMap, 'grid': _beatGrid});
+    await _sections.export(dest, {..._liveMap, 'grid': _beatGrid, 'muteVocal': false, 'muteBeat': false});
     await Process.run('open', ['-R', dest]);
     _set('Saved to Music › D-Jay Noodles', phase: Phase.ready);
   }
 
   // ------------------------------------------------------------- UI
 
-  Color get _accent => _mashupMode ? kMashupAccent : Colors.amber;
+  Color get _accent => _mashupMode ? kPink : kYellow;
+
+  // ------------------------------------------------------------- Keyboard
+
+  /// The computer keyboard is the controller: space plays, the arrows skip,
+  /// 1–8 are the FX pads (tap to keep on, hold for just while held). Ignored
+  /// while you're typing in a box.
+  bool _onKey(KeyEvent e) {
+    final focus = FocusManager.instance.primaryFocus?.context?.widget;
+    if (focus is EditableText) return false;
+    final k = e.logicalKey;
+    final digit = [
+      LogicalKeyboardKey.digit1, LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3, LogicalKeyboardKey.digit4,
+      LogicalKeyboardKey.digit5, LogicalKeyboardKey.digit6, LogicalKeyboardKey.digit7, LogicalKeyboardKey.digit8,
+    ].indexOf(k);
+    if (digit >= 0) {
+      if (!_playable || e is KeyRepeatEvent) return true;
+      final f = QuickPads.pads[digit].$1;
+      setState(() => e is KeyDownEvent ? _fx.press(f) : _fx.release(f));
+      return true;
+    }
+    if (e is! KeyDownEvent) return false;
+    if (k == LogicalKeyboardKey.space) {
+      _togglePlay();
+      return true;
+    }
+    if (k == LogicalKeyboardKey.arrowLeft && _playable) {
+      _previous();
+      return true;
+    }
+    if (k == LogicalKeyboardKey.arrowRight && _playable) {
+      _jumpTo(_currentIndex + 1);
+      return true;
+    }
+    return false;
+  }
+
+  /// Back to the start of this mashup / song, or the one before if it's
+  /// only just begun.
+  void _previous() {
+    final starts = _itemStarts;
+    final int cur = _currentIndex.clamp(0, math.max(0, starts.length - 1));
+    final double into = starts.isEmpty ? 0 : _position - starts[cur];
+    _jumpTo(math.max(0, cur - (into > 3 ? 0 : 1)));
+  }
+
+  Future<void> _seekTo(double t) async {
+    if (!_playable) return;
+    if (_playing) {
+      await _mixer.seek(t);
+    } else {
+      await _mixer.play(from: t);
+      if (mounted) setState(() => _playing = true);
+    }
+  }
+
+  // ------------------------------------------------------------- Now Playing
+
+  String _keyLabel(String k) => switch (k) {
+        'perfect' => 'Keys perfect',
+        'shifted' => 'Key shifted to match',
+        'compatible' => 'Keys compatible',
+        'loose' => 'Keys loose',
+        _ => 'Keys clash',
+      };
+
+  List<DeckInfo> get _decks {
+    final i = math.max(0, _currentIndex);
+    if (_mashupMode) {
+      final ms = _mashPlan?.mashups ?? const <Mashup>[];
+      if (ms.isEmpty) return const [];
+      final m = ms[i.clamp(0, ms.length - 1)];
+      final beat = DeckInfo('BEAT', m.beat.title, m.beat.artist, kTeal, [
+        ('${m.playedBpm.toStringAsFixed(1)} BPM', kTeal),
+        (shiftCamelot(m.beatGrid.camelot, m.beatShift), Colors.white),
+        if (!m.beatOnly) (_keyLabel(m.keyMatch), m.keyMatch == 'clash' ? Colors.redAccent : const Color(0xFF7DFF5A)),
+      ]);
+      if (m.beatOnly) return [beat];
+      return [
+        DeckInfo('VOCAL', m.vocal.title, m.vocal.artist, kPink, [
+          ('${(m.vocalSpeed * 100).round()}% speed', kPink),
+          (shiftCamelot(m.vocalGrid.camelot, m.vocalShift), Colors.white),
+          if (m.acapellaBars > 0) ('Acapella drop', kYellow),
+        ]),
+        beat,
+      ];
+    }
+    final ts = _plan?.tracks ?? const <PlannedTrack>[];
+    if (ts.isEmpty) return const [];
+    DeckInfo deck(String role, PlannedTrack p, Color c) => DeckInfo(role, p.track.title, p.track.artist, c, [
+          ('${p.playedBpm.toStringAsFixed(1)} BPM', c),
+          (shiftCamelot(p.grid.camelot, p.pitchSemitones), Colors.white),
+          if (p.bridge) ('Beat bridge', kYellow),
+        ]);
+    final cur = i.clamp(0, ts.length - 1);
+    return [
+      deck('NOW', ts[cur], kPink),
+      if (cur + 1 < ts.length) deck('NEXT', ts[cur + 1], kTeal),
+    ];
+  }
+
+  String get _heading {
+    final n = _mashupMode ? (_mashPlan?.mashups.length ?? 0) : (_plan?.tracks.length ?? 0);
+    final what = _mashupMode ? 'mashup' : 'song';
+    return 'Now playing · $what ${math.max(1, _currentIndex + 1)} of $n${_preparing ? '+' : ''}';
+  }
+
+  String get _upNext {
+    final starts = _itemStarts;
+    final next = _currentIndex + 1;
+    if (next >= starts.length) return _preparing ? 'Making the next mashup…' : 'Last one in the set';
+    final title = _mashupMode ? _mashPlan!.mashups[next].vocal.title : _plan!.tracks[next].track.title;
+    final cue = _autoFxOn
+        ? _autoCues.where((c) => (c['start'] as double) > _position && (c['start'] as double) < starts[next] + 20).firstOrNull
+        : null;
+    final fx = cue == null ? '' : ' · ${BeatFx.values[cue['kind'] as int].label.toLowerCase()} coming';
+    return 'Up next in ${_clock(math.max(0, starts[next] - _position))} · $title$fx';
+  }
+
+  List<OverviewItem> get _overviewItems {
+    final starts = _itemStarts;
+    final labels = _mashupMode
+        ? [for (final m in _mashPlan?.mashups ?? const <Mashup>[]) m.beatOnly ? m.beat.title : m.vocal.title]
+        : [for (final t in _plan?.tracks ?? const <PlannedTrack>[]) t.track.title];
+    return [
+      for (var i = 0; i < starts.length && i < labels.length; i++)
+        OverviewItem(starts[i], i + 1 < starts.length ? starts[i + 1] : _duration, '${i + 1} ${labels[i]}',
+            !_mashupMode && _plan!.tracks[i].bridge ? kYellow : kSetColors[i % kSetColors.length]),
+    ];
+  }
+
+  List<(double, MarkKind)> get _marks => [
+        if (_mashupMode)
+          for (final m in _mashPlan?.mashups ?? const <Mashup>[])
+            if (m.acapellaBars > 0) (m.vocalIn, MarkKind.drop),
+        if (!_mashupMode)
+          for (final t in _plan?.tracks ?? const <PlannedTrack>[])
+            if (t.bridge) (t.outStart, MarkKind.bridge),
+        if (_autoFxOn)
+          for (final c in _autoCues) (c['start'] as double, MarkKind.fx),
+      ];
+
+  void _setMute({bool? vocal, bool? beat}) {
+    setState(() {
+      _muteVocal = vocal ?? _muteVocal;
+      _muteBeat = beat ?? _muteBeat;
+    });
+    _mixer.setLiveMap(_liveMap);
+  }
+
+  Widget _nowPlaying() {
+    final decks = _decks;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Column(children: [
+        Expanded(child: NowPlayingView(
+          decks: decks,
+          sections: _sections.sections,
+          waves: _waves,
+          position: _position,
+          playing: _playing,
+          heading: _heading,
+          upNext: _upNext,
+        )),
+        if (_mashupMode && decks.length == 2) ...[
+          const SizedBox(height: 8),
+          Row(children: [
+            _muteButton('Vocal', _muteVocal, kPink, () => _setMute(vocal: !_muteVocal),
+                'Cut the singer out for an instrumental moment'),
+            const SizedBox(width: 8),
+            _muteButton('Beat', _muteBeat, kTeal, () => _setMute(beat: !_muteBeat), 'Cut the beat out for an acapella moment'),
+            const Spacer(),
+            const Text('Space play · ← → skip · 1–8 FX', style: TextStyle(fontSize: 11, color: Colors.white38)),
+          ]),
+        ],
+        const SizedBox(height: 10),
+        QuickPads(
+          fx: _fx,
+          onChanged: () => setState(() {}),
+          moreOpen: _fxOpen,
+          onMore: () {
+            if (_fxOpen) _fx.reset();
+            setState(() => _fxOpen = !_fxOpen);
+          },
+        ),
+      ]),
+    );
+  }
+
+  Widget _muteButton(String what, bool muted, Color c, void Function() onTap, String hint) => Tooltip(
+        message: hint,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: muted ? c.withValues(alpha: 0.18) : kPanel,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: muted ? c : Colors.white24),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(muted ? Icons.volume_off : Icons.volume_up, size: 15, color: muted ? c : Colors.white60),
+              const SizedBox(width: 6),
+              Text(muted ? '$what muted' : 'Mute $what', style: TextStyle(fontSize: 12, color: muted ? c : Colors.white70)),
+            ]),
+          ),
+        ),
+      );
 
   /// How much music your library has for the theme typed, as you type it.
   String? get _themeHint {
@@ -852,14 +1076,43 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final statusLine = [_status, if (_readiness.isNotEmpty) _readiness].join('   ·   ');
     return Scaffold(
       appBar: AppBar(
-        title: Text(_mashupMode ? 'D-Jay Noodles — Timeline & Mashup Studio' : 'D-Jay Noodles'),
-        backgroundColor: const Color(0xFF181820),
+        toolbarHeight: 50,
+        titleSpacing: 16,
+        title: Row(children: [
+          const Text.rich(TextSpan(children: [
+            TextSpan(text: 'D-Jay ', style: TextStyle(color: kPink)),
+            TextSpan(text: 'Noodles', style: TextStyle(color: kTeal)),
+          ]), style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(width: 20),
+          Tooltip(
+            message: 'Simple: the decks, waveform and pads.\nPro: every mashup card with all its knobs and sliders.',
+            child: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: SegmentedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                selectedBackgroundColor: Colors.white,
+                selectedForegroundColor: kInk,
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+              segments: const [
+                ButtonSegment(value: false, label: Text('Simple')),
+                ButtonSegment(value: true, label: Text('Pro')),
+              ],
+              selected: {_pro},
+              onSelectionChanged: (v) => setState(() => _pro = v.first),
+            ),
+          ),
+        ]),
+        backgroundColor: kInk,
+        surfaceTintColor: Colors.transparent,
         actions: [
           if (_mashupMode)
             TextButton.icon(
               onPressed: () => setState(() => _libraryOpen = !_libraryOpen),
-              icon: Icon(Icons.library_music, color: _libraryOpen ? kMashupAccent : Colors.white70, size: 18),
-              label: Text('Songs', style: TextStyle(color: _libraryOpen ? kMashupAccent : Colors.white70)),
+              icon: Icon(Icons.library_music, color: _libraryOpen ? kPink : Colors.white70, size: 18),
+              label: Text('Songs', style: TextStyle(color: _libraryOpen ? kPink : Colors.white70)),
             ),
           PopupMenuButton<bool>(
             tooltip: 'Where to find your music',
@@ -896,8 +1149,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         children: [
           // 1. VIBE ENGINE PROMPT BAR
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-            color: const Color(0xFF181820),
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+            margin: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(color: kPanel, borderRadius: BorderRadius.circular(12)),
             child: Row(
               children: [
                 Icon(Icons.psychology, color: _accent),
@@ -945,8 +1199,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 const SizedBox(width: 8),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _mashupMode ? Colors.purpleAccent : Colors.amber.shade700,
-                    foregroundColor: _mashupMode ? Colors.white : Colors.black,
+                    backgroundColor: _accent,
+                    foregroundColor: kInk,
+                    textStyle: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   onPressed: _busy ? null : _remix,
                   icon: _busy
@@ -961,16 +1216,16 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           // 2. TOOLBAR: mode + tuning
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-            color: const Color(0xFF14141A),
+            color: kInk,
             child: Row(
               children: [
-                Icon(Icons.layers, color: _mashupMode ? kMashupAccent : Colors.white38, size: 18),
+                Icon(Icons.layers, color: _mashupMode ? kPink : Colors.white38, size: 18),
                 const SizedBox(width: 8),
                 Text(
                   _mashupMode ? "Mashup Mode: ACTIVE" : "Mashup Mode: OFF",
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _mashupMode ? Colors.white : Colors.white54),
                 ),
-                Switch(value: _mashupMode, activeColor: kMashupAccent, onChanged: _busy ? null : _setMode),
+                Switch(value: _mashupMode, activeColor: kPink, onChanged: _busy ? null : _setMode),
                 if (_mashupMode) ...[
                   const SizedBox(width: 8),
                   Tooltip(
@@ -980,7 +1235,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                       const Text('⚓', style: TextStyle(fontSize: 13)),
                       const SizedBox(width: 4),
                       const Text('Anchor beat', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                      Switch(value: _anchorOn, activeThumbColor: kMashupAccent, onChanged: _busy ? null : _toggleAnchor),
+                      Switch(value: _anchorOn, activeThumbColor: kPink, onChanged: _busy ? null : _toggleAnchor),
                     ]),
                   ),
                 ],
@@ -1011,7 +1266,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             height: 2,
             child: _busy
                 ? LinearProgressIndicator(value: _progress, color: _accent, backgroundColor: Colors.white10)
-                : const Divider(height: 2, thickness: 1, color: Colors.white24),
+                : const Divider(height: 2, thickness: 1, color: kLine),
           ),
 
           // 3. TIMELINE
@@ -1021,7 +1276,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 Expanded(
                   child: !_hasContent
                       ? _EmptyTimeline(busy: _busy, mashup: _mashupMode)
-                      : (_mashupMode ? _mashupTimeline() : _blendTimeline()),
+                      : !_pro
+                          ? _nowPlaying()
+                          : (_mashupMode ? _mashupTimeline() : _blendTimeline()),
                 ),
                 if (_mashupMode && _libraryOpen)
                   LibraryPanel(
@@ -1048,29 +1305,38 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           // 4. LIVE FX
           if (_fxOpen && _playable) FxDeck(fx: _fx, hasVocal: _mashupMode, bpm: _bpmNow, accent: _accent),
 
-          // 5. PLAYBACK & TRANSPORT DOCK
+          // 5. THE WHOLE SET
+          if (_playable && _duration > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: SetOverview(
+                items: _overviewItems,
+                marks: _marks,
+                position: _position,
+                duration: _duration,
+                onSeek: _seekTo,
+              ),
+            ),
+
+          // 6. PLAYBACK & TRANSPORT DOCK
           Container(
-            height: 72,
-            color: const Color(0xFF181820),
+            height: 68,
+            decoration: const BoxDecoration(color: kInk, border: Border(top: BorderSide(color: kLine))),
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
               children: [
                 IconButton(
+                  tooltip: 'Back (←)',
                   icon: const Icon(Icons.skip_previous),
-                  onPressed: !_playable
-                      ? null
-                      : () {
-                          final starts = _itemStarts;
-                          final int cur = _currentIndex.clamp(0, math.max(0, starts.length - 1));
-                          final double into = starts.isEmpty ? 0 : _position - starts[cur];
-                          _jumpTo(math.max(0, cur - (into > 3 ? 0 : 1)));
-                        },
+                  onPressed: !_playable ? null : _previous,
                 ),
                 IconButton(
+                  tooltip: _playing ? 'Pause (space)' : 'Play (space)',
                   icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill, size: 46, color: _accent),
                   onPressed: _togglePlay,
                 ),
                 IconButton(
+                  tooltip: 'Next (→)',
                   icon: const Icon(Icons.skip_next),
                   onPressed: !_playable ? null : () => _jumpTo(_currentIndex + 1),
                 ),
@@ -1079,7 +1345,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   width: 120,
                   child: Text(
                     !_playable ? '--:-- / --:--' : '${_clock(_position)} / ${_clock(_duration)}',
-                    style: const TextStyle(color: Colors.white70, fontFeatures: [FontFeature.tabularFigures()]),
+                    style: const TextStyle(color: Colors.white, fontSize: 15, fontFeatures: [FontFeature.tabularFigures()]),
                   ),
                 ),
                 if (_waiting || _heldAtEnd)
