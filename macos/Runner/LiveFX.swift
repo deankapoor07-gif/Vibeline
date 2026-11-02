@@ -330,14 +330,17 @@ final class BeatFX {
   private var brakeSpeed = 1.0
   private var takeover: Float = 0  // roll / brake vs the live sound
 
-  // Scratch: each tap pushes the record forward and pulls it back over the
-  // same bit of sound (a baby scratch). Quick taps keep working that one
-  // sound, the way a DJ does; after a pause the next tap grabs a fresh one.
+  // Scratch: each tap pulls the record back and pushes it forward again over
+  // the music just played (vocals and beat together), with the live sound
+  // cut while the hand is on the record. Quick taps queue up and run into
+  // each other, working that one sound the way a DJ does; after a pause the
+  // next tap grabs a fresh one.
   private var seenTaps = 0
   private var clock = 0.0  // samples processed
   private var lastTap = -1e12
   private var scratchAnchor = 0.0  // history position of the sound being scratched
   private var scratchT = -1.0  // samples into the current stroke (-1: none)
+  private var scratchQueued = 0  // taps waiting for the current stroke to finish
   private var scratchEnv: Float = 0
   private var scratchTone: (Float, Float) = (0, 0)
 
@@ -398,13 +401,19 @@ final class BeatFX {
     wasOn = on
 
     if seenTaps != scratchTaps {
+      let taps = scratchTaps &- seenTaps
       seenTaps = scratchTaps
-      if clock - lastTap > 0.7 * sr { scratchAnchor = Double(history.w) - 0.22 * sr }
+      if clock - lastTap > 0.7 * sr { scratchAnchor = Double(history.w) - 0.01 * sr }
       lastTap = clock
-      scratchT = 0
+      if scratchT < 0 {
+        scratchT = 0
+        scratchQueued = min(3, scratchQueued + taps - 1)
+      } else {
+        scratchQueued = min(3, scratchQueued + taps)
+      }
     }
-    let stroke = 0.19 * sr  // one push and pull
-    let throwLen = 0.085 * sr  // how far the record moves (in sound)
+    let stroke = 0.18 * sr  // one pull back and push forward
+    let throwLen = 0.2 * sr  // how far the record moves (in sound)
 
     for i in 0..<n {
       let x = l[i], y = r[i]
@@ -553,21 +562,29 @@ final class BeatFX {
         var sL: Float = 0, sR: Float = 0
         if scratching {
           let u = scratchT / stroke
-          let pos = scratchAnchor + throwLen * sin(Double.pi * u)
+          // Back (the sound plays in reverse) then forward to where it was.
+          let pos = scratchAnchor - throwLen * sin(Double.pi * u)
           (sL, sR) = history.at(pos)
           // The faster the record moves the louder it is; at the turnaround
           // it's nearly silent, like a real stylus.
           let speed = abs(throwLen * Double.pi / stroke * cos(Double.pi * u))
-          let g = Float(min(1, speed * 1.4))
-          scratchTone.0 += (sL * g - scratchTone.0) * 0.55
-          scratchTone.1 += (sR * g - scratchTone.1) * 0.55
-          sL = scratchTone.0 * 1.25
-          sR = scratchTone.1 * 1.25
+          let g = Float(min(1, speed * 0.8))
+          scratchTone.0 += (sL * g - scratchTone.0) * 0.6
+          scratchTone.1 += (sR * g - scratchTone.1) * 0.6
+          sL = scratchTone.0
+          sR = scratchTone.1
           scratchT += 1
-          if scratchT >= stroke { scratchT = -1 }
+          if scratchT >= stroke {
+            if scratchQueued > 0 {
+              scratchQueued -= 1
+              scratchT = 0
+            } else {
+              scratchT = -1
+            }
+          }
         }
-        oL = oL * (1 - 0.8 * scratchEnv) + sL * scratchEnv
-        oR = oR * (1 - 0.8 * scratchEnv) + sR * scratchEnv
+        oL = oL * (1 - scratchEnv) + sL * scratchEnv
+        oR = oR * (1 - scratchEnv) + sR * scratchEnv
       }
       clock += 1
 

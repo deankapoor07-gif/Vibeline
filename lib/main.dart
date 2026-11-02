@@ -16,6 +16,7 @@ import 'mashup_widgets.dart';
 import 'mixer.dart';
 import 'models.dart';
 import 'planner.dart';
+import 'prestretch.dart';
 import 'prompt_song.dart';
 import 'sections.dart';
 import 'tuning.dart';
@@ -122,6 +123,12 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   List<double> _beatGrid = const []; // mix time of every beat
   Set<double> _downbeats = const {}; // the beats in it that start a bar
 
+  // Vocals made studio-clean with Rubber Band; lays out again as each is ready.
+  late final Prestretcher _pre = Prestretcher(_library)
+    ..onReady = () {
+      if (mounted && _mashupMode && _mashPlan != null) _scheduleRelayout();
+    };
+
   // Simple: the Now Playing decks. Pro: every card, knob and slider.
   bool _pro = false;
   late final WaveCache _waves = WaveCache(_mixer)
@@ -136,6 +143,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKey);
     SectionEngine.prune();
+    Prestretcher.prune();
     _startup();
   }
 
@@ -461,6 +469,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   Future<void> _publish(Map<String, dynamic> json, List<double> cuts, double duration, String summary,
       {bool autoplay = false, List<List<double>>? remap}) async {
     if (_warmth != null) json['warmth'] = _warmth;
+    if (_mashupMode) json = _pre.apply(json);
     _duration = duration;
     _beatGrid = _computeBeatGrid();
     _autoCues = _mashupMode ? mashupFx(_mashPlan?.mashups ?? const []) : (_plan == null ? const [] : blendFx(_plan!));
@@ -1014,7 +1023,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   Widget _nowPlaying() {
-    final decks = _decks;
+    // Mute buttons sit on their own decks (mashup sets: singer and beat).
+    final two = _mashupMode && _decks.length == 2;
+    final decks = [
+      for (final d in _decks)
+        DeckInfo(d.role, d.title, d.artist, d.color, d.tags,
+            action: !two
+                ? null
+                : d.role == 'VOCAL'
+                    ? _muteButton('Vocal', _muteVocal, kPink, () => _setMute(vocal: !_muteVocal),
+                        'Cut the singer out for an instrumental moment')
+                    : _muteButton('Beat', _muteBeat, kTeal, () => _setMute(beat: !_muteBeat),
+                        'Cut the beat out for an acapella moment')),
+    ];
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
       child: Column(children: [
@@ -1030,26 +1051,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           downbeats: _downbeats,
           vocalMuted: _muteVocal,
           beatMuted: _muteBeat,
+          trailing: _scratchButton(),
         )),
-        ...[
-          const SizedBox(height: 8),
-          Row(children: [
-            if (_mashupMode && decks.length == 2) ...[
-              _muteButton('Vocal', _muteVocal, kPink, () => _setMute(vocal: !_muteVocal),
-                  'Cut the singer out for an instrumental moment'),
-              const SizedBox(width: 8),
-              _muteButton('Beat', _muteBeat, kTeal, () => _setMute(beat: !_muteBeat),
-                  'Cut the beat out for an acapella moment'),
-              const SizedBox(width: 8),
-            ],
-            _scratchButton(),
-            const Spacer(),
-            const Text('Space play · ← → skip · 1–8 FX · S scratch', style: TextStyle(fontSize: 11, color: Colors.white38)),
-          ]),
-        ],
         const SizedBox(height: 10),
         SizedBox(
-          height: 128,
+          height: 106,
           child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Expanded(child: QuickPads(fx: _fx, onChanged: () => setState(() {}))),
             const SizedBox(width: 10),
@@ -1084,12 +1090,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   Widget _scratchButton() => Tooltip(
-        message: 'Tap quickly a few times to scratch the record (key S)',
+        message: 'Tap quickly a few times to scratch the record (key S).\n'
+            'Keys: space play · ← → skip · 1–8 FX pads · S scratch',
         child: Listener(
           onPointerDown: (_) => _scratch(),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 60),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
             decoration: BoxDecoration(
               color: _scratchLit ? kYellow : kPanel,
               borderRadius: BorderRadius.circular(8),
@@ -1110,7 +1117,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           onTap: onTap,
           borderRadius: BorderRadius.circular(8),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
               color: muted ? c.withValues(alpha: 0.18) : kPanel,
               borderRadius: BorderRadius.circular(8),

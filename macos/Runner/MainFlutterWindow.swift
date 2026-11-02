@@ -648,6 +648,9 @@ final class MixRenderer {
     deck.delay.reset()
     deck.timePitch.rate = Float((clip.rate * 512).rounded() / 512)
     deck.timePitch.pitch = Float(clip.pitch(at: t))
+    // A clip already stretched and tuned (Rubber Band, ahead of time) plays
+    // as it is: no second stretcher colouring the sound.
+    deck.timePitch.bypass = clip.rate == 1 && clip.pitchCents == 0 && clip.warp == nil && clip.pitchRamp == nil
     deck.baseGainDb = max(-24, min(24, clip.gainDb))
     deck.delay.delayTime = max(0.05, min(2, clip.echoTime))
     deck.clip = clip

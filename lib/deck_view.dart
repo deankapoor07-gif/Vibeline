@@ -26,7 +26,8 @@ class DeckInfo {
   final String artist;
   final Color color;
   final List<(String, Color)> tags;
-  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags);
+  final Widget? action; // e.g. its mute button, top right of the card
+  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action});
 }
 
 /// The bass / mid / high loudness and peak of each rendered section, every
@@ -70,6 +71,7 @@ class NowPlayingView extends StatefulWidget {
   final List<double> beats; // mix time of every beat
   final Set<double> downbeats; // the ones that start a bar
   final bool vocalMuted, beatMuted;
+  final Widget? trailing; // beside "up next" (the Scratch button)
 
   const NowPlayingView({
     super.key,
@@ -84,6 +86,7 @@ class NowPlayingView extends StatefulWidget {
     this.downbeats = const {},
     this.vocalMuted = false,
     this.beatMuted = false,
+    this.trailing,
   });
 
   @override
@@ -144,7 +147,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
         const SizedBox(height: 10),
         Expanded(
           child: Container(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
             decoration: BoxDecoration(color: const Color(0xFF0C0C11), borderRadius: BorderRadius.circular(12)),
             child: Column(
               children: [
@@ -159,6 +162,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
                         style: const TextStyle(fontSize: 11, color: Colors.white54),
                       ),
                     ),
+                    if (widget.trailing != null) ...[const SizedBox(width: 10), widget.trailing!],
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -198,7 +202,7 @@ class _Deck extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: kPanel,
         borderRadius: BorderRadius.circular(12),
@@ -206,15 +210,21 @@ class _Deck extends StatelessWidget {
       ),
       child: Row(
         children: [
-          SizedBox(width: 76, height: 76, child: CustomPaint(painter: _PlatterPainter(d.color, pos))),
+          SizedBox(width: 62, height: 62, child: CustomPaint(painter: _PlatterPainter(d.color, pos))),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  d.role,
-                  style: TextStyle(fontSize: 11, letterSpacing: 1.2, color: d.color, fontWeight: FontWeight.w600),
+                Row(
+                  children: [
+                    Text(
+                      d.role,
+                      style: TextStyle(fontSize: 11, letterSpacing: 1.2, color: d.color, fontWeight: FontWeight.w600),
+                    ),
+                    const Spacer(),
+                    ?d.action,
+                  ],
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -454,7 +464,7 @@ class QuickPads extends StatelessWidget {
         },
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 80),
-          height: 52,
+          height: 42,
           decoration: BoxDecoration(
             color: lit ? c : kPanel,
             borderRadius: BorderRadius.circular(8),

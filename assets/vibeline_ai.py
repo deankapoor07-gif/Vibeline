@@ -673,6 +673,59 @@ def cmd_separate(paths):
     emit({"type": "done"})
 
 
+def prestretch(job):
+    """One vocal, made studio-clean ahead of time with Rubber Band (via
+    pedalboard): stretched so each beat lands where the beat map says, and
+    tuned, keeping the singer's formants. Job: {input, warp: [[mixTime,
+    songTime], ...], cents, out}. The output starts at warp[0]'s mix time and
+    plays at normal speed with no further processing."""
+    import numpy as np
+    import soundfile as sf
+    from pedalboard import time_stretch
+    warp = job["warp"]
+    x, sr = sf.read(job["input"], dtype="float32", always_2d=True)
+    s0, s1 = warp[0][1], warp[-1][1]
+    pad = max(0, int(round(-s0 * sr)))  # the map starts before the song: silence
+    a, b = max(0, int(round(s0 * sr))), min(len(x), int(round(s1 * sr)))
+    seg = np.concatenate([np.zeros((pad, x.shape[1]), np.float32), x[a:b]])
+    # Speed (song seconds per mix second) for each input sample, beat by beat.
+    speed = np.empty(len(seg), np.float64)
+    pos = 0
+    for (m0, t0), (m1, t1) in zip(warp[:-1], warp[1:]):
+        n = min(len(speed), int(round((t1 - s0) * sr))) - pos
+        if n <= 0:
+            continue
+        speed[pos:pos + n] = max(0.5, min(2.0, (t1 - t0) / max(1e-6, m1 - m0)))
+        pos += n
+    if pos < len(speed):
+        speed[pos:] = speed[pos - 1] if pos else 1.0
+    y = time_stretch(seg.T, sr, stretch_factor=speed, pitch_shift_in_semitones=job["cents"] / 100.0,
+                     high_quality=True, preserve_formants=True)
+    want = int(round((warp[-1][0] - warp[0][0]) * sr))
+    y = y[:, :want] if y.shape[1] >= want else np.pad(y, ((0, 0), (0, want - y.shape[1])))
+    os.makedirs(os.path.dirname(job["out"]), exist_ok=True)
+    tmp = job["out"] + ".part.flac"
+    sf.write(tmp, y.T, sr, subtype="PCM_24")
+    os.replace(tmp, job["out"])
+    return {"type": "prestretch", "out": job["out"], "ok": True, "seconds": want / sr}
+
+
+def cmd_prestretch(job_files):
+    for f in job_files:
+        try:
+            with open(f) as fh:
+                job = json.load(fh)
+            emit(prestretch(job))
+        except Exception as e:
+            emit({"type": "prestretch", "job": f, "ok": False, "error": str(e)})
+        finally:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    emit({"type": "done"})
+
+
 if __name__ == "__main__":
     _guard()
     if len(sys.argv) >= 3 and sys.argv[1] == "tags":
@@ -681,6 +734,8 @@ if __name__ == "__main__":
         cmd_analyze(sys.argv[2:])
     elif len(sys.argv) >= 3 and sys.argv[1] == "separate":
         cmd_separate(sys.argv[2:])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "prestretch":
+        cmd_prestretch(sys.argv[2:])
     else:
         print(__doc__)
         sys.exit(1)

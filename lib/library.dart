@@ -63,6 +63,9 @@ class MusicLibrary {
     return _script = path;
   }
 
+  /// Runs Rubber Band jobs (see prestretch.dart); one row per job.
+  Stream<Map<String, dynamic>> prestretch(List<String> jobFiles) => _run(['prestretch', ...jobFiles]);
+
   Stream<Map<String, dynamic>> _run(List<String> args) async* {
     final script = await _scriptPath();
     // The helper watches this app's process id and quits if the app closes.
