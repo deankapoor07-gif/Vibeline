@@ -745,7 +745,7 @@ def cmd_separate(paths):
 
 
 def prestretch(job):
-    """One vocal, made studio-clean ahead of time with Rubber Band (via
+    """One vocal (or beat: its stems summed), made studio-clean ahead of time with Rubber Band (via
     pedalboard): stretched so each beat lands where the beat map says, and
     tuned, keeping the singer's formants. Job: {input, warp: [[mixTime,
     songTime], ...], cents, out}. The output starts at warp[0]'s mix time and
@@ -755,6 +755,11 @@ def prestretch(job):
     from pedalboard import time_stretch
     warp = job["warp"]
     x, sr = sf.read(job["input"], dtype="float32", always_2d=True)
+    for extra in job.get("mix", []):  # a beat's other stems, summed into one
+        e, _ = sf.read(extra, dtype="float32", always_2d=True)
+        if len(e) > len(x):
+            x = np.pad(x, ((0, len(e) - len(x)), (0, 0)))
+        x[: len(e)] += e
     s0, s1 = warp[0][1], warp[-1][1]
     pad = max(0, int(round(-s0 * sr)))  # the map starts before the song: silence
     a, b = max(0, int(round(s0 * sr))), min(len(x), int(round(s1 * sr)))
@@ -770,13 +775,22 @@ def prestretch(job):
         pos += n
     if pos < len(speed):
         speed[pos:] = speed[pos - 1] if pos else 1.0
+    # A beat (stems summed) skips the voice-only formant keeping, is saved
+    # 6 dB down so the sum can't clip (the player adds it back), and in 16 bits
+    # like its stems (half the disk space).
+    beat = bool(job.get("beat"))
+    # The standard engine, not "high quality": that one drifts off the beat
+    # map (about 30 ms over two minutes, even at a steady speed), while this
+    # one stays within 3 ms, and keeps drum hits and sung attacks cleaner.
     y = time_stretch(seg.T, sr, stretch_factor=speed, pitch_shift_in_semitones=job["cents"] / 100.0,
-                     high_quality=True, preserve_formants=True)
+                     high_quality=False, preserve_formants=not beat)
     want = int(round((warp[-1][0] - warp[0][0]) * sr))
     y = y[:, :want] if y.shape[1] >= want else np.pad(y, ((0, 0), (0, want - y.shape[1])))
     os.makedirs(os.path.dirname(job["out"]), exist_ok=True)
     tmp = job["out"] + ".part.flac"
-    sf.write(tmp, y.T, sr, subtype="PCM_24")
+    if beat:
+        y = y * 0.5
+    sf.write(tmp, y.T, sr, subtype="PCM_16" if beat else "PCM_24")
     os.replace(tmp, job["out"])
     return {"type": "prestretch", "out": job["out"], "ok": True, "seconds": want / sr}
 

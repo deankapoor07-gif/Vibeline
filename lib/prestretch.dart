@@ -3,10 +3,11 @@ import 'dart:io';
 
 import 'library.dart';
 
-/// Studio-clean vocals. Each vocal in a mashup set is stretched onto the beat
-/// and tuned once, ahead of time, with Rubber Band (keeping the singer's
-/// formants), and the mixer then plays that file untouched, with no stretcher
-/// of its own colouring the voice. Until a vocal's file is ready the set
+/// Studio-clean vocals and beats. Each vocal and beat in a mashup set is
+/// stretched onto the grid and tuned once, ahead of time, with Rubber Band
+/// (keeping the singer's formants; a beat's stems are summed first), and the
+/// mixer then plays that file untouched, with no stretcher of its own
+/// colouring the voice or smearing the drums. Until a vocal's file is ready the set
 /// uses the mixer's own stretcher, and [onReady] says when to lay out again.
 class Prestretcher {
   final MusicLibrary lib;
@@ -19,6 +20,7 @@ class Prestretcher {
   final _failed = <String>{};
   final _tries = <String, int>{};
   bool _running = false;
+  bool get busy => _running || _queue.isNotEmpty;
 
   /// [json] with every vocal clip that has a ready file swapped for it; the
   /// rest are queued.
@@ -27,12 +29,14 @@ class Prestretcher {
     final out = <Map<String, dynamic>>[];
     for (final c in clips) {
       final warp = (c['warp'] as List?)?.map((w) => (w as List).cast<num>()).toList();
-      if (c['bus'] != 1 || warp == null || warp.length < 2 || c['pitchRamp'] != null) {
+      if (warp == null || warp.length < 2 || c['pitchRamp'] != null) {
         out.add(c);
         continue;
       }
       final m0 = warp.first[0].toDouble();
-      final key = _key(c['path'] as String, warp, (c['pitchCents'] as num).toDouble());
+      final vocal = c['bus'] == 1;
+      final mix = ((c['mix'] as List?) ?? const []).cast<String>();
+      final key = _key([c['path'] as String, ...mix].join('+'), warp, (c['pitchCents'] as num).toDouble());
       final file = '$dir/$key.flac';
       if (File(file).existsSync()) {
         out.add({
@@ -43,15 +47,20 @@ class Prestretcher {
           'srcEnd': warp.last[0].toDouble() - m0,
           'rate': 1.0,
           'pitchCents': 0.0,
+          // A beat's file is saved 6 dB down so its summed stems can't clip.
+          if (!vocal) 'gainDb': ((c['gainDb'] as num?) ?? 0).toDouble() + 6.0206,
         }
           ..remove('warp')
-          ..remove('pitchRamp'));
+          ..remove('pitchRamp')
+          ..remove('mix'));
         continue;
       }
       out.add(c);
       if (!_failed.contains(key)) {
         _queue.putIfAbsent(key, () => {
               'input': c['path'],
+              if (mix.isNotEmpty) 'mix': mix,
+              if (!vocal) 'beat': true, // see prestretch() in vibeline_ai.py
               'warp': warp,
               'cents': c['pitchCents'],
               'out': file,
@@ -66,7 +75,8 @@ class Prestretcher {
   /// The same vocal, beat map shape and tuning give the same file, wherever
   /// in the set it plays.
   static String _key(String path, List<List<num>> warp, double cents) {
-    final m0 = warp.first[0], s = StringBuffer('$path|${cents.toStringAsFixed(2)}');
+    // v2: the standard Rubber Band engine (v1's drifted off the beat map).
+    final m0 = warp.first[0], s = StringBuffer('v2|$path|${cents.toStringAsFixed(2)}');
     for (final w in warp) {
       s.write('|${(w[0] - m0).toStringAsFixed(4)},${w[1].toStringAsFixed(4)}');
     }
