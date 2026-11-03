@@ -160,6 +160,37 @@ final class Reverb {
   }
 }
 
+// MARK: - Vocal peak catcher
+
+/// A gentle compressor on the vocal layer: it only leans on the loudest
+/// notes (a belted chorus, a shout), about 4 dB, so a vocal never jumps out
+/// of the mix. Ordinary singing passes almost untouched, and the small
+/// make-up gain keeps the vocal-to-beat balance the set was levelled at.
+final class VocalComp {
+  private let att: Float, rel: Float
+  private var env: Float = 0
+  private let th: Float = -12, ratio: Float = 4, knee: Float = 6, maxRed: Float = 8
+  private let makeup: Float = 1.19  // +1.5 dB
+
+  init(sr: Double) {
+    att = 1 - exp(-1 / Float(0.005 * sr))
+    rel = 1 - exp(-1 / Float(0.12 * sr))
+  }
+
+  func process(_ l: UnsafeMutablePointer<Float>, _ r: UnsafeMutablePointer<Float>, _ n: Int) {
+    for i in 0..<n {
+      let x = max(abs(l[i]), abs(r[i])), v = x * x
+      env += (v - env) * (v > env ? att : rel)
+      let o = 10 * log10(max(env, 1e-12)) - th
+      var red: Float = 0
+      if o > knee / 2 { red = o * (1 - 1 / ratio) }
+      else if o > -knee / 2 { red = (o + knee / 2) * (o + knee / 2) / (2 * knee) * (1 - 1 / ratio) }
+      let g = pow(10, -min(red, maxRed) / 20) * makeup
+      l[i] *= g; r[i] *= g
+    }
+  }
+}
+
 // MARK: - Colour FX
 
 /// One channel's Colour FX. [knob] runs -1…1; 0 (the centre) is off.

@@ -904,7 +904,7 @@ final class TimelinePlayer {
   }
 
   /// main layer → gain → (colour FX) ─┐
-  /// vocal layer → gain → (colour FX) ─┴→ master → (beat FX) → limiter → out
+  /// vocal layer → gain → peak catcher → (colour FX) ─┴→ master → (beat FX) → limiter → out
   static func wire(
     _ engine: AVAudioEngine, beatBus: AVAudioMixerNode, beatGain: AVAudioUnitEQ, voxBus: AVAudioMixerNode,
     voxGain: AVAudioUnitEQ, master: AVAudioMixerNode, limiter: AVAudioUnitEffect,
@@ -918,7 +918,10 @@ final class TimelinePlayer {
       for i in 0..<(n.count - 1) { engine.connect(n[i], to: n[i + 1], format: format) }
     }
     chain([beatBus, beatGain, fx?.beat, master])
-    chain([voxBus, voxGain, fx?.vox, master])
+    let peaks = VocalComp(sr: format.sampleRate)
+    let catcher = FXUnit.make(FXUnit.colourDesc, peaks.process)
+    engine.attach(catcher)
+    chain([voxBus, voxGain, catcher, fx?.vox, master])
     chain([master, fx?.master, limiter, engine.mainMixerNode])
     engine.mainMixerNode.outputVolume = ceiling
   }
