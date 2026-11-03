@@ -1086,6 +1086,64 @@ class MashupMaker {
     return (start, best);
   }
 
+  /// How well two sets of notes sit together (-1..1): pitch-class shares [a]
+  /// moved [sa] semitones against [b] moved [sb].
+  static double notesFit(List<double> a, int sa, List<double> b, int sb) {
+    double at(List<double> x, int s, int k) => x[((k - s) % 12 + 12) % 12];
+    var ma = 0.0, mb = 0.0;
+    for (var k = 0; k < 12; k++) {
+      ma += at(a, sa, k) / 12;
+      mb += at(b, sb, k) / 12;
+    }
+    var xy = 0.0, xx = 0.0, yy = 0.0;
+    for (var k = 0; k < 12; k++) {
+      final x = at(a, sa, k) - ma, y = at(b, sb, k) - mb;
+      xy += x * y;
+      xx += x * x;
+      yy += y * y;
+    }
+    return xx <= 0 || yy <= 0 ? 0 : xy / math.sqrt(xx * yy);
+  }
+
+  /// A singer's own band scores about 0.7 on [notesFit]; below these the
+  /// notes clash, whatever the key labels say.
+  static const vocalFitMin = 0.3, beatFitMin = 0.5;
+
+  /// The pairing's key shifts chosen on the songs' real notes (once both are
+  /// split): the beat into the anchor's notes, and the vocal into the notes
+  /// it sings over (the anchor where it comes in, then its own beat). Null
+  /// if they clash whatever the shift ([strict]); unchanged when the notes
+  /// aren't known.
+  _Pair? byNotes(_Pair p, AnchorBeat? anchor, {bool strict = true}) {
+    final v = p.vocal.stems?.chroma['vocals'], b = p.beat.stems?.chroma['music'];
+    if (v == null || b == null) return p;
+    final a = anchor?.track.stems?.chroma['music'];
+    var bs = p.beatShift;
+    if (a != null) {
+      var best = -2.0;
+      for (final s in const [0, 1, -1, 2, -2]) {
+        final f = notesFit(b, s, a, 0) - 0.04 * s.abs();
+        if (f > best) {
+          best = f;
+          bs = s;
+        }
+      }
+      if (strict && notesFit(b, bs, a, 0) < beatFitMin) return null;
+    }
+    if (p.vocal == p.beat) return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, p.shift, p.score, bs);
+    double fit(int s) => a == null ? notesFit(v, s, b, bs) : (notesFit(v, s, b, bs) + notesFit(v, s, a, 0)) / 2;
+    var vs = p.shift, best = -2.0;
+    for (final s in vocalShifts) {
+      final f = fit(s) - 0.05 * s.abs() - (s > 0 ? 0.02 : 0);
+      if (f > best) {
+        best = f;
+        vs = s;
+      }
+    }
+    if (strict && fit(vs) < vocalFitMin) return null;
+    return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, vs, p.score, bs);
+  }
+
   /// A pairing re-fitted to the anchor: both songs at the anchor's tempo, the
   /// beat shifted (up to 2 semitones) and the vocal (up to 3) into its key.
   _Pair? anchored(_Pair p, AnchorBeat anchor) {
@@ -1142,7 +1200,8 @@ class MashupMaker {
       return best;
     }
 
-    final n = build(_Pair(m.vocal, m.beat, vg, bg, shift(vg.camelot, vocalShifts), 0, shift(bg.camelot, const [-2, -1, 0, 1, 2])));
+    final picked = _Pair(m.vocal, m.beat, vg, bg, shift(vg.camelot, vocalShifts), 0, shift(bg.camelot, const [-2, -1, 0, 1, 2]));
+    final n = build(byNotes(picked, anchor, strict: false) ?? picked);
     if (n == null) return m;
     n
       ..vocalDb = m.vocalDb
@@ -1685,6 +1744,17 @@ class MashupSession {
 
   MashupSession(this.maker, this.pool, this._ranked);
 
+  /// Builds a pairing once its songs are split, keyed on their real notes;
+  /// null (and not tried again) if the notes clash.
+  Mashup? _build(_Pair p) {
+    final q = maker.byNotes(p, anchorMode ? anchor : null);
+    if (q == null) {
+      _rejected.add(p.key);
+      return null;
+    }
+    return maker.build(q);
+  }
+
   _Pair? _anchoredPair(_Pair p) =>
       _anchoredCache.putIfAbsent(p.key, () => anchor == null ? null : maker.anchored(p, anchor!));
 
@@ -1743,7 +1813,7 @@ class MashupSession {
       if (cancelled) return null;
       for (final p in batch) {
         if (anchorMode && MashupMaker.weakBeat(p.beat)) continue;
-        final m = maker.build(p);
+        final m = _build(p);
         if (m == null) continue;
         if (anchorMode && MashupMaker.gappyBeat(m, relaxed: true)) continue;
         mashups.insert(0, _fit(m));
@@ -1866,7 +1936,7 @@ class MashupSession {
       if (cancelled) return;
       var added = 0;
       for (final p in picks) {
-        var m = anchorMode && MashupMaker.weakBeat(p.beat) ? null : maker.build(p);
+        var m = anchorMode && MashupMaker.weakBeat(p.beat) ? null : _build(p);
         if (anchorMode && m == null && MashupMaker.weakBeat(p.beat)) {
           _badBeats.add(p.beat.path);
           continue;
@@ -1894,7 +1964,7 @@ class MashupSession {
           : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected);
       if (pick == null) return null;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
-      final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : maker.build(pick);
+      final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : _build(pick);
       if (anchorMode && m == null && MashupMaker.weakBeat(pick.beat)) {
         _badBeats.add(pick.beat.path);
         continue;
@@ -1943,7 +2013,7 @@ class MashupSession {
       for (final p in pairs.take(5)) {
         onStatus('Finding a vocal for ${song.title}…');
         await lib.separate([p.vocal, song], (d, t, c) => onStatus(splitting(c)));
-        final m = maker.build(p);
+        final m = _build(p);
         if (m != null) {
           mashups.insert(i + 1, _fit(m));
           return null;

@@ -441,6 +441,9 @@ def separate_file(path):
         if "beatShift" not in meta:  # stems made before the grid was checked beat by beat
             meta.update(_grid_check(path, meta["stems"]))
             changed = True
+        if "chroma" not in meta:  # stems made before their notes were measured
+            meta["chroma"] = _stem_chroma(meta["stems"])
+            changed = True
         if "curves" not in meta:  # stems made before drum/bass curves were measured
             meta["curves"] = _stem_curves(meta["stems"])
             changed = True
@@ -511,6 +514,7 @@ def separate_file(path):
     result["tuning"] = _stem_tuning(result["stems"])
     result["levels"] = _stem_levels(result["stems"])
     result.update(_grid_check(path, result["stems"]))
+    result["chroma"] = _stem_chroma(result["stems"])
     result["curves"] = _stem_curves(result["stems"])
     with open(meta_path, "w") as fh:
         json.dump(result, fh)
@@ -598,6 +602,49 @@ def _beat_shift(beats, flux, fps, w):
         if len(near) >= 6:
             out.append([round(float(b), 3), round(float(np.clip(np.median(near), -0.08, 0.08)), 4)])
     return out
+
+
+def _stem_chroma(stems):
+    """Which notes the song really uses: the share of each of the 12 pitch
+    classes (C first) in the singing (loudest half of the vocal, i.e. while
+    singing) and in the music (bass and other), from a harmonic pitch class
+    profile. Pairs are key-matched on these real notes: the key label of the
+    whole song is wrong often enough (relative and related keys get mixed up)
+    that about one in five label-approved pairs clashed."""
+    import numpy as np
+    import essentia
+    import essentia.standard as es
+    essentia.log.warningActive = False
+    sr = 22050
+
+    def profile(paths, sung_only):
+        tot = np.zeros(12)
+        w, spec = es.Windowing(type="blackmanharris62"), es.Spectrum()
+        peaks = es.SpectralPeaks(orderBy="magnitude", magnitudeThreshold=1e-5, minFrequency=60, maxFrequency=3500,
+                                 maxPeaks=60, sampleRate=sr)
+        hpcp = es.HPCP(size=12, referenceFrequency=440, harmonics=8, bandPreset=True, minFrequency=60,
+                       maxFrequency=3500, weightType="cosine", nonLinear=False, windowSize=1.0, sampleRate=sr,
+                       normalized="unitSum")
+        for p in paths:
+            x = es.MonoLoader(filename=p, sampleRate=sr)()
+            rows, en = [], []
+            for fr in es.FrameGenerator(x, frameSize=4096, hopSize=4096):
+                f, m = peaks(spec(w(fr)))
+                rows.append(hpcp(f, m))
+                en.append(float((fr ** 2).sum()))
+            if not rows:
+                continue
+            r, e = np.nan_to_num(np.array(rows)), np.array(en)
+            if sung_only:
+                r = r[e > np.percentile(e, 50)]
+            tot += r.sum(0)
+        t = tot / (tot.sum() or 1)
+        return np.roll(t, 9).round(4).tolist()  # HPCP starts on A; C first
+
+    try:
+        return {"vocals": profile([stems["vocals"]], True), "music": profile([stems["bass"], stems["other"]], False)}
+    except Exception:
+        return {}
 
 
 def _stem_levels(stems):

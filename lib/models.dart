@@ -74,6 +74,9 @@ class StemSet {
   final double gridTight;
   /// The same, beat by beat: [time, offset] pairs (see [Analysis.offsetAt]).
   final List<List<double>> beatShift;
+  /// The notes really used: share of each pitch class (C first) in the
+  /// 'vocals' (while singing) and the 'music' (bass and other).
+  final Map<String, List<double>> chroma;
   /// Level (dB) of 'drums', 'bass' and the ear-weighted 'inst'rumental every
   /// [curveHop] seconds of the song.
   final Map<String, List<double>> curves;
@@ -81,7 +84,7 @@ class StemSet {
 
   StemSet(this.paths, this.vocalBeats, this.vocalShare,
       [this.tuning = const {}, this.levels = const {}, this.gridOffset = 0, this.gridTight = 1,
-      this.curves = const {}, this.curveHop = 0.5, this.beatShift = const []]);
+      this.curves = const {}, this.curveHop = 0.5, this.beatShift = const [], this.chroma = const {}]);
 
   factory StemSet.fromJson(Map<String, dynamic> j) => StemSet(
         ((j['stems'] as Map?) ?? const {}).map((k, v) => MapEntry(k as String, v as String)),
@@ -100,6 +103,11 @@ class StemSet {
           for (final p in (j['beatShift'] as List?) ?? const [])
             [((p as List)[0] as num).toDouble(), (p[1] as num).toDouble()]
         ],
+        {
+          for (final e in ((j['chroma'] as Map?) ?? const {}).entries)
+            if (e.value is List && (e.value as List).length == 12)
+              e.key as String: (e.value as List).map((x) => (x as num).toDouble()).toList()
+        },
       );
 
   bool get hasCurves => const ['drums', 'bass', 'inst'].every((k) => (curves[k]?.length ?? 0) > 16);
