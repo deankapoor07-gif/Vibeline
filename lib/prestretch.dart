@@ -17,6 +17,7 @@ class Prestretcher {
 
   final _queue = <String, Map<String, dynamic>>{}; // key -> job, earliest in the set first
   final _failed = <String>{};
+  final _tries = <String, int>{};
   bool _running = false;
 
   /// [json] with every vocal clip that has a ready file swapped for it; the
@@ -89,18 +90,38 @@ class Prestretcher {
         await Directory(dir).create(recursive: true);
         await job.writeAsString(jsonEncode(next.value));
         var ok = false;
+        String? error;
         await for (final row in lib.prestretch([job.path])) {
-          if (row['type'] == 'prestretch') ok = row['ok'] == true;
+          if (row['type'] == 'prestretch') {
+            ok = row['ok'] == true;
+            error = row['error'] as String?;
+          }
         }
         if (ok) {
           onReady?.call();
         } else {
-          _failed.add(next.key); // keeps the mixer's own stretcher for it
+          _log('${next.value['input']}: ${error ?? 'no result'}');
+          // One more go (a hiccup, e.g. memory while stems split); after
+          // that it keeps the mixer's own stretcher.
+          if ((_tries[next.key] = (_tries[next.key] ?? 0) + 1) < 2) {
+            _queue[next.key] = next.value;
+          } else {
+            _failed.add(next.key);
+          }
         }
       }
     } finally {
       _running = false;
     }
+  }
+
+  /// Why a vocal couldn't be made clean, for fixing it later.
+  static void _log(String line) {
+    try {
+      final f = File('${MusicLibrary.home}/Library/Logs/D-Jay Noodles/prestretch.log');
+      f.parent.createSync(recursive: true);
+      f.writeAsStringSync('${DateTime.now().toIso8601String()} $line\n', mode: FileMode.append);
+    } catch (_) {}
   }
 
   /// Files not played for a fortnight.
