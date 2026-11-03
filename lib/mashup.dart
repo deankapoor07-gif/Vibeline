@@ -68,6 +68,9 @@ class Mashup {
   /// Bars the vocal sings alone before the beat drops in (0 = the usual
   /// blend, where the beat comes in first). Set when the set is laid out.
   int acapellaBars = 0;
+  /// Bars the singer comes in before their line, quietly over the new beat
+  /// (0: on the line).
+  int earlyBars = 0;
   static const introBars = 8;
   static const outroBars = 8;
 
@@ -861,16 +864,27 @@ class MashupMaker {
         final t = vg.fit(k - 6, k + 6).timeOfBeat(k);
         return t + vg.offsetAt(t);
       }
+      // Coming in early: the line starts 4 bars sooner, at half volume over the
+      // new beat (it has the bass by then), rising to full where it used to
+      // start, and the singer carries on 4 bars further so they still sing up
+      // to the outro. The set then goes 4 bars without a voice, not 8. Only
+      // when the song really keeps singing past the line; not for the opener
+      // or an acapella drop.
+      m.earlyBars = i > 0 && !drop && !m.beatOnly &&
+              (m.vocal.vocalsBetweenSrc(vocalBeat(vEntryBeat + m.vocalBars * 4), vocalBeat(vEntryBeat + m.vocalBars * 4 + 16)) ?? 0) >= 0.5
+          ? 4
+          : 0;
+      final lead = (Mashup.introBars - m.earlyBars) * 4; // output beat the line starts on
       final warp = <List<double>>[
-        for (var n = -2; n <= m.vocalBars * 4 + m.vocalTailBeats + 4; n++)
-          [n + 32 >= 0 ? outT[n + 32] : start - (src(0) - bg.smoothBeat(bBase + n + 32)), vocalBeat(vEntryBeat + n)]
+        for (var n = -2; n <= (m.vocalBars + m.earlyBars) * 4 + m.vocalTailBeats + 4; n++)
+          [n + lead >= 0 ? outT[n + lead] : start - (src(0) - bg.smoothBeat(bBase + n + lead)), vocalBeat(vEntryBeat + n)]
       ];
       final vIn = barX(Mashup.introBars);
+      final vStart = barX(Mashup.introBars - m.earlyBars); // where the line starts (vIn unless early)
       final vOut = barX(outroBar);
       final outStartV = warp.first[0];
       final srcStartV = math.max(0.0, warp.first[1]);
       final srcEndV = warp.last[1] + 0.05;
-      final preRollOut = vIn - outStartV;
 
       m
         ..beatTimes = List.unmodifiable(outT)
@@ -935,9 +949,21 @@ class MashupMaker {
         if (lane.fromVocalSong && !m.beatOnly) {
           var keys = lane.stem == 'vocals'
               // The featured vocal: rides in over the groove, leaves smoothly.
-              ? vocalKeys(outStartV, outStartV + preRollOut * 0.5, vOut, m.vocalTailBeats, vBeat)
+              ? vocalKeys(outStartV, outStartV + 2 * beatLen(0) * 0.5, vOut, m.vocalTailBeats, vBeat)
               // Vocal song's own backing stems (only when unmuted).
               : [Keyframe(outStartV, gain: 0), Keyframe(vIn, gain: 1), Keyframe(vOut - vBeat), Keyframe(vOut, gain: 0)];
+          if (m.earlyBars > 0 && lane.stem == 'vocals') {
+            // Half volume from its early start, up to full over the bar before vIn.
+            keys = [
+              Keyframe(outStartV, gain: 0),
+              Keyframe(vStart, gain: 0.5),
+              Keyframe(barX(Mashup.introBars - 1), gain: 0.5),
+              Keyframe(vIn),
+              ...keys.skip(2).where((k) => k.t > vIn),
+            ];
+          } else if (m.earlyBars > 0) {
+            keys = [Keyframe(vIn - beatLen(7), gain: 0), ...keys.skip(1)];
+          }
           // Acapella drop: 3 dB up while it sings alone (so the set doesn't
           // go quiet), back to its usual level as the beat lands.
           final lift = drop && lane.stem == 'vocals' ? 3.0 : 0.0;

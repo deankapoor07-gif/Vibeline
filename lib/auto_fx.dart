@@ -34,7 +34,8 @@ List<Map<String, dynamic>> mashupFx(List<Mashup> ms) {
       case 1:
         if (!prev.beatOnly) cues.add(_cue(prev.vocalOut - beat, prev.vocalOut, BeatFx.echo, 0.75, 0.45));
       case 2:
-        if (!m.beatOnly) {
+        // (Not when the singer is already in quietly: the roll would loop them.)
+        if (!m.beatOnly && m.earlyBars == 0) {
           cues.add(_cue(bt[vi - 6], bt[vi - 4], BeatFx.roll, 0.5, 0.6));
           cues.add(_cue(bt[vi - 4], bt[vi - 2], BeatFx.roll, 0.25, 0.6));
         }

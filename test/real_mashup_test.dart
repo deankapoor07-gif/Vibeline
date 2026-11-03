@@ -41,6 +41,9 @@ void main() {
           '${m.start.toStringAsFixed(1)}–${m.end.toStringAsFixed(1)}s');
     }
     print('${plan.summary} · ${plan.duration.toStringAsFixed(0)}s · ${(plan.renderJson['clips'] as List).length} clips · cuts ${plan.cuts.map((c) => c.toStringAsFixed(1)).join(', ')}');
+    for (final m in plan.mashups) {
+      print('MASHUP ${m.vocal.title} over ${m.beat.title} · vocal in ${m.vocalIn.toStringAsFixed(1)}s · early ${m.earlyBars} bars');
+    }
     final out = env['VIBELINE_PLAN_OUT'];
     if (out != null) File(out).writeAsStringSync(jsonEncode({...plan.renderJson, 'cuts': plan.cuts}));
   }, skip: env['VIBELINE_REAL'] != '1', timeout: const Timeout(Duration(minutes: 120)));
