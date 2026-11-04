@@ -744,6 +744,181 @@ def cmd_separate(paths):
     emit({"type": "done"})
 
 
+_ROF = None
+
+
+def _mel_roformer():
+    """The Mel-Band RoFormer vocal model, inference only: (model, demix). A
+    cleaner vocal than Demucs (less of the "watery" sound). Trimmed from Kimberley
+    Jensen's Mel-Band-Roformer-Vocal-Model, itself from lucidrains' BS-RoFormer
+    (both MIT; (c) Kimberley Jensen, Phil Wang). The weights load in safe mode."""
+    global _ROF
+    if _ROF is not None:
+        return _ROF
+    import numpy as np
+    import torch
+    from torch import nn
+    import torch.nn.functional as F
+    from einops import rearrange, pack, unpack, repeat, reduce
+    from huggingface_hub import hf_hub_download
+    from rotary_embedding_torch import RotaryEmbedding
+
+    def _hz2mel(f):
+        f = np.asanyarray(f, dtype=np.float64); sp = 200.0 / 3
+        return np.where(f >= 1000, 1000 / sp + np.log(np.maximum(f, 1e-9) / 1000) / (np.log(6.4) / 27), f / sp)
+    def _mel2hz(m):
+        m = np.asanyarray(m, dtype=np.float64); sp = 200.0 / 3; b = 1000 / sp
+        return np.where(m >= b, 1000 * np.exp((m - b) * (np.log(6.4) / 27)), m * sp)
+    def mel_bank(sr, n_fft, n_mels):
+        fft = np.fft.rfftfreq(n_fft, 1 / sr)
+        mel = _mel2hz(np.linspace(_hz2mel(0.0), _hz2mel(sr / 2), n_mels + 2))
+        d = np.diff(mel); ramps = np.subtract.outer(mel, fft)
+        w = np.zeros((n_mels, len(fft)), np.float32)
+        for i in range(n_mels):
+            w[i] = np.maximum(0, np.minimum(-ramps[i] / d[i], ramps[i + 2] / d[i + 1]))
+        return w * (2.0 / (mel[2:] - mel[:-2]))[:, None].astype(np.float32)
+
+    class RMSNorm(nn.Module):
+        def __init__(s, dim):
+            super().__init__(); s.scale = dim ** 0.5; s.gamma = nn.Parameter(torch.ones(dim))
+        def forward(s, x): return F.normalize(x, dim=-1) * s.scale * s.gamma
+    class FeedForward(nn.Module):
+        def __init__(s, dim, mult=4):
+            super().__init__(); i = dim * mult
+            s.net = nn.Sequential(RMSNorm(dim), nn.Linear(dim, i), nn.GELU(), nn.Dropout(0.), nn.Linear(i, dim), nn.Dropout(0.))
+        def forward(s, x): return s.net(x)
+    class Attention(nn.Module):
+        def __init__(s, dim, heads, dim_head, rotary):
+            super().__init__(); s.heads = heads; i = heads * dim_head; s.rotary_embed = rotary
+            s.norm = RMSNorm(dim); s.to_qkv = nn.Linear(dim, i * 3, bias=False); s.to_gates = nn.Linear(dim, heads)
+            s.to_out = nn.Sequential(nn.Linear(i, dim, bias=False), nn.Dropout(0.))
+        def forward(s, x):
+            x = s.norm(x)
+            q, k, v = rearrange(s.to_qkv(x), 'b n (qkv h d) -> qkv b h n d', qkv=3, h=s.heads)
+            q = s.rotary_embed.rotate_queries_or_keys(q); k = s.rotary_embed.rotate_queries_or_keys(k)
+            out = F.scaled_dot_product_attention(q, k, v)
+            out = out * rearrange(s.to_gates(x), 'b n h -> b h n 1').sigmoid()
+            return s.to_out(rearrange(out, 'b h n d -> b n (h d)'))
+    class Transformer(nn.Module):
+        def __init__(s, dim, depth, heads, dim_head, rotary):
+            super().__init__()
+            s.layers = nn.ModuleList([nn.ModuleList([Attention(dim, heads, dim_head, rotary), FeedForward(dim)]) for _ in range(depth)])
+            s.norm = RMSNorm(dim)
+        def forward(s, x):
+            for a, f in s.layers:
+                x = a(x) + x; x = f(x) + x
+            return s.norm(x)
+    class BandSplit(nn.Module):
+        def __init__(s, dim, ins):
+            super().__init__(); s.dim_inputs = ins
+            s.to_features = nn.ModuleList([nn.Sequential(RMSNorm(d), nn.Linear(d, dim)) for d in ins])
+        def forward(s, x):
+            return torch.stack([f(p) for p, f in zip(x.split(s.dim_inputs, dim=-1), s.to_features)], dim=-2)
+    def _mlp(i, o, h, depth):
+        dims = (i, *((h,) * depth), o); net = []
+        for n, (a, b) in enumerate(zip(dims[:-1], dims[1:])):
+            net.append(nn.Linear(a, b))
+            if n < len(dims) - 2: net.append(nn.Tanh())
+        return nn.Sequential(*net)
+    class MaskEstimator(nn.Module):
+        def __init__(s, dim, ins, depth):
+            super().__init__()
+            s.to_freqs = nn.ModuleList([nn.Sequential(_mlp(dim, d * 2, dim * 4, depth), nn.GLU(dim=-1)) for d in ins])
+        def forward(s, x):
+            return torch.cat([m(b) for b, m in zip(x.unbind(dim=-2), s.to_freqs)], dim=-1)
+    class MelBandRoformer(nn.Module):
+        def __init__(s, dim=384, depth=6, heads=8, dim_head=64, bands=60, sr=44100, n_fft=2048, hop=441):
+            super().__init__()
+            tr, fr = RotaryEmbedding(dim=dim_head), RotaryEmbedding(dim=dim_head)
+            s.layers = nn.ModuleList([nn.ModuleList([Transformer(dim, 1, heads, dim_head, tr), Transformer(dim, 1, heads, dim_head, fr)]) for _ in range(depth)])
+            s.n_fft, s.hop = n_fft, hop
+            b = torch.from_numpy(mel_bank(sr, n_fft, bands)); b[0][0] = 1.; b[-1, -1] = 1.
+            fpb = b > 0; assert fpb.any(dim=0).all()
+            idx = repeat(torch.arange(n_fft // 2 + 1), 'f -> b f', b=bands)[fpb]
+            idx = rearrange(repeat(idx, 'f -> f s', s=2) * 2 + torch.arange(2), 'f s -> (f s)')
+            s.register_buffer('freq_indices', idx, persistent=False)
+            s.register_buffer('num_bands_per_freq', reduce(fpb, 'b f -> f', 'sum'), persistent=False)
+            ins = tuple(2 * f * 2 for f in reduce(fpb, 'b f -> b', 'sum').tolist())
+            s.band_split = BandSplit(dim, ins)
+            s.mask_estimators = nn.ModuleList([MaskEstimator(dim, ins, 2)])
+        def forward(s, audio):
+            # The STFT and complex masking run on the CPU (MPS lacks some complex ops); the network on the GPU.
+            dev = next(s.parameters()).device; n = audio.shape[-1]; b = audio.shape[0]
+            win = torch.hann_window(s.n_fft); kw = dict(n_fft=s.n_fft, hop_length=s.hop, win_length=s.n_fft)
+            spec = torch.stft(rearrange(audio.cpu(), 'b s t -> (b s) t'), **kw, window=win, return_complex=True)
+            re = rearrange(torch.view_as_real(spec), '(b s) f t c -> b (f s) t c', s=2)
+            idx = s.freq_indices.cpu()
+            x = rearrange(re[torch.arange(b)[..., None], idx].to(dev), 'b f t c -> b t (f c)')
+            x = s.band_split(x)
+            for tt, ft in s.layers:
+                x = rearrange(x, 'b t f d -> b f t d'); x, ps = pack([x], '* t d'); x = tt(x); x, = unpack(x, ps, '* t d')
+                x = rearrange(x, 'b f t d -> b t f d'); x, ps = pack([x], '* f d'); x = ft(x); x, = unpack(x, ps, '* f d')
+            m = rearrange(s.mask_estimators[0](x), 'b t (f c) -> b f t c', c=2).cpu()
+            c = torch.view_as_complex(re); m = torch.view_as_complex(m.contiguous()).type(c.dtype)
+            si = repeat(idx, 'f -> b f t', b=b, t=c.shape[-1])
+            summed = torch.zeros_like(c).scatter_add_(1, si, m)
+            den = repeat(s.num_bands_per_freq.cpu(), 'f -> (f r) 1', r=2)
+            c = c * (summed / den.clamp(min=1e-8))
+            out = torch.istft(rearrange(c, 'b (f s) t -> (b s) f t', s=2), **kw, window=win, length=n)
+            return rearrange(out, '(b s) t -> b s t', s=2)
+
+    def demix(model, mix, chunk=352800, overlap=2, batch=1):
+        """Vocals of a stereo float tensor [2, n]: overlapping chunks, cross-faded."""
+        C, step, fade = chunk, int(chunk / overlap), chunk // 10; border = C - step
+        long = mix.shape[1] > 2 * border
+        if long: mix = F.pad(mix, (border, border), mode='reflect')
+        w = torch.ones(C); w[-fade:] *= torch.linspace(1, 0, fade); w[:fade] *= torch.linspace(0, 1, fade)
+        res = torch.zeros_like(mix); cnt = torch.zeros_like(mix); dev = next(model.parameters()).device; n = mix.shape[1]
+        with torch.no_grad():
+            for i in range(0, n, step):
+                part = mix[:, i:i + C]; L = part.shape[-1]
+                if L < C:
+                    part = F.pad(part, (0, C - L), mode='reflect') if L > C // 2 + 1 else F.pad(part, (0, C - L))
+                x = model(part[None].to(dev))[0].cpu()
+                win = w.clone()
+                if i == 0: win[:fade] = 1
+                elif i + C >= n: win[-fade:] = 1
+                res[..., i:i + L] += x[..., :L] * win[:L]; cnt[..., i:i + L] += win[:L]
+        out = torch.nan_to_num(res / cnt)
+        return out[..., border:-border] if long else out
+
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    ckpt = hf_hub_download("KimberleyJSN/melbandroformer", "MelBandRoformer.ckpt", local_files_only=True)
+    model = MelBandRoformer()
+    model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
+    _ROF = (model.to(device).eval(), demix)
+    return _ROF
+
+
+def _clean_vocal(stem_path, a, b):
+    """The vocal of samples a..b of a song, from the RoFormer model. Sample-aligned
+    with (and as loud as) its Demucs vocal stem, whose folder says which song it is."""
+    import numpy as np
+    import torch
+    import essentia
+    import essentia.standard as es
+    essentia.log.warningActive = False
+    essentia.log.infoActive = False
+    with open(os.path.join(os.path.dirname(stem_path), "stems.json")) as fh:
+        path = json.load(fh)["path"]
+    audio, sr, *_ = es.AudioLoader(filename=path)()
+    if sr != SR:  # as when the stems were split
+        audio = np.stack([es.Resample(inputSampleRate=sr, outputSampleRate=SR)(audio[:, c].copy()) for c in range(2)], 1)
+    model, demix = _mel_roformer()
+    pad = 2 * SR  # context either side, so the first and last notes are judged in full
+    a0, b0 = max(0, a - pad), min(len(audio), b + pad)
+    wav = torch.tensor(np.ascontiguousarray(audio[a0:b0].T), dtype=torch.float32)
+    if torch.backends.mps.is_available():
+        # (16-bit maths and less overlap: a third of the time, the same clarity.)
+        with torch.autocast("mps", dtype=torch.float16):
+            y = demix(model, wav, overlap=1.25)
+        torch.mps.empty_cache()
+    else:
+        y = demix(model, wav, overlap=1.25)
+    y = y.float().numpy().T[a - a0 : b - a0]
+    return np.pad(y, ((0, max(0, b - a - len(y))), (0, 0)))
+
+
 def prestretch(job):
     """One vocal (or beat: its stems summed), made studio-clean ahead of time with Rubber Band (via
     pedalboard): stretched so each beat lands where the beat map says, and
@@ -763,7 +938,8 @@ def prestretch(job):
     s0, s1 = warp[0][1], warp[-1][1]
     pad = max(0, int(round(-s0 * sr)))  # the map starts before the song: silence
     a, b = max(0, int(round(s0 * sr))), min(len(x), int(round(s1 * sr)))
-    seg = np.concatenate([np.zeros((pad, x.shape[1]), np.float32), x[a:b]])
+    body = _clean_vocal(job["input"], a, b) if job.get("clean") else x[a:b]
+    seg = np.concatenate([np.zeros((pad, x.shape[1]), np.float32), body])
     # Speed (song seconds per mix second) for each input sample, beat by beat.
     speed = np.empty(len(seg), np.float64)
     pos = 0

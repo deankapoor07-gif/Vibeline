@@ -9,6 +9,10 @@ import 'library.dart';
 /// mixer then plays that file untouched, with no stretcher of its own
 /// colouring the voice or smearing the drums. Until a vocal's file is ready the set
 /// uses the mixer's own stretcher, and [onReady] says when to lay out again.
+///
+/// Then, one by one in the background (about a minute each), each vocal is made
+/// again from the song itself with the RoFormer model, which is cleaner than the
+/// Demucs vocal stem, and takes over when ready.
 class Prestretcher {
   final MusicLibrary lib;
   void Function()? onReady;
@@ -16,17 +20,22 @@ class Prestretcher {
 
   static String get dir => '${MusicLibrary.home}/Library/Caches/Vibeline/prestretch';
 
-  final _queue = <String, Map<String, dynamic>>{}; // key -> job, earliest in the set first
+  final _queue = <String, Map<String, dynamic>>{}; // key -> job
   final _failed = <String>{};
   final _tries = <String, int>{};
   bool _running = false;
   bool get busy => _running || _queue.isNotEmpty;
+
+  /// Vocals and beats still to be made (for "save in a moment").
+  int get left => _queue.length + (_running ? 1 : 0);
 
   /// [json] with every vocal clip that has a ready file swapped for it; the
   /// rest are queued.
   Map<String, dynamic> apply(Map<String, dynamic> json) {
     final clips = (json['clips'] as List).cast<Map<String, dynamic>>();
     final out = <Map<String, dynamic>>[];
+    // Clean vocals are slow: only the ones in this set, as it now stands.
+    _queue.removeWhere((_, j) => j['clean'] == true);
     for (final c in clips) {
       final warp = (c['warp'] as List?)?.map((w) => (w as List).cast<num>()).toList();
       if (warp == null || warp.length < 2 || c['pitchRamp'] != null) {
@@ -37,7 +46,22 @@ class Prestretcher {
       final vocal = c['bus'] == 1;
       final mix = ((c['mix'] as List?) ?? const []).cast<String>();
       final key = _key([c['path'] as String, ...mix].join('+'), warp, (c['pitchCents'] as num).toDouble());
-      final file = '$dir/$key.flac';
+      final plain = '$dir/$key.flac', clean = '$dir/$key.clean.flac';
+      final hasClean = File(clean).existsSync();
+      final file = hasClean ? clean : plain;
+      final job = {
+        'input': c['path'],
+        if (mix.isNotEmpty) 'mix': mix,
+        if (!vocal) 'beat': true, // see prestretch() in vibeline_ai.py
+        'warp': warp,
+        'cents': c['pitchCents'],
+        'out': plain,
+        'at': m0,
+      };
+      final sung = vocal && (c['path'] as String).endsWith('/vocals.flac');
+      if (sung && !hasClean && !_failed.contains('$key.clean')) {
+        _queue['$key.clean'] = {...job, 'out': clean, 'clean': true};
+      }
       if (File(file).existsSync()) {
         out.add({
           ...c,
@@ -57,15 +81,7 @@ class Prestretcher {
       }
       out.add(c);
       if (!_failed.contains(key)) {
-        _queue.putIfAbsent(key, () => {
-              'input': c['path'],
-              if (mix.isNotEmpty) 'mix': mix,
-              if (!vocal) 'beat': true, // see prestretch() in vibeline_ai.py
-              'warp': warp,
-              'cents': c['pitchCents'],
-              'out': file,
-              'at': m0,
-            });
+        _queue.putIfAbsent(key, () => job);
       }
     }
     _work();
@@ -94,7 +110,9 @@ class Prestretcher {
     _running = true;
     try {
       while (_queue.isNotEmpty) {
-        final next = _queue.entries.reduce((a, b) => (a.value['at'] as num) <= (b.value['at'] as num) ? a : b);
+        // The quick jobs first, then the clean vocals; earliest in the set first.
+        num rank(Map<String, dynamic> j) => (j['at'] as num) + (j['clean'] == true ? 1e9 : 0);
+        final next = _queue.entries.reduce((a, b) => rank(a.value) <= rank(b.value) ? a : b);
         _queue.remove(next.key);
         final job = File('${Directory.systemTemp.path}/vibeline-pre-${next.key}.json');
         await Directory(dir).create(recursive: true);

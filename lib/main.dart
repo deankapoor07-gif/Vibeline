@@ -852,6 +852,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _set('Still preparing ${_sections.sections.length - _sections.ready} sections — save again in a moment.', phase: Phase.ready);
       return;
     }
+    if (_mashupMode && _pre.busy) {
+      _set('Still cleaning up ${_pre.left} vocals and beats — save again in a moment.', phase: Phase.ready);
+      return;
+    }
     final dir = Directory('${MusicLibrary.home}/Music/D-Jay Noodles');
     await dir.create(recursive: true);
     final now = DateTime.now();
