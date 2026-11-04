@@ -1240,6 +1240,25 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     return parts.join(' · ');
   }
 
+  /// A top-bar button's icon and name, so nobody has to guess what it does.
+  Widget _barLabel(IconData icon, String label, Color color) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 6),
+          Text(label, style: TextStyle(fontSize: 14, color: color)),
+        ]),
+      );
+
+  Widget _barButton({required IconData icon, required String label, String? tooltip, VoidCallback? onPressed}) {
+    final button = TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), minimumSize: const Size(0, 36)),
+      child: _barLabel(icon, label, onPressed == null ? Colors.white30 : Colors.white70),
+    );
+    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
+  }
+
   @override
   Widget build(BuildContext context) {
     final statusLine = [_status, if (_readiness.isNotEmpty) _readiness].join('   ·   ');
@@ -1283,15 +1302,16 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               icon: Icon(Icons.library_music, color: _libraryOpen ? kPink : Colors.white70, size: 18),
               label: Text('Songs', style: TextStyle(color: _libraryOpen ? kPink : Colors.white70)),
             ),
-          IconButton(
-            tooltip: 'Storage: what the app keeps on your Mac',
-            icon: const Icon(Icons.storage),
+          _barButton(
+            icon: Icons.storage,
+            label: 'Storage',
+            tooltip: 'What the app keeps on your Mac',
             onPressed: _openStorage,
           ),
           PopupMenuButton<bool>(
             tooltip: 'Where to find your music',
             enabled: !_busy,
-            icon: const Icon(Icons.folder_open),
+            child: _barLabel(Icons.folder_open, 'Music', _busy ? Colors.white30 : Colors.white70),
             onSelected: (whole) async {
               if (!whole) return _chooseFolder();
               _library.wholeMac = true;
@@ -1307,16 +1327,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               ),
             ],
           ),
-          IconButton(
-            tooltip: _playing ? 'Pause' : 'Play',
-            icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+          _barButton(
+            icon: _playing ? Icons.pause : Icons.play_arrow,
+            label: _playing ? 'Pause' : 'Play',
             onPressed: _togglePlay,
           ),
-          IconButton(
+          _barButton(
+            icon: Icons.file_download,
+            label: 'Save',
             tooltip: 'Save the whole set to your Music folder',
-            icon: const Icon(Icons.file_download),
             onPressed: !_playable || _busy ? null : _export,
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Column(
@@ -1335,8 +1357,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     controller: _vibeController,
                     decoration: InputDecoration(
                       hintText: _mashupMode
-                          ? "Describe the mashups (e.g. 'country vocals over hip hop', 'festival, 4 hours, mix genres')..."
-                          : "Enter crowd vibe (e.g., 'Rave', 'Cafe chill', 'Aussie rock')...",
+                          ? 'e.g. country vocals over hip hop, 2 hours'
+                          : 'Crowd vibe, e.g. rave, cafe chill, Aussie rock',
+                      hintStyle: const TextStyle(fontSize: 14, color: Colors.white54),
                       border: InputBorder.none,
                       isDense: true,
                     ),
@@ -1358,7 +1381,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                         decoration: const InputDecoration(
                           prefixIcon: Icon(Icons.theater_comedy, size: 18),
                           prefixIconConstraints: BoxConstraints(minWidth: 30),
-                          hintText: 'Theme (80s, punk, Halloween…)',
+                          hintText: 'Theme: 80s, punk…',
+                          hintStyle: TextStyle(fontSize: 14, color: Colors.white54),
                           border: InputBorder.none,
                           isDense: true,
                         ),
@@ -1424,18 +1448,23 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                     Switch(value: Tuning.use432, activeColor: _accent, onChanged: _toggle432),
                   ]),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    statusLine,
-                    textAlign: TextAlign.right,
-                    style: TextStyle(fontSize: 11, color: _phase == Phase.error ? Colors.redAccent : Colors.white60),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
               ],
             ),
           ),
+          // The status gets its own line, so it's never squeezed by the switches.
+          if (statusLine.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  statusLine,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: _phase == Phase.error ? Colors.redAccent : Colors.white70),
+                ),
+              ),
+            ),
           SizedBox(
             height: 2,
             child: _busy

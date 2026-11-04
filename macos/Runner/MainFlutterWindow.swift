@@ -9,6 +9,8 @@ class MainFlutterWindow: NSWindow {
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
+    // The top bar and switches need this much room to show in full.
+    self.contentMinSize = NSSize(width: 800, height: 600)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     MixerChannel.shared.attach(to: flutterViewController.engine.binaryMessenger)
