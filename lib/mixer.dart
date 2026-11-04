@@ -52,6 +52,15 @@ class Mixer {
 
   /// Bass / mid / high loudness of rendered audio files played together,
   /// every 20 ms: [low, mid, high, low, …].
+  /// What's in [folders] (kind name -> folder): {free, items: [[kind, path,
+  /// name, size, seconds since 1970 when added], ...]}.
+  Future<Map<dynamic, dynamic>> storageScan(Map<String, String> folders) async =>
+      await _channel.invokeMethod<Map<dynamic, dynamic>>('storageScan', {'folders': folders}) ?? const {};
+
+  /// Moves files and folders to the Trash; returns those it moved.
+  Future<List<String>> trash(List<String> paths) async =>
+      (await _channel.invokeMethod<List<dynamic>>('trash', {'paths': paths}) ?? const []).cast<String>();
+
   Future<Float32List> waveform(List<String> paths) async =>
       await _channel.invokeMethod<Float32List>('waveform', {'paths': paths}) ?? Float32List(0);
 

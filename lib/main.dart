@@ -19,6 +19,7 @@ import 'planner.dart';
 import 'prestretch.dart';
 import 'prompt_song.dart';
 import 'sections.dart';
+import 'storage_view.dart';
 import 'tuning.dart';
 import 'vibe.dart';
 
@@ -142,8 +143,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKey);
-    SectionEngine.prune();
-    Prestretcher.prune();
+    SectionEngine.clearPartFiles();
+    Prestretcher.clearPartFiles();
     _startup();
   }
 
@@ -847,6 +848,89 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     }
   }
 
+  Future<StorageReport> _scanStorage() async {
+    const cache = 'Library/Caches/Vibeline';
+    final home = MusicLibrary.home;
+    final r = await _mixer.storageScan({
+      StoreKind.songs.name: '$home/$cache/stems',
+      StoreKind.pieces.name: SectionEngine.dir,
+      StoreKind.stretched.name: Prestretcher.dir,
+      StoreKind.mixes.name: '$home/Music/D-Jay Noodles',
+      StoreKind.working.name: '$home/$cache/mixes',
+    });
+    final pieces = <String, StoredItem>{};
+    final items = <StoredItem>[];
+    for (final row in (r['items'] as List? ?? const []).cast<List<dynamic>>()) {
+      final kind = StoreKind.values.byName(row[0] as String);
+      final path = row[1] as String;
+      final size = (row[3] as num).toInt();
+      final added = DateTime.fromMillisecondsSinceEpoch(((row[4] as num) * 1000).toInt());
+      if (kind == StoreKind.pieces) {
+        // A piece and its separate vocal layer are one thing.
+        final base = path.endsWith('.vox.m4a') ? path.substring(0, path.length - 8) : path;
+        final had = pieces[base];
+        pieces[base] = StoredItem(kind, base, 'Set piece, added ${_timeOfDay(added)}', size + (had?.size ?? 0),
+            had?.added ?? added, [...?had?.paths, path]);
+      } else if (kind == StoreKind.stretched) {
+        final clean = path.endsWith('.clean.flac');
+        items.add(StoredItem(kind, path, '${clean ? 'Clean vocal' : 'Vocal or beat'}, added ${_timeOfDay(added)}', size, added));
+      } else {
+        items.add(StoredItem(kind, path, kind == StoreKind.songs ? row[2] as String : (row[2] as String).replaceAll(RegExp(r'\.m4a$'), ''), size, added));
+      }
+    }
+    return StorageReport([...items, ...pieces.values], (r['free'] as num? ?? 0).toInt());
+  }
+
+  String _timeOfDay(DateTime t) => '${t.hour % 12 == 0 ? 12 : t.hour % 12}:${t.minute.toString().padLeft(2, '0')} ${t.hour < 12 ? 'am' : 'pm'}';
+
+  /// What the open set needs: its pieces, the files its clips play, and the
+  /// songs its mashups come from.
+  Set<String> _storageInUse() {
+    String folder(String p) => p.substring(0, p.lastIndexOf('/'));
+    final locked = <String>{};
+    void add(String p) => locked
+      ..add(p)
+      ..add(folder(p));
+    for (final s in _sections.sections) {
+      locked.add('${SectionEngine.dir}/${s.hash}.m4a');
+      for (final c in (s.json['clips'] as List).cast<Map<String, dynamic>>()) {
+        add(c['path'] as String);
+        for (final m in (c['mix'] as List?) ?? const []) {
+          add(m as String);
+        }
+      }
+    }
+    final session = _session;
+    if (session != null) {
+      for (final t in [for (final m in session.mashups) ...[m.vocal, m.beat], if (session.anchor != null) session.anchor!.track]) {
+        t.stems?.paths.values.forEach(add);
+      }
+    }
+    return locked;
+  }
+
+  void _openStorage() {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => StoragePage(
+        scan: _scanStorage,
+        trash: _mixer.trash,
+        locked: _storageInUse(),
+        canRemove: !_busy && !_preparing,
+        onRemoved: (removed) {
+          // A song whose split was removed is split again when next used.
+          final gone = removed.toSet();
+          for (final t in _library.tracks) {
+            final any = t.stems?.paths.values.first;
+            if (any != null && gone.contains(any.substring(0, any.lastIndexOf('/')))) {
+              t.stems = null;
+              t.analysis?.pinTo(null);
+            }
+          }
+        },
+      ),
+    ));
+  }
+
   Future<void> _export() async {
     if (!_sections.allReady) {
       _set('Still preparing ${_sections.sections.length - _sections.ready} sections — save again in a moment.', phase: Phase.ready);
@@ -1199,6 +1283,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               icon: Icon(Icons.library_music, color: _libraryOpen ? kPink : Colors.white70, size: 18),
               label: Text('Songs', style: TextStyle(color: _libraryOpen ? kPink : Colors.white70)),
             ),
+          IconButton(
+            tooltip: 'Storage: what the app keeps on your Mac',
+            icon: const Icon(Icons.storage),
+            onPressed: _openStorage,
+          ),
           PopupMenuButton<bool>(
             tooltip: 'Where to find your music',
             enabled: !_busy,

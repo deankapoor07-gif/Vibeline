@@ -123,6 +123,18 @@ final class MixerChannel {
     case "scratch":
       player.beatFX.scratchTaps &+= 1
       result(nil)
+    case "storageScan":
+      let folders = (args["folders"] as? [String: String]) ?? [:]
+      DispatchQueue.global(qos: .userInitiated).async {
+        let report = Storage.scan(folders)
+        DispatchQueue.main.async { result(report) }
+      }
+    case "trash":
+      let paths = (args["paths"] as? [String]) ?? []
+      DispatchQueue.global(qos: .userInitiated).async {
+        let moved = Storage.trash(paths)
+        DispatchQueue.main.async { result(moved) }
+      }
     case "waveform":
       let paths = (args["paths"] as? [String]) ?? []
       waveQueue.async {
@@ -1514,5 +1526,43 @@ func play(from pos: Double? = nil) {
       }
     }
     engine.stop()
+  }
+}
+
+/// The Storage screen: what the app keeps on disk, and moving it to the Trash.
+enum Storage {
+  static func scan(_ folders: [String: String]) -> [String: Any] {
+    let fm = FileManager.default
+    let keys: Set<URLResourceKey> = [.isDirectoryKey, .creationDateKey, .totalFileAllocatedSizeKey]
+    var items: [[Any]] = []
+    for (kind, dir) in folders {
+      let entries = (try? fm.contentsOfDirectory(
+        at: URL(fileURLWithPath: dir), includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])) ?? []
+      for u in entries where !u.lastPathComponent.contains(".part.") {
+        let v = try? u.resourceValues(forKeys: keys)
+        var size = v?.totalFileAllocatedSize ?? 0
+        var name = u.lastPathComponent
+        if v?.isDirectory == true {
+          // A split song's folder: its size, and which song its stems.json says it is.
+          for case let f as URL in fm.enumerator(at: u, includingPropertiesForKeys: Array(keys)) ?? .init() {
+            size += (try? f.resourceValues(forKeys: keys))?.totalFileAllocatedSize ?? 0
+          }
+          if let data = try? Data(contentsOf: u.appendingPathComponent("stems.json")),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let song = json["path"] as? String
+          {
+            name = URL(fileURLWithPath: song).lastPathComponent
+          }
+        }
+        items.append([kind, u.path, name, size, v?.creationDate?.timeIntervalSince1970 ?? 0])
+      }
+    }
+    let home = URL(fileURLWithPath: NSHomeDirectory())
+    let free = (try? home.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?.volumeAvailableCapacity ?? 0
+    return ["free": free, "items": items]
+  }
+
+  static func trash(_ paths: [String]) -> [String] {
+    paths.filter { (try? FileManager.default.trashItem(at: URL(fileURLWithPath: $0), resultingItemURL: nil)) != nil }
   }
 }

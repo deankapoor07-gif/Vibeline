@@ -152,14 +152,14 @@ class Prestretcher {
     } catch (_) {}
   }
 
-  /// Files not played for a fortnight.
-  static void prune() {
+  /// Clears half-finished files left by a crash or quit (call once at
+  /// startup). Finished ones stay until you remove them in Storage.
+  static void clearPartFiles() {
     try {
       final d = Directory(dir);
       if (!d.existsSync()) return;
-      final cutoff = DateTime.now().subtract(const Duration(days: 14));
       for (final f in d.listSync().whereType<File>()) {
-        if (f.statSync().accessed.isBefore(cutoff) || f.path.endsWith('.part.flac')) f.deleteSync();
+        if (f.path.endsWith('.part.flac')) f.deleteSync();
       }
     } catch (_) {}
   }

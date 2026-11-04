@@ -59,14 +59,14 @@ class SectionEngine {
     return t - p;
   }
 
-  /// Clean out old renders (call once at startup).
-  static void prune() {
+  /// Clears half-finished renders left by a crash or quit (call once at
+  /// startup). Finished ones stay until you remove them in Storage.
+  static void clearPartFiles() {
     try {
       final d = Directory(dir);
       if (!d.existsSync()) return;
-      final cutoff = DateTime.now().subtract(const Duration(days: 10));
       for (final f in d.listSync().whereType<File>()) {
-        if (f.lastModifiedSync().isBefore(cutoff) || f.path.endsWith('.part.m4a')) f.deleteSync();
+        if (f.path.endsWith('.part.m4a')) f.deleteSync();
       }
     } catch (_) {}
   }
