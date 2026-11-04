@@ -35,7 +35,7 @@ instant pitch and volume control.
 | Audio engine: offline renderer + live player (Swift) | `macos/Runner/MainFlutterWindow.swift` |
 
 The analyser runs in its own Python environment at
-`~/Library/Application Support/Vibeline/venv` (essentia, numpy, mutagen,
+`~/Library/Application Support/Vibeline/venv` (essentia, numpy, tinytag,
 demucs, soundfile). Caches live in `~/Library/Caches/Vibeline`.
 
 ## Building

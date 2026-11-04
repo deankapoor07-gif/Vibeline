@@ -63,29 +63,18 @@ def emit(obj):
 
 # ---------------------------------------------------------------- tags
 
-def _first(tags, *names):
-    for n in names:
-        v = tags.get(n)
-        if v:
-            v = v[0] if isinstance(v, list) else v
-            return str(v).strip()
-    return ""
-
-
 def read_tags(path):
-    import mutagen
+    from tinytag import TinyTag
     info = {"path": path, "title": "", "artist": "", "genre": "", "year": 0, "duration": 0.0}
     try:
-        f = mutagen.File(path, easy=True)
-        if f is not None:
-            info["duration"] = float(getattr(f.info, "length", 0.0) or 0.0)
-            tags = f.tags or {}
-            info["title"] = _first(tags, "title")
-            info["artist"] = _first(tags, "artist", "albumartist")
-            info["genre"] = _first(tags, "genre")
-            date = _first(tags, "date", "originaldate")
-            if date[:4].isdigit():
-                info["year"] = int(date[:4])
+        t = TinyTag.get(path, tags=True, duration=True, image=False)
+        info["duration"] = float(t.duration or 0.0)
+        info["title"] = (t.title or "").strip()
+        info["artist"] = (t.artist or t.albumartist or "").strip()
+        info["genre"] = (t.genre or "").strip()
+        date = (t.year or "").strip()
+        if date[:4].isdigit():
+            info["year"] = int(date[:4])
     except Exception:
         pass
     if not info["title"]:
