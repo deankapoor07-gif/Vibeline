@@ -811,6 +811,9 @@ final class TimelinePlayer {
     // Deck mute buttons (live only): cut the singer or the beat right out.
     var muteVocal = false
     var muteBeat = false
+    // The mixer's faders and crossfader (live only), on top of each song's level.
+    var trimVocal = 0.0
+    var trimBeat = 0.0
 
     init() {}
     init(_ args: [String: Any]) {
@@ -820,6 +823,8 @@ final class TimelinePlayer {
       grid = args["grid"] as? [Double] ?? []
       muteVocal = (args["muteVocal"] as? Bool) ?? false
       muteBeat = (args["muteBeat"] as? Bool) ?? false
+      trimVocal = (args["trimVocal"] as? Double) ?? 0
+      trimBeat = (args["trimBeat"] as? Double) ?? 0
     }
 
     func cue(at t: Double) -> FxCue? { fx.first(where: { t >= $0.start && t < $0.end }) }
@@ -828,7 +833,10 @@ final class TimelinePlayer {
     func at(_ t: Double) -> (Float, Float) {
       let v = vocal.first(where: { t >= $0.start && t < $0.end })
       let b = beat.first(where: { t >= $0.start && t < $0.end })
-      return (muteVocal ? -90 : Float(v?.db ?? 0), muteBeat ? -90 : Float(b?.db ?? 0))
+      return (
+        muteVocal ? -90 : Float(max(-90, (v?.db ?? 0) + trimVocal)),
+        muteBeat ? -90 : Float(max(-90, (b?.db ?? 0) + trimBeat))
+      )
     }
   }
 

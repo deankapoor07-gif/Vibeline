@@ -23,15 +23,6 @@ double faderDb(double v) {
   return (x > 0 ? cut(x) : 0, x < 0 ? cut(-x) : 0);
 }
 
-/// The set's live levels with the mixer's faders applied on top.
-Map<String, dynamic> trimLive(Map<String, dynamic> live, double vocalDb, double beatDb) {
-  List<dynamic> trim(List<dynamic>? rows, double by) => [
-        for (final r in rows ?? const [])
-          {...(r as Map), 'db': (((r['db'] as num?) ?? 0).toDouble() + by).clamp(-60.0, 24.0)},
-      ];
-  return {...live, 'vocal': trim(live['vocal'] as List?, vocalDb), 'beat': trim(live['beat'] as List?, beatDb)};
-}
-
 /// The mixer between the decks. Everything on it changes the sound live.
 class MixerPanel extends StatelessWidget {
   final bool hasVocal;

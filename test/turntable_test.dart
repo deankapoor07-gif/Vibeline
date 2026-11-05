@@ -69,16 +69,4 @@ void main() {
     expect(crossfadeDb(-1).$2, -60);
     expect(crossfadeDb(0.5).$1, closeTo(-6.02, 0.01));
   });
-
-  test('faders are added to each layer of the set', () {
-    final out = trimLive({
-      'vocal': [{'start': 0.0, 'end': 10.0, 'cents': 5.0, 'db': 2.0}],
-      'beat': [{'start': 0.0, 'end': 10.0, 'db': -1.0}],
-      'other': 'kept',
-    }, -6, 3);
-    expect((out['vocal'] as List).first['db'], -4);
-    expect((out['vocal'] as List).first['cents'], 5);
-    expect((out['beat'] as List).first['db'], 2);
-    expect(out['other'], 'kept');
-  });
 }

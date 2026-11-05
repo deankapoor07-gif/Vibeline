@@ -634,7 +634,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   Map<String, dynamic> get _liveMap {
     final (xVocal, xBeat) = crossfadeDb(_crossfader);
-    return _withExtras(trimLive(_planLive, faderDb(_vocalFader) + xVocal, faderDb(_beatFader) + xBeat));
+    return {
+      ..._withExtras(_planLive),
+      'trimVocal': faderDb(_vocalFader) + xVocal,
+      'trimBeat': faderDb(_beatFader) + xBeat,
+    };
   }
 
   Map<String, dynamic> _withExtras(Map<String, dynamic> levels) => {
