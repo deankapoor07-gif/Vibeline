@@ -560,10 +560,10 @@ class MashupMaker {
     return s / (b - a);
   }
 
-  /// The stretch of a song to sing, as (first bar, length in bars). A section
-  /// that starts on a fresh line always wins if there's a good one, so a vocal
-  /// doesn't come in halfway through a verse; only a song with none falls back
-  /// to the best section anywhere.
+  /// The stretch of a song to sing, as (first bar, length in bars). A proper
+  /// entrance wins if there's a good one (two quieter bars, then clear singing),
+  /// then any fresh line, so a vocal doesn't come in halfway through a verse.
+  /// Only a song with neither falls back to the best section anywhere.
   static (int, int)? pickVocalSection({
     required int firstBar,
     required int lastBar,
@@ -572,7 +572,7 @@ class MashupMaker {
     required double Function(int from, int to) energy,
     required bool Function(int from, int to) lurches,
   }) {
-    for (final freshOnly in const [true, false]) {
+    for (final tier in const [2, 1, 0]) {
       var best = -1e9;
       var bestStart = -1, bestLen = 0;
       for (final len in const [48, 40, 32, 24, 16]) {
@@ -581,7 +581,8 @@ class MashupMaker {
           if ((s - firstBar) % 4 != 0) continue;
           if (vocalAt(s) < 0.35) continue;
           final isFresh = vocalAt(s - 1) < 0.45; // a new line, not mid-sentence
-          if (freshOnly && !isFresh) continue;
+          if (tier >= 1 && !isFresh) continue;
+          if (tier == 2 && (vocalAt(s - 2) >= 0.45 || vocalAt(s) < 0.5)) continue;
           // End where the singer has finished the line (quiet for a moment
           // after), so the vocal can leave smoothly rather than mid-word.
           final after = vocalAt(s + len), after2 = vocalAt(s + len + 1);

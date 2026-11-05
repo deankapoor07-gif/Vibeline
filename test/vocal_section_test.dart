@@ -24,8 +24,10 @@ void main() {
       energy: mean,
       lurches: (a, b) => false,
     )!;
-    expect(at(vocal, picked.$1 - 1), lessThan(0.45), reason: 'starts at bar ${picked.$1}');
-    expect(at(vocal, picked.$1), greaterThanOrEqualTo(0.35));
+    expect(picked.$1, 16, reason: 'the first verse, where the singing really starts');
+    expect(at(vocal, picked.$1 - 1), lessThan(0.45));
+    expect(at(vocal, picked.$1 - 2), lessThan(0.45));
+    expect(at(vocal, picked.$1), greaterThanOrEqualTo(0.5));
   });
 
   test('a song that never pauses still gets a section', () {
