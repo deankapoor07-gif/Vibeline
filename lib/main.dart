@@ -1188,11 +1188,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       builder: (context, box) {
         final fxOpen = _fxOpen && _playable;
         final showSongs = !fxOpen && _libraryOpen && box.maxHeight >= 340;
-        final songsHeight = (box.maxHeight * 0.4).clamp(150.0, 340.0);
+        final songsHeight = (box.maxHeight * 0.3).clamp(130.0, 300.0);
         return Column(children: [
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
               child: NowPlayingView(
                 decks: _decks,
                 sections: _sections.sections,
@@ -1501,7 +1501,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             color: kInk,
             width: double.infinity,
-            child: Wrap(
+            child: Row(children: [
+              Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
@@ -1529,21 +1530,17 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 ),
               ],
             ),
-          ),
-          // The status gets its own line, so it's never squeezed by the switches.
-          if (statusLine.trim().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-              child: Align(
-                alignment: Alignment.centerLeft,
+              const SizedBox(width: 14),
+              Expanded(
                 child: Text(
                   statusLine,
-                  maxLines: 3,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: _phase == Phase.error ? Colors.redAccent : Colors.white70),
+                  style: TextStyle(fontSize: 11, height: 1.2, color: _phase == Phase.error ? Colors.redAccent : Colors.white70),
                 ),
               ),
-            ),
+            ]),
+          ),
           SizedBox(
             height: 2,
             child: _busy

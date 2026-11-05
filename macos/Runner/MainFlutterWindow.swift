@@ -9,7 +9,7 @@ class MainFlutterWindow: NSWindow {
     var windowFrame = self.frame
     // Decks need room: open large, but never bigger than the screen.
     if let screen = self.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
-      windowFrame.size = NSSize(width: min(1280, screen.width), height: min(820, screen.height))
+      windowFrame.size = NSSize(width: min(1600, screen.width), height: min(1000, screen.height))
       windowFrame.origin = NSPoint(x: screen.midX - windowFrame.width / 2, y: screen.midY - windowFrame.height / 2)
     }
     self.contentViewController = flutterViewController

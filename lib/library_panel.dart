@@ -8,7 +8,9 @@ enum SongSort { bestFit, bpm, key, title, artist, genre, time }
 
 /// Songs in order of a sort; songs not analysed yet go last.
 void sortSongs(List<LibraryTrack> rows, SongSort sort, {double Function(LibraryTrack)? fit}) {
-  int title(LibraryTrack a, LibraryTrack b) => a.title.toLowerCase().compareTo(b.title.toLowerCase());
+  // Quote marks and the like don't count, so "Hello" files under H.
+  String plain(String t) => t.toLowerCase().replaceFirst(RegExp(r'^[^a-z0-9]+'), '');
+  int title(LibraryTrack a, LibraryTrack b) => plain(a.title).compareTo(plain(b.title));
   int byNumber(LibraryTrack a, LibraryTrack b, double? Function(LibraryTrack) of) {
     final x = of(a), y = of(b);
     if (x == null || y == null) return x == y ? title(a, b) : (x == null ? 1 : -1);

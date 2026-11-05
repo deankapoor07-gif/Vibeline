@@ -149,16 +149,16 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
     return LayoutBuilder(
       builder: (context, box) {
         // Songs first, as on a DJ deck: the waveform up top, then the decks.
-        final topHeight = widget.top != null ? 100.0 : 66.0;
-        final hasOverview = widget.overview != null && box.maxHeight >= topHeight + 60;
-        final used = topHeight + (hasOverview ? 60 : 0) + 8;
+        final topHeight = widget.top != null ? 92.0 : 62.0;
+        final hasOverview = widget.overview != null && box.maxHeight >= topHeight + 56;
+        final used = topHeight + (hasOverview ? 56 : 0) + 6;
         final deckHeight = box.maxHeight - used;
         return Column(
           children: [
             if (box.maxHeight >= topHeight) SizedBox(height: topHeight, child: widget.top ?? _wave(pos)),
-            if (hasOverview) SizedBox(height: 60, child: widget.overview!),
+            if (hasOverview) SizedBox(height: 56, child: widget.overview!),
             if (deckHeight >= 90) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               SizedBox(
                 height: deckHeight,
                 child: Row(
@@ -257,7 +257,7 @@ class _Deck extends StatelessWidget {
   final bool mirrored;
   const _Deck(this.d, this.pos, {this.mirrored = false});
 
-  static const _numbersWidth = 92.0;
+  static const _numbersWidth = 150.0;
 
   /// A record only turns while it's the one playing.
   double get _spin => d.role == 'NEXT' || !d.loaded ? 0 : pos;
@@ -271,13 +271,30 @@ class _Deck extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: mirrored ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
+              Text(d.role, style: TextStyle(fontSize: 10, letterSpacing: 1.5, color: d.loaded ? d.color : Colors.white38, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 2),
+              Text(
+                d.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: mirrored ? TextAlign.right : TextAlign.left,
+                style: TextStyle(fontSize: 14, height: 1.15, fontWeight: FontWeight.w700, color: d.loaded ? Colors.white : Colors.white38),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                d.artist,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: Colors.white60),
+              ),
+              const SizedBox(height: 10),
               Text(
                 d.bpm.isEmpty ? '--' : d.bpm,
-                style: const TextStyle(fontSize: 24, height: 1, fontWeight: FontWeight.w700, color: Colors.white, fontFeatures: [FontFeature.tabularFigures()]),
+                style: const TextStyle(fontSize: 26, height: 1, fontWeight: FontWeight.w700, color: Colors.white, fontFeatures: [FontFeature.tabularFigures()]),
               ),
               const SizedBox(height: 2),
               const Text('BPM', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                 decoration: BoxDecoration(
@@ -289,7 +306,7 @@ class _Deck extends StatelessWidget {
               const SizedBox(height: 2),
               const Text('KEY', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
               for (final (label, c) in d.tags) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   label.toUpperCase(),
                   textAlign: mirrored ? TextAlign.right : TextAlign.left,
@@ -305,50 +322,28 @@ class _Deck extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(10, 7, 10, 10),
+      padding: const EdgeInsets.all(8),
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: kPanel,
         border: Border(top: BorderSide(color: d.loaded ? d.color : Colors.white24, width: 2)),
       ),
-      child: Column(
-        crossAxisAlignment: mirrored ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-        children: [
-          Text(d.role, style: TextStyle(fontSize: 10, letterSpacing: 1.5, color: d.loaded ? d.color : Colors.white38, fontWeight: FontWeight.w800)),
-          Text(
-            d.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: d.loaded ? Colors.white : Colors.white38),
-          ),
-          Text(
-            d.artist,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, color: Colors.white60),
-          ),
-          const SizedBox(height: 4),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, box) {
-                final side = math.min(box.maxHeight, box.maxWidth - _numbersWidth - 8);
-                final numbers = SizedBox(width: _numbersWidth, height: box.maxHeight, child: _numbers());
-                final table = side < 50
-                    ? const Spacer()
-                    : Expanded(
-                        child: Center(
-                          child: SizedBox(
-                            width: side,
-                            height: side,
-                            child: CustomPaint(painter: _TurntablePainter(d.color, _spin, loaded: d.loaded)),
-                          ),
-                        ),
-                      );
-                return Row(children: mirrored ? [table, const SizedBox(width: 8), numbers] : [numbers, const SizedBox(width: 8), table]);
-              },
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final side = math.min(box.maxHeight, box.maxWidth - _numbersWidth - 8);
+          final numbers = SizedBox(width: math.min(_numbersWidth, box.maxWidth), height: box.maxHeight, child: _numbers());
+          if (side < 50) return Align(alignment: mirrored ? Alignment.topRight : Alignment.topLeft, child: numbers);
+          final table = Expanded(
+            child: Center(
+              child: SizedBox(
+                width: side,
+                height: side,
+                child: CustomPaint(painter: _TurntablePainter(d.color, _spin, loaded: d.loaded)),
+              ),
             ),
-          ),
-        ],
+          );
+          return Row(children: mirrored ? [table, const SizedBox(width: 8), numbers] : [numbers, const SizedBox(width: 8), table]);
+        },
       ),
     );
   }
