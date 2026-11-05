@@ -10,6 +10,7 @@ import os
 import sys
 import hashlib
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
+from concurrent.futures.process import BrokenProcessPool
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".aiff", ".aif", ".flac"}
 CACHE_DIR = os.path.expanduser("~/Library/Caches/Vibeline/analysis")
@@ -42,16 +43,19 @@ def _guard():
     except Exception:
         pass
     app = int(os.environ.get("VIBELINE_APP_PID", "0") or 0)
-    if app <= 0:
-        return
+    parent = os.getppid()
 
     def watch():
         while True:
             time.sleep(2)
-            try:
-                os.kill(app, 0)
-            except OSError:
+            # Whoever started this has gone (a crash, say): nothing needs it now.
+            if os.getppid() != parent:
                 os._exit(0)
+            if app > 0:
+                try:
+                    os.kill(app, 0)
+                except OSError:
+                    os._exit(0)
 
     threading.Thread(target=watch, daemon=True).start()
 
@@ -262,15 +266,59 @@ def _beat_tracker():
         return None
 
 
-def _track_beats(tracker, path):
+def _decode_to_file(path, out):
+    """Runs in its own process: a damaged file can crash the decoder outright."""
+    import essentia.standard as es
+    import numpy as np
+    np.save(out, es.MonoLoader(filename=path, sampleRate=SR)())
+
+
+class _Decoder:
+    """Opens songs one at a time in a separate process, so a damaged file costs
+    only that song rather than bringing down everything being analysed."""
+
+    def __init__(self):
+        self._pool = None
+
+    def read(self, path):
+        import numpy as np
+        import tempfile
+        if self._pool is None:
+            self._pool = ProcessPoolExecutor(max_workers=1, initializer=_guard)
+        fd, out = tempfile.mkstemp(prefix="noodles-decode-", suffix=".npy")
+        os.close(fd)
+        try:
+            self._pool.submit(_decode_to_file, path, out).result()
+            return np.load(out)
+        except BrokenProcessPool:
+            self._pool.shutdown(wait=False)
+            self._pool = None
+            return None
+        except Exception:
+            return None
+        finally:
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+
+    def close(self):
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
+
+
+def _track_beats(tracker, decoder, path):
     """(beats, downbeats) for one song, or None if it can't be tracked."""
     if tracker is None:
         return None
     try:
         # Decoded the same way as the rest of the analysis: left to itself the
         # beat tracker can't open m4a files and some mp3s.
-        import essentia.standard as es
-        beats, downs = tracker(es.MonoLoader(filename=path, sampleRate=SR)(), SR)
+        audio = decoder.read(path)
+        if audio is None:
+            return None
+        beats, downs = tracker(audio, SR)
         return [float(x) for x in beats], [float(x) for x in downs]
     except Exception:
         return None
@@ -278,11 +326,13 @@ def _track_beats(tracker, path):
 
 def _beat_this(paths):
     tracker = _beat_tracker() if paths else None
+    decoder = _Decoder()
     out = {}
     for p in paths:
-        bt = _track_beats(tracker, p)
+        bt = _track_beats(tracker, decoder, p)
         if bt is not None:
             out[p] = bt
+    decoder.close()
     return out
 
 
@@ -408,6 +458,12 @@ def _safe_analyze(path, bt=None):
         return {"type": "analysis", "path": path, "ok": False, "error": str(e)}
 
 
+def _unreadable(decoder, path):
+    """True if a song crashes or fails the decoder, so it's kept away from the
+    workers, which would otherwise hit the same damage."""
+    return decoder.read(path) is None
+
+
 def _on_this_mac(path):
     """False for a song whose drive is unplugged, or that macOS has moved to
     iCloud. Reading one of those waits on a download, which can stall a whole
@@ -456,22 +512,58 @@ def cmd_analyze(paths):
     known = set(cached)
     misses = [p for p in ready if p not in known]
     tracker = _beat_tracker() if misses else None
+    decoder = _Decoder()
     # One song at a time from start to finish, reporting each as it's done, so
     # the count on screen keeps moving and stopping early loses nothing.
-    with ProcessPoolExecutor(max_workers=workers, initializer=_guard) as pool:
-        pending = {pool.submit(_safe_analyze, p, None) for p in cached}
+    pool = ProcessPoolExecutor(max_workers=workers, initializer=_guard)
+    pending = {}  # future -> (song, its beats, the pool it's in)
+    retry = []  # songs that were in a pool when something crashed it
 
-        def report_until(most):
-            nonlocal pending
-            while len(pending) > most:
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for fut in done:
+    def submit(p, bt):
+        nonlocal pool
+        try:
+            pending[pool.submit(_safe_analyze, p, bt)] = (p, bt, pool)
+        except BrokenProcessPool:
+            retry.append((p, bt))
+
+    def report_until(most):
+        nonlocal pool
+        while len(pending) > most:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in done:
+                p, bt, owner = pending.pop(fut)
+                try:
                     emit(fut.result())
+                except BrokenProcessPool:
+                    # A damaged file crashed a worker, and there's no telling
+                    # which: each song it was with gets another go by itself.
+                    retry.append((p, bt))
+                    if owner is pool:
+                        pool.shutdown(wait=False)
+                        pool = ProcessPoolExecutor(max_workers=workers, initializer=_guard)
 
+    try:
+        for p in cached:
+            submit(p, None)
         for p in misses:
             report_until(workers * 2)
-            pending.add(pool.submit(_safe_analyze, p, _track_beats(tracker, p)))
+            bt = _track_beats(tracker, decoder, p)
+            if tracker is not None and bt is None and _unreadable(decoder, p):
+                emit({"type": "analysis", "path": p, "ok": False, "error": "couldn't read this file"})
+                continue
+            submit(p, bt)
         report_until(0)
+        for p, bt in retry:
+            alone = ProcessPoolExecutor(max_workers=1, initializer=_guard)
+            try:
+                emit(alone.submit(_safe_analyze, p, bt).result())
+            except BrokenProcessPool:
+                emit({"type": "analysis", "path": p, "ok": False, "error": "couldn't read this file"})
+            finally:
+                alone.shutdown(wait=False)
+    finally:
+        decoder.close()
+        pool.shutdown(wait=False)
     emit({"type": "done"})
 
 

@@ -15,6 +15,7 @@ class ProgressClock {
   final DateTime Function() _now;
   final List<int> _gapsMs = [];
   DateTime? _last;
+  bool _working = false;
 
   /// Call as each song finishes; returns e.g. " · about 12 min left", or an
   /// empty string until there's enough to go on.
@@ -22,7 +23,10 @@ class ProgressClock {
     final now = _now();
     if (_last != null) {
       final gap = now.difference(_last!).inMilliseconds;
-      if (gap >= 50) {
+      // Songs already known rush past at the start and say nothing about speed.
+      // After that, songs finishing together still count, or the wait reads long.
+      if (gap >= 50) _working = true;
+      if (_working) {
         _gapsMs.add(gap);
         if (_gapsMs.length > 30) _gapsMs.removeAt(0);
       }
@@ -142,6 +146,7 @@ class MusicLibrary {
     final script = await _scriptPath();
     Directory? listDir;
     Process? running;
+    Future<void> Function()? stopReading;
     try {
       var sent = args;
       final bytes = args.fold<int>(0, (n, a) => n + utf8.encode(a).length + 1);
@@ -158,14 +163,24 @@ class MusicLibrary {
           environment: {'VIBELINE_APP_PID': '$pid', if (gentle) 'VIBELINE_WORKERS': '2'});
       running = proc;
       proc.stderr.drain<void>();
-      await for (final line in proc.stdout.transform(utf8.decoder).transform(const LineSplitter())) {
+      // Reading stops when the helper exits, even if a leftover process of its
+      // is still holding the line open after a crash, so nothing waits forever.
+      final lines = StreamController<String>();
+      final reading = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(lines.add, onDone: lines.close);
+      stopReading = reading.cancel;
+      unawaited(proc.exitCode.then((_) async {
+        await Future<void>.delayed(const Duration(seconds: 1));
+        await reading.cancel();
+        if (!lines.isClosed) await lines.close();
+      }));
+      await for (final line in lines.stream) {
         if (line.trim().isEmpty) continue;
         try {
           yield jsonDecode(line) as Map<String, dynamic>;
         } catch (_) {}
       }
-      await proc.exitCode;
     } finally {
+      await stopReading?.call();
       running?.kill(); // if whoever was listening stopped early
       try {
         await listDir?.delete(recursive: true);
