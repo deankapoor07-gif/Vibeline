@@ -1006,24 +1006,44 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     ));
   }
 
+  bool _saving = false;
+
   Future<void> _export() async {
+    if (_saving) return;
     if (!_sections.allReady) {
-      _set('Still preparing ${_sections.sections.length - _sections.ready} sections — save again in a moment.', phase: Phase.ready);
+      _set('Not saved yet: ${_sections.sections.length - _sections.ready} parts of this set are still being mixed. Press Save again once they\'re done.', phase: Phase.ready);
       return;
     }
     if (_mashupMode && _pre.busy) {
-      _set('Still cleaning up ${_pre.left} vocals and beats — save again in a moment.', phase: Phase.ready);
+      _set('Not saved yet: ${_pre.left} vocals and beats are still being cleaned up. Press Save again once they\'re done.', phase: Phase.ready);
       return;
     }
+    setState(() => _saving = true);
+    try {
+      await _saveSet();
+    } catch (e) {
+      _set('Couldn\'t save this set: $e', phase: Phase.error);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveSet() async {
     final dir = Directory('${MusicLibrary.home}/Music/D-Jay Noodles');
     await dir.create(recursive: true);
     final now = DateTime.now();
     final stamp =
         '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}.${now.minute.toString().padLeft(2, '0')}';
-    final name = _currentVibePrompt.replaceAll(RegExp(r'[^A-Za-z0-9 ,&-]'), '').trim();
+    final theme = _themeController.text.trim();
+    final name = [_currentVibePrompt, if (theme.isNotEmpty) theme].join(' ').replaceAll(RegExp(r'[^A-Za-z0-9 ,&-]'), '').trim();
     final kind = _mashupMode ? 'Mashups' : 'Mix';
-    final dest = '${dir.path}/D-Jay Noodles $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp.m4a';
-    _set('Saving…', phase: Phase.ready);
+    final base = '${dir.path}/D-Jay Noodles $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp';
+    // Never replace a set that's already saved.
+    var dest = '$base.m4a';
+    for (var n = 2; File(dest).existsSync(); n++) {
+      dest = '$base ($n).m4a';
+    }
+    _set('Saving your set… this can take a minute.', phase: Phase.ready);
     await _sections.export(dest, {..._withExtras(_planLive), 'grid': _beatGrid, 'muteVocal': false, 'muteBeat': false});
     await Process.run('open', ['-R', dest]);
     _set('Saved to Music › D-Jay Noodles', phase: Phase.ready);
@@ -1443,9 +1463,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           ),
           _barButton(
             icon: Icons.file_download,
-            label: 'Save',
+            label: _saving ? 'Saving…' : 'Save',
             tooltip: 'Save the whole set to your Music folder',
-            onPressed: !_playable || _busy ? null : _export,
+            onPressed: !_playable || _busy || _saving ? null : _export,
           ),
           const SizedBox(width: 8),
         ],
