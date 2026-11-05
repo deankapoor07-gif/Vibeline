@@ -4,7 +4,7 @@ import 'mashup.dart';
 import 'mashup_widgets.dart';
 import 'models.dart';
 
-enum SongSort { bestFit, bpm, key, title }
+enum SongSort { bestFit, bpm, key, title, artist, genre, time }
 
 /// Songs in order of a sort; songs not analysed yet go last.
 void sortSongs(List<LibraryTrack> rows, SongSort sort, {double Function(LibraryTrack)? fit}) {
@@ -24,6 +24,19 @@ void sortSongs(List<LibraryTrack> rows, SongSort sort, {double Function(LibraryT
       rows.sort((a, b) => byNumber(a, b, (t) => camelotOrder(t.analysis?.camelot)));
     case SongSort.title:
       rows.sort(title);
+    case SongSort.artist:
+      rows.sort((a, b) {
+        final c = a.artist.toLowerCase().compareTo(b.artist.toLowerCase());
+        return c != 0 ? c : title(a, b);
+      });
+    case SongSort.genre:
+      rows.sort((a, b) {
+        if (a.genre.isEmpty != b.genre.isEmpty) return a.genre.isEmpty ? 1 : -1;
+        final c = a.genre.toLowerCase().compareTo(b.genre.toLowerCase());
+        return c != 0 ? c : title(a, b);
+      });
+    case SongSort.time:
+      rows.sort((a, b) => byNumber(a, b, (t) => t.duration));
   }
 }
 
@@ -56,6 +69,7 @@ class LibraryPanel extends StatefulWidget {
   final VoidCallback onClose;
   final void Function(LibraryTrack song)? onAnchor;
   final void Function(LibraryTrack song)? onMixAround;
+  final bool wide; // across the bottom, as a table
 
   const LibraryPanel({
     super.key,
@@ -73,6 +87,7 @@ class LibraryPanel extends StatefulWidget {
     required this.onClose,
     this.onAnchor,
     this.onMixAround,
+    this.wide = false,
   });
 
   @override
@@ -80,6 +95,7 @@ class LibraryPanel extends StatefulWidget {
 }
 
 const kTealText = Color(0xFF7FE3D4);
+const kRigAmberText = Color(0xFFFF9F1C);
 
 class _Fit {
   final double score;
@@ -92,7 +108,12 @@ class _Fit {
 class _LibraryPanelState extends State<LibraryPanel> {
   String _q = '';
   bool _shazamOnly = false;
-  SongSort _sort = SongSort.bestFit;
+  SongSort? _chosenSort; // nothing chosen: best fit if there's a mashup, else A-Z
+  SongSort get _sort => _chosenSort ?? (_m != null ? SongSort.bestFit : SongSort.title);
+  set _sort(SongSort s) => _chosenSort = s;
+  // Sorted once per change, so a big library stays smooth while music plays.
+  Object? _rowsKey;
+  List<LibraryTrack> _rows = const [];
   // Fit scores are worked out once per (mashup, role, analysed-song count).
   Object? _fitKey;
   Map<String, _Fit?> _fits = {};
@@ -135,16 +156,23 @@ class _LibraryPanelState extends State<LibraryPanel> {
     final fits = _computeFits();
     final q = _q.toLowerCase();
     final m = _m;
-    var rows = widget.tracks.where((t) {
-      if (_shazamOnly && !t.shazam) return false;
-      if (m != null && (identical(t, m.vocal) || identical(t, m.beat))) return false;
-      return q.isEmpty || t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.genre.toLowerCase().contains(q);
-    }).toList();
-    double rank(LibraryTrack t) => fits.containsKey(t.path) ? (fits[t.path]?.score ?? -50) : -100;
-    sortSongs(rows, _sort, fit: rank);
+    final known = widget.tracks.where((t) => t.analysis != null).length;
+    final rowsKey = Object.hashAll([q, _shazamOnly, _sort, m, _fitKey, widget.tracks.length, known]);
+    if (rowsKey != _rowsKey) {
+      _rowsKey = rowsKey;
+      _rows = widget.tracks.where((t) {
+        if (_shazamOnly && !t.shazam) return false;
+        if (m != null && (identical(t, m.vocal) || identical(t, m.beat))) return false;
+        return q.isEmpty || t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.genre.toLowerCase().contains(q);
+      }).toList();
+      double rank(LibraryTrack t) => fits.containsKey(t.path) ? (fits[t.path]?.score ?? -50) : -100;
+      sortSongs(_rows, _sort, fit: rank);
+    }
+    final rows = _rows;
     final analysed = widget.tracks.where((t) => t.analysis != null).length;
     final inCloud = widget.tracks.where((t) => t.inCloud).length;
     final usable = widget.tracks.length - inCloud;
+    if (widget.wide) return _table(rows, fits, analysed, inCloud, usable);
 
     return Container(
       width: 340,
@@ -299,6 +327,205 @@ class _LibraryPanelState extends State<LibraryPanel> {
             child: ListView.builder(
               itemCount: rows.length,
               itemBuilder: (_, i) => _row(rows[i], fits),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ------------------------------------------- Across the bottom, as a table
+
+  static const _time = 54.0, _bpm = 50.0, _key = 44.0;
+
+  Widget _side(String label, IconData icon, bool on, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        child: Container(
+          height: 28,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          color: on ? const Color(0xFF2A2A34) : null,
+          child: Row(children: [
+            Icon(icon, size: 14, color: Colors.white70),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(fontSize: 12, color: Colors.white)),
+          ]),
+        ),
+      );
+
+  Widget _head(String label, SongSort sort, {double? width, int flex = 0, bool right = false}) {
+    final on = _sort == sort;
+    final cell = InkWell(
+      onTap: () => setState(() => _sort = sort),
+      child: Row(
+        mainAxisAlignment: right ? MainAxisAlignment.end : MainAxisAlignment.start,
+        children: [
+          Flexible(
+            child: Text(
+              label.toUpperCase(),
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 10, letterSpacing: 0.7, fontWeight: FontWeight.w700, color: on ? Colors.white : Colors.white54),
+            ),
+          ),
+          if (on) const Icon(Icons.arrow_drop_down, size: 14, color: Colors.white),
+        ],
+      ),
+    );
+    return width != null ? SizedBox(width: width, child: cell) : Expanded(flex: flex, child: cell);
+  }
+
+  static String _clock(double s) {
+    final t = s.round();
+    return '${t ~/ 60}:${(t % 60).toString().padLeft(2, '0')}';
+  }
+
+  Widget _tableRow(LibraryTrack t, Map<String, _Fit?> fits, bool odd) {
+    final a = t.analysis;
+    final fit = fits[t.path];
+    final dim = t.inCloud;
+    final main = TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: dim ? Colors.white38 : Colors.white);
+    final soft = TextStyle(fontSize: 12, color: dim ? Colors.white30 : Colors.white70);
+    final row = Container(
+      height: 30,
+      color: odd ? const Color(0xFF131319) : null,
+      padding: const EdgeInsets.only(left: 10, right: 4),
+      child: Row(children: [
+        Expanded(
+          flex: 5,
+          child: Row(children: [
+            if (dim)
+              const Tooltip(
+                message: 'Only in iCloud. Download it in Finder, then reopen this app.',
+                child: Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.cloud_outlined, size: 14, color: Colors.white38)),
+              ),
+            Flexible(child: Text(t.title, overflow: TextOverflow.ellipsis, maxLines: 1, style: main)),
+            if (t.shazam)
+              const Padding(
+                padding: EdgeInsets.only(left: 6),
+                child: Text('SHAZAM', style: TextStyle(fontSize: 8, color: Colors.lightBlueAccent)),
+              ),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        Expanded(flex: 3, child: Text(t.artist, overflow: TextOverflow.ellipsis, maxLines: 1, style: soft)),
+        const SizedBox(width: 8),
+        Expanded(flex: 2, child: Text(t.genre, overflow: TextOverflow.ellipsis, maxLines: 1, style: soft)),
+        SizedBox(width: _time, child: Text(t.duration > 0 ? _clock(t.duration) : '', textAlign: TextAlign.right, style: soft)),
+        SizedBox(width: _bpm, child: Text(a == null ? '' : a.steadyBpm.toStringAsFixed(0), textAlign: TextAlign.right, style: soft)),
+        SizedBox(
+          width: _key,
+          child: Text(a?.camelot ?? '', textAlign: TextAlign.right, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fit?.keyColor ?? kTealText)),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 104,
+          child: t.inCloud
+              ? null
+              : Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                  if (_m != null) ...[
+                    _use(Icons.mic, 'Use as the vocal of this mashup', () => widget.onUse(t, true)),
+                    _use(Icons.graphic_eq, 'Use as the beat of this mashup', () => widget.onUse(t, false)),
+                    if (widget.onAnchor != null) _use(Icons.anchor, 'Make this the anchor beat', () => widget.onAnchor!(t)),
+                  ],
+                  if (widget.onMixAround != null) _use(Icons.queue_music, 'Build a new mix around this song (finds its best beat)', () => widget.onMixAround!(t)),
+                ]),
+        ),
+      ]),
+    );
+    return row;
+  }
+
+  Widget _table(List<LibraryTrack> rows, Map<String, _Fit?> fits, int analysed, int inCloud, int usable) {
+    final status = widget.analyseStatus ?? (analysed < usable ? '$analysed of $usable songs analysed' : 'All songs analysed');
+    return Container(
+      decoration: const BoxDecoration(color: Color(0xFF0E0E13), border: Border(top: BorderSide(color: Colors.white12))),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Left: which songs
+          Container(
+            width: 190,
+            decoration: const BoxDecoration(border: Border(right: BorderSide(color: Colors.white12))),
+            child: ListView(padding: const EdgeInsets.all(6), children: [
+              _side('All songs', Icons.library_music, !_shazamOnly, () => setState(() => _shazamOnly = false)),
+              _side('My Shazams', Icons.bolt, _shazamOnly, () => setState(() => _shazamOnly = true)),
+              const SizedBox(height: 8),
+              if (_m != null) ...[
+                InkWell(
+                  onTap: () => setState(() => _sort = SongSort.bestFit),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Text('BEST FIT FIRST', style: TextStyle(fontSize: 10, letterSpacing: 0.7, fontWeight: FontWeight.w700, color: _sort == SongSort.bestFit ? kRigAmberText : Colors.white54)),
+                  ),
+                ),
+                const SizedBox(height: 4),
+              ],
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(status, style: const TextStyle(fontSize: 10, color: Colors.white54)),
+              ),
+              if (widget.analyseStatus == null && analysed < usable)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(onPressed: widget.onAnalyseAll, child: const Text('Analyse all', style: TextStyle(fontSize: 11))),
+                ),
+              if (inCloud > 0)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+                  child: Text(iCloudNote(inCloud), style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                ),
+            ]),
+          ),
+          // Right: the songs
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  height: 32,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Row(children: [
+                    Text('${rows.length} SONGS', style: const TextStyle(fontSize: 11, letterSpacing: 0.7, fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: TextField(
+                        style: const TextStyle(fontSize: 12),
+                        decoration: const InputDecoration(
+                          hintText: 'Search title, artist or genre…',
+                          hintStyle: TextStyle(fontSize: 12, color: Colors.white54),
+                          prefixIcon: Icon(Icons.search, size: 15),
+                          prefixIconConstraints: BoxConstraints(minWidth: 24),
+                          border: InputBorder.none,
+                          isDense: true,
+                        ),
+                        onChanged: (v) => setState(() => _q = v),
+                      ),
+                    ),
+                  ]),
+                ),
+                Container(
+                  height: 22,
+                  padding: const EdgeInsets.only(left: 10, right: 4),
+                  decoration: const BoxDecoration(border: Border(top: BorderSide(color: Colors.white12), bottom: BorderSide(color: Colors.white12))),
+                  child: Row(children: [
+                    _head('Title', SongSort.title, flex: 5),
+                    const SizedBox(width: 8),
+                    _head('Artist', SongSort.artist, flex: 3),
+                    const SizedBox(width: 8),
+                    _head('Genre', SongSort.genre, flex: 2),
+                    _head('Time', SongSort.time, width: _time, right: true),
+                    _head('BPM', SongSort.bpm, width: _bpm, right: true),
+                    _head('Key', SongSort.key, width: _key, right: true),
+                    const SizedBox(width: 112),
+                  ]),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemExtent: 30,
+                    itemCount: rows.length,
+                    itemBuilder: (_, i) => _tableRow(rows[i], fits, i.isOdd),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

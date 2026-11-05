@@ -30,7 +30,8 @@ class DeckInfo {
   final Widget? action; // e.g. its mute button, top right of the card
   final String bpm; // e.g. 124.0
   final String keyCode; // e.g. 8A
-  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action, this.bpm = '', this.keyCode = ''});
+  final bool loaded; // false: nothing on this deck
+  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action, this.bpm = '', this.keyCode = '', this.loaded = true});
 }
 
 /// The bass / mid / high loudness and peak of each rendered section, every
@@ -75,6 +76,10 @@ class NowPlayingView extends StatefulWidget {
   final Set<double> downbeats; // the ones that start a bar
   final bool vocalMuted, beatMuted;
   final Widget? trailing; // beside "up next" (the Scratch button)
+  final Widget? top; // in place of the waveform when there's no set
+  final Widget? overview; // the whole set, under the waveform
+  /// The mixer between the decks; it's given how loud each layer is right now.
+  final Widget Function(double Function(bool vocal) level)? mixer;
 
   const NowPlayingView({
     super.key,
@@ -90,6 +95,9 @@ class NowPlayingView extends StatefulWidget {
     this.vocalMuted = false,
     this.beatMuted = false,
     this.trailing,
+    this.top,
+    this.overview,
+    this.mixer,
   });
 
   @override
@@ -140,35 +148,53 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
     final pos = _pos;
     return LayoutBuilder(
       builder: (context, box) {
-        // The decks are the star: the waveform is a slim strip underneath.
-        final waveHeight = (box.maxHeight * 0.26).clamp(56.0, 96.0);
-        final deckHeight = box.maxHeight - waveHeight - 8;
+        // Songs first, as on a DJ deck: the waveform up top, then the decks.
+        final topHeight = widget.top != null ? 100.0 : 66.0;
+        final hasOverview = widget.overview != null && box.maxHeight >= topHeight + 60;
+        final used = topHeight + (hasOverview ? 60 : 0) + 8;
+        final deckHeight = box.maxHeight - used;
         return Column(
           children: [
-            if (deckHeight >= 60) ...[
+            if (box.maxHeight >= topHeight) SizedBox(height: topHeight, child: widget.top ?? _wave(pos)),
+            if (hasOverview) SizedBox(height: 60, child: widget.overview!),
+            if (deckHeight >= 90) ...[
+              const SizedBox(height: 8),
               SizedBox(
                 height: deckHeight,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     for (var i = 0; i < widget.decks.length; i++) ...[
-                      if (i > 0) const SizedBox(width: 8),
-                      Expanded(child: _Deck(widget.decks[i], pos)),
+                      if (i > 0) ...[
+                        const SizedBox(width: 6),
+                        if (widget.mixer != null && box.maxWidth >= 620) ...[widget.mixer!(_levelOf), const SizedBox(width: 6)],
+                      ],
+                      Expanded(child: _Deck(widget.decks[i], pos, mirrored: i == 1)),
                     ],
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
             ],
-            if (box.maxHeight >= 40)
-              SizedBox(
-                height: math.min(waveHeight, box.maxHeight),
-                child: _wave(pos),
-              ),
           ],
         );
       },
     );
+  }
+
+  /// How loud one layer of the set is at this moment, from its waveform (0..1).
+  double _levelOf(bool vocal) {
+    if (!widget.playing) return 0;
+    final t = _pos;
+    for (final s in widget.sections) {
+      if (t < s.start || t >= s.end) continue;
+      if (vocal && s.voxPath == null) return 0;
+      final d = widget.waves.of(s, vocal: vocal, beat: !vocal);
+      if (d == null) return 0;
+      final i = ((t - s.start) * WaveCache.binsPerSecond).floor() * 4;
+      if (i < 0 || i + 3 >= d.length) return 0;
+      return d[i + 3] * 1.05;
+    }
+    return 0;
   }
 
   Widget _wave(double pos) => Container(
@@ -223,122 +249,106 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
       );
 }
 
-/// A deck: a turntable, with the song's details beside it (or under it when
-/// the deck is tall and narrow, as when the Songs panel is open).
+/// A deck: the song across the top, then its numbers and a turntable. The
+/// right-hand deck is a mirror image of the left, so the mixer sits between.
 class _Deck extends StatelessWidget {
   final DeckInfo d;
   final double pos;
-  const _Deck(this.d, this.pos);
+  final bool mirrored;
+  const _Deck(this.d, this.pos, {this.mirrored = false});
 
-  static const _pad = 10.0;
-  static const _infoWidth = 190.0;
-  static const _infoHeight = 104.0;
+  static const _numbersWidth = 92.0;
 
-  /// The next song's record is on the deck, but it isn't turning yet.
-  double get _spin => d.role == 'NEXT' ? 0 : pos;
+  /// A record only turns while it's the one playing.
+  double get _spin => d.role == 'NEXT' || !d.loaded ? 0 : pos;
 
-  Widget _turntable(double side) => SizedBox(width: side, height: side, child: CustomPaint(painter: _TurntablePainter(d.color, _spin)));
-
-  Widget _info(double width) => FittedBox(
+  Widget _numbers() => FittedBox(
         fit: BoxFit.scaleDown,
-        alignment: Alignment.topLeft,
-        child: SizedBox(width: math.max(width, 120), child: _details()),
-      );
-
-  Widget _details() => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        alignment: mirrored ? Alignment.topRight : Alignment.topLeft,
+        child: SizedBox(
+          width: _numbersWidth,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: mirrored ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
-              Text(d.role, style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: d.color, fontWeight: FontWeight.w800)),
-              const Spacer(),
-              ?d.action,
-            ],
-          ),
-          const SizedBox(height: 3),
-          Text(
-            d.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white),
-          ),
-          Text(
-            d.artist,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12, color: Colors.white60),
-          ),
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 10,
-            runSpacing: 4,
-            crossAxisAlignment: WrapCrossAlignment.end,
-            children: [
-              if (d.bpm.isNotEmpty)
-                Text.rich(
-                  TextSpan(children: [
-                    TextSpan(text: d.bpm, style: const TextStyle(fontSize: 22, height: 1, fontWeight: FontWeight.w700, color: Colors.white)),
-                    const TextSpan(text: ' BPM', style: TextStyle(fontSize: 9, letterSpacing: 0.7, color: Colors.white54)),
-                  ]),
-                  style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+              Text(
+                d.bpm.isEmpty ? '--' : d.bpm,
+                style: const TextStyle(fontSize: 24, height: 1, fontWeight: FontWeight.w700, color: Colors.white, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+              const SizedBox(height: 2),
+              const Text('BPM', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  border: Border.all(color: d.loaded ? d.color : Colors.white24),
+                  borderRadius: BorderRadius.circular(kCorner),
                 ),
-              if (d.keyCode.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(border: Border.all(color: d.color), borderRadius: BorderRadius.circular(kCorner)),
-                  child: Text(d.keyCode, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: d.color)),
+                child: Text(d.keyCode.isEmpty ? '--' : d.keyCode, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: d.loaded ? d.color : Colors.white38)),
+              ),
+              const SizedBox(height: 2),
+              const Text('KEY', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
+              for (final (label, c) in d.tags) ...[
+                const SizedBox(height: 8),
+                Text(
+                  label.toUpperCase(),
+                  textAlign: mirrored ? TextAlign.right : TextAlign.left,
+                  style: TextStyle(fontSize: 9, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: Color.lerp(c, Colors.white, 0.25)),
                 ),
-            ],
-          ),
-          if (d.tags.isNotEmpty) ...[
-            const SizedBox(height: 5),
-            Wrap(
-              spacing: 8,
-              runSpacing: 2,
-              children: [
-                for (final (label, c) in d.tags)
-                  Text(label.toUpperCase(), style: TextStyle(fontSize: 9, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: Color.lerp(c, Colors.white, 0.25))),
               ],
-            ),
-          ],
-        ],
+              if (d.action != null) ...[const SizedBox(height: 8), d.action!],
+            ],
+          ),
+        ),
       );
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(_pad),
+      padding: const EdgeInsets.fromLTRB(10, 7, 10, 10),
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: kPanel,
-        border: Border(top: BorderSide(color: d.color, width: 2)),
+        border: Border(top: BorderSide(color: d.loaded ? d.color : Colors.white24, width: 2)),
       ),
-      child: LayoutBuilder(
-        builder: (context, box) {
-          final w = box.maxWidth, h = box.maxHeight;
-          final beside = math.min(h, w - _infoWidth - _pad);
-          final above = math.min(w, h - _infoHeight - _pad);
-          if (beside >= above || above < 60) {
-            // Details beside the record.
-            final side = math.max(beside, 0.0);
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                if (side >= 60) ...[_turntable(side), const SizedBox(width: _pad)],
-                Expanded(child: LayoutBuilder(builder: (context, c) => Center(child: _info(c.maxWidth)))),
-              ],
-            );
-          }
-          // Details under the record.
-          return Column(
-            children: [
-              _turntable(above),
-              const SizedBox(height: _pad),
-              Expanded(child: _info(w)),
-            ],
-          );
-        },
+      child: Column(
+        crossAxisAlignment: mirrored ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          Text(d.role, style: TextStyle(fontSize: 10, letterSpacing: 1.5, color: d.loaded ? d.color : Colors.white38, fontWeight: FontWeight.w800)),
+          Text(
+            d.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: d.loaded ? Colors.white : Colors.white38),
+          ),
+          Text(
+            d.artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11, color: Colors.white60),
+          ),
+          const SizedBox(height: 4),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, box) {
+                final side = math.min(box.maxHeight, box.maxWidth - _numbersWidth - 8);
+                final numbers = SizedBox(width: _numbersWidth, height: box.maxHeight, child: _numbers());
+                final table = side < 50
+                    ? const Spacer()
+                    : Expanded(
+                        child: Center(
+                          child: SizedBox(
+                            width: side,
+                            height: side,
+                            child: CustomPaint(painter: _TurntablePainter(d.color, _spin, loaded: d.loaded)),
+                          ),
+                        ),
+                      );
+                return Row(children: mirrored ? [table, const SizedBox(width: 8), numbers] : [numbers, const SizedBox(width: 8), table]);
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -350,7 +360,8 @@ class _Deck extends StatelessWidget {
 class _TurntablePainter extends CustomPainter {
   final Color color;
   final double pos;
-  _TurntablePainter(this.color, this.pos);
+  final bool loaded;
+  _TurntablePainter(this.color, this.pos, {this.loaded = true});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -404,7 +415,7 @@ class _TurntablePainter extends CustomPainter {
     canvas.translate(c.dx, c.dy);
     canvas.rotate(angle);
     final label = r * 0.38;
-    canvas.drawCircle(Offset.zero, label, Paint()..color = color);
+    canvas.drawCircle(Offset.zero, label, Paint()..color = loaded ? color : const Color(0xFF3A3A44));
     canvas.drawCircle(
       Offset.zero,
       label * 0.9,
@@ -416,7 +427,7 @@ class _TurntablePainter extends CustomPainter {
     final dj = TextPainter(
       text: TextSpan(
         text: 'DJ',
-        style: TextStyle(fontSize: label * 0.95, height: 1, fontWeight: FontWeight.w900, letterSpacing: -label * 0.02, color: kInk),
+        style: TextStyle(fontSize: label * 0.95, height: 1, fontWeight: FontWeight.w900, letterSpacing: -label * 0.02, color: loaded ? kInk : Colors.white38),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -462,7 +473,7 @@ class _TurntablePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color;
+  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color || old.loaded != loaded;
 }
 
 /// The mix around the playhead, drawn the way DJ software does: the overall
@@ -585,7 +596,8 @@ class QuickPads extends StatelessWidget {
 
   final FxSettings fx;
   final void Function() onChanged;
-  const QuickPads({super.key, required this.fx, required this.onChanged});
+  final bool oneRow;
+  const QuickPads({super.key, required this.fx, required this.onChanged, this.oneRow = false});
 
   /// Two rows of four, so the XY pad fits beside them.
   @override
@@ -595,6 +607,13 @@ class QuickPads extends StatelessWidget {
         for (var i = from; i < from + 4; i++) ...[if (i > from) const SizedBox(width: 6), Expanded(child: _pad(i))],
       ],
     );
+    if (oneRow) {
+      return Row(
+        children: [
+          for (var i = 0; i < pads.length; i++) ...[if (i > 0) const SizedBox(width: 4), Expanded(child: _pad(i))],
+        ],
+      );
+    }
     return Column(children: [row(0), const SizedBox(height: 6), row(4)]);
   }
 

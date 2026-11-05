@@ -31,21 +31,20 @@ class EmptyScreen extends StatelessWidget {
     required this.onWholeMac,
   });
 
-  static const _body = TextStyle(fontSize: 14, color: Colors.white70, height: 1.4);
+  static const _body = TextStyle(fontSize: 12, color: Colors.white70, height: 1.3);
 
-  Widget _page(String title, List<Widget> rest) => Center(
+  Widget _page(String title, List<Widget> rest) => Container(
+        color: const Color(0xFF0C0C11),
+        alignment: Alignment.center,
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(title.toUpperCase(), textAlign: TextAlign.center, style: const TextStyle(fontSize: 18, letterSpacing: 2, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                ...rest,
-              ],
-            ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(title.toUpperCase(), textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, letterSpacing: 2, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              ...rest,
+            ],
           ),
         ),
       );
@@ -68,9 +67,8 @@ class EmptyScreen extends StatelessWidget {
     }
     if (songCount == 0) {
       return _page('No songs found', [
-        _text('Point the app at your music. If it\'s on a separate drive, check the drive is plugged in.'),
-        const SizedBox(height: 16),
-        Wrap(alignment: WrapAlignment.center, spacing: 10, runSpacing: 10, children: [
+        Wrap(alignment: WrapAlignment.center, crossAxisAlignment: WrapCrossAlignment.center, spacing: 10, runSpacing: 6, children: [
+          _text('Point the app at your music. If it\'s on a separate drive, check it\'s plugged in.'),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
             onPressed: onChooseFolder,
@@ -81,27 +79,25 @@ class EmptyScreen extends StatelessWidget {
       ]);
     }
     return _page('No set loaded', [
-      _text('Press $goLabel to build one from your library.'),
-      const SizedBox(height: 16),
-      _text('Or start from:'),
-      const SizedBox(height: 8),
-      Wrap(alignment: WrapAlignment.center, spacing: 8, runSpacing: 8, children: [
+      Wrap(alignment: WrapAlignment.center, crossAxisAlignment: WrapCrossAlignment.center, spacing: 8, runSpacing: 4, children: [
+        _text('Press $goLabel to build one, or start from:'),
         for (final e in mashup ? mashupExamples : blendExamples)
           ActionChip(
-            label: Text(e, style: const TextStyle(fontSize: 13, color: Colors.white)),
+            visualDensity: VisualDensity.compact,
+            label: Text(e, style: const TextStyle(fontSize: 12, color: Colors.white)),
             side: const BorderSide(color: Colors.white24),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
             backgroundColor: const Color(0xFF1A1A22),
             onPressed: () => onExample(e),
           ),
       ]),
-      const SizedBox(height: 18),
+      const SizedBox(height: 4),
       Text(
         mashup
             ? 'First set can take several minutes while your songs are analysed and their vocals and beats separated. Known songs load much quicker.'
             : 'First set can take a few minutes while your songs are analysed. Known songs load much quicker.',
         textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 12, color: Colors.white60, height: 1.4),
+        style: const TextStyle(fontSize: 11, color: Colors.white54),
       ),
     ]);
   }

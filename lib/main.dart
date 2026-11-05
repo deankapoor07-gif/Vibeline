@@ -18,6 +18,7 @@ import 'models.dart';
 import 'planner.dart';
 import 'prestretch.dart';
 import 'empty_screen.dart';
+import 'mixer_panel.dart';
 import 'prompt_song.dart';
 import 'rig.dart';
 import 'theme_picker.dart';
@@ -105,7 +106,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   final Set<int> _expanded = {};
 
   // Song library panel
-  bool _libraryOpen = false;
+  bool _libraryOpen = true;
+  // The mixer between the decks.
+  double _vocalFader = kFaderHome, _beatFader = kFaderHome, _crossfader = 0;
   int? _libTarget;
   bool _libAsVocal = true;
   String? _analyseStatus;
@@ -625,8 +628,17 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _pushLive();
   }
 
-  Map<String, dynamic> get _liveMap => {
-        ...(_mashupMode ? _mashPlan?.liveMap : null) ?? const {'vocal': [], 'beat': []},
+  /// The levels the set was made with, before the mixer's faders.
+  Map<String, dynamic> get _planLive =>
+      Map<String, dynamic>.from((_mashupMode ? _mashPlan?.liveMap : null) ?? const {'vocal': [], 'beat': []});
+
+  Map<String, dynamic> get _liveMap {
+    final (xVocal, xBeat) = crossfadeDb(_crossfader);
+    return _withExtras(trimLive(_planLive, faderDb(_vocalFader) + xVocal, faderDb(_beatFader) + xBeat));
+  }
+
+  Map<String, dynamic> _withExtras(Map<String, dynamic> levels) => {
+        ...levels,
         'fx': _autoFxOn ? _autoCues : const [],
         'muteVocal': _muteVocal,
         'muteBeat': _muteBeat,
@@ -1008,7 +1020,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final kind = _mashupMode ? 'Mashups' : 'Mix';
     final dest = '${dir.path}/D-Jay Noodles $kind – ${name.length > 50 ? name.substring(0, 50) : name} – $stamp.m4a';
     _set('Saving…', phase: Phase.ready);
-    await _sections.export(dest, {..._liveMap, 'grid': _beatGrid, 'muteVocal': false, 'muteBeat': false});
+    await _sections.export(dest, {..._withExtras(_planLive), 'grid': _beatGrid, 'muteVocal': false, 'muteBeat': false});
     await Process.run('open', ['-R', dest]);
     _set('Saved to Music › D-Jay Noodles', phase: Phase.ready);
   }
@@ -1089,12 +1101,12 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final i = math.max(0, _currentIndex);
     if (_mashupMode) {
       final ms = _mashPlan?.mashups ?? const <Mashup>[];
-      if (ms.isEmpty) return const [];
+      if (ms.isEmpty) return _emptyDecks;
       final m = ms[i.clamp(0, ms.length - 1)];
       final beat = DeckInfo('BEAT', m.beat.title, m.beat.artist, kTeal, [
         if (!m.beatOnly) (_keyLabel(m.keyMatch), m.keyMatch == 'clash' ? Colors.redAccent : const Color(0xFF7DFF5A)),
       ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(m.beatGrid.camelot, m.beatShift));
-      if (m.beatOnly) return [beat];
+      if (m.beatOnly) return [const DeckInfo('VOCAL', 'Beat break', 'No vocal in this part', kPink, [], loaded: false), beat];
       return [
         DeckInfo('VOCAL', m.vocal.title, m.vocal.artist, kPink, [
           ('${(m.vocalSpeed * 100).round()}% speed', kPink),
@@ -1104,16 +1116,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       ];
     }
     final ts = _plan?.tracks ?? const <PlannedTrack>[];
-    if (ts.isEmpty) return const [];
+    if (ts.isEmpty) return _emptyDecks;
     DeckInfo deck(String role, PlannedTrack p, Color c) => DeckInfo(role, p.track.title, p.track.artist, c, [
           if (p.bridge) ('Beat bridge', kYellow),
         ], bpm: p.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(p.grid.camelot, p.pitchSemitones));
     final cur = i.clamp(0, ts.length - 1);
     return [
       deck('NOW', ts[cur], kPink),
-      if (cur + 1 < ts.length) deck('NEXT', ts[cur + 1], kTeal),
+      if (cur + 1 < ts.length) deck('NEXT', ts[cur + 1], kTeal) else const DeckInfo('NEXT', 'Last song in the set', '', kTeal, [], loaded: false),
     ];
   }
+
+  static const _emptyDecks = [
+    DeckInfo('DECK A', 'No song loaded', '', kPink, [], loaded: false),
+    DeckInfo('DECK B', 'No song loaded', '', kTeal, [], loaded: false),
+  ];
 
   String get _heading {
     final n = _mashupMode ? (_mashPlan?.mashups.length ?? 0) : (_plan?.tracks.length ?? 0);
@@ -1164,62 +1181,122 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _mixer.setLiveMap(_liveMap);
   }
 
-  Widget _nowPlaying() {
-    // Mute buttons sit on their own decks (mashup sets: singer and beat).
-    final two = _mashupMode && _decks.length == 2;
-    final decks = [
-      for (final d in _decks)
-        DeckInfo(d.role, d.title, d.artist, d.color, d.tags,
-            bpm: d.bpm,
-            keyCode: d.keyCode,
-            action: !two
-                ? null
-                : d.role == 'VOCAL'
-                    ? _muteButton('Vocal', _muteVocal, kPink, () => _setMute(vocal: !_muteVocal),
-                        'Cut the singer out for an instrumental moment')
-                    : _muteButton('Beat', _muteBeat, kTeal, () => _setMute(beat: !_muteBeat),
-                        'Cut the beat out for an acapella moment')),
-    ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Column(children: [
-        Expanded(child: NowPlayingView(
-          decks: decks,
-          sections: _sections.sections,
-          waves: _waves,
-          position: _position,
-          playing: _playing,
-          heading: _heading,
-          upNext: _upNext,
-          beats: _beatGrid,
-          downbeats: _downbeats,
-          vocalMuted: _muteVocal,
-          beatMuted: _muteBeat,
-          trailing: _scratchButton(),
-        )),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 106,
-          child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Expanded(child: QuickPads(fx: _fx, onChanged: () => setState(() {}))),
-            const SizedBox(width: 10),
-            SizedBox(
-              width: 230,
-              child: XYPad(
-                fx: _fx,
-                onChanged: () => setState(() {}),
-                moreOpen: _fxOpen,
-                onMore: () {
-                  if (_fxOpen) _fx.reset();
-                  setState(() => _fxOpen = !_fxOpen);
-                },
+  /// The main screen, laid out like a DJ deck: waveform, turntables with the
+  /// mixer between them, then your songs across the bottom.
+  Widget _rigView() {
+    return LayoutBuilder(
+      builder: (context, box) {
+        final fxOpen = _fxOpen && _playable;
+        final showSongs = !fxOpen && _libraryOpen && box.maxHeight >= 340;
+        final songsHeight = (box.maxHeight * 0.4).clamp(150.0, 340.0);
+        return Column(children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: NowPlayingView(
+                decks: _decks,
+                sections: _sections.sections,
+                waves: _waves,
+                position: _position,
+                playing: _playing,
+                heading: _heading,
+                upNext: _upNext,
+                beats: _beatGrid,
+                downbeats: _downbeats,
+                vocalMuted: _muteVocal,
+                beatMuted: _muteBeat,
+                trailing: _scratchButton(),
+                top: _playable ? null : _emptyTop(),
+                overview: _playable && _duration > 0
+                    ? SetOverview(items: _overviewItems, marks: _marks, position: _position, duration: _duration, onSeek: _seekTo)
+                    : null,
+                mixer: _mixerPanel,
               ),
             ),
-          ]),
-        ),
-      ]),
+          ),
+          if (fxOpen)
+            SizedBox(
+              height: 168,
+              child: Row(children: [
+                Expanded(child: FxDeck(fx: _fx, hasVocal: _mashupMode, bpm: _bpmNow, accent: _accent)),
+                if (box.maxWidth >= 1000)
+                  Container(
+                    width: 230,
+                    color: const Color(0xFF121218),
+                    padding: const EdgeInsets.fromLTRB(4, 8, 12, 8),
+                    child: XYPad(fx: _fx, onChanged: () => setState(() {}), moreOpen: true, onMore: _closeFx),
+                  ),
+              ]),
+            ),
+          if (showSongs) SizedBox(height: songsHeight, child: _songs(wide: true)),
+        ]);
+      },
     );
   }
+
+  Widget _emptyTop() => EmptyScreen(
+        busy: _busy,
+        mashup: _mashupMode,
+        scanned: _scanned,
+        problem: _phase == Phase.error,
+        songCount: _library.tracks.length,
+        goLabel: _goLabel,
+        accent: _mashupMode ? kMashupAccent : Colors.amber,
+        onExample: (e) => setState(() {
+          _vibeController.text = e;
+          _currentVibePrompt = e;
+        }),
+        onChooseFolder: _chooseFolder,
+        onWholeMac: _searchWholeMac,
+      );
+
+  Widget _mixerPanel(double Function(bool vocal) level) {
+    double scale(double fader, double cross) => math.pow(10, (faderDb(fader) + cross) / 20).toDouble();
+    final (xVocal, xBeat) = crossfadeDb(_crossfader);
+    return MixerPanel(
+      hasVocal: _mashupMode,
+      vocalFader: _vocalFader,
+      beatFader: _beatFader,
+      crossfader: _crossfader,
+      muteVocal: _muteVocal,
+      muteBeat: _muteBeat,
+      fx: _fx,
+      meterVocal: level(true) * scale(_vocalFader, xVocal),
+      meterBeat: level(false) * scale(_beatFader, xBeat),
+      onVocalFader: (v) => _live(() => _vocalFader = v),
+      onBeatFader: (v) => _live(() => _beatFader = v),
+      onCrossfader: (v) => _live(() => _crossfader = v),
+      onMuteVocal: () => _setMute(vocal: !_muteVocal),
+      onMuteBeat: () => _setMute(beat: !_muteBeat),
+      onKnob: () => setState(() {}),
+    );
+  }
+
+  /// Closing the FX panel stops its effect; the mixer's knobs stay where they are.
+  void _closeFx() {
+    _fx.on = false;
+    _fx.sendBeat();
+    setState(() => _fxOpen = false);
+  }
+
+  Widget _songs({required bool wide}) => LibraryPanel(
+        wide: wide,
+        tracks: _library.tracks,
+        mashups: _mashupMode ? (_mashPlan?.mashups ?? const []) : const [],
+        maker: _session?.maker,
+        target: (_libTarget ?? math.max(0, _currentIndex)).clamp(0, math.max(0, (_mashPlan?.mashups.length ?? 1) - 1)),
+        asVocal: _libAsVocal,
+        busy: _busy,
+        analyseStatus: _analyseStatus,
+        onTarget: (i) => setState(() => _libTarget = i),
+        onRole: (v) => setState(() => _libAsVocal = v),
+        onUse: (song, asVocal) =>
+            _replace((_libTarget ?? math.max(0, _currentIndex)).clamp(0, (_mashPlan?.mashups.length ?? 1) - 1), song, asVocal),
+        onAnalyseAll: _analyseAll,
+        onAnchor: _makeAnchor,
+        onMixAround: (song) => _remix(seed: song),
+        onClose: () => setState(() => _libraryOpen = false),
+      );
 
   bool _scratchLit = false;
 
@@ -1250,27 +1327,6 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               Icon(Icons.album, size: 15, color: _scratchLit ? kInk : kYellow),
               const SizedBox(width: 6),
               Text('SCRATCH', style: TextStyle(fontSize: 11, letterSpacing: 0.7, fontWeight: FontWeight.w700, color: _scratchLit ? kInk : kYellow)),
-            ]),
-          ),
-        ),
-      );
-
-  Widget _muteButton(String what, bool muted, Color c, void Function() onTap, String hint) => Tooltip(
-        message: hint,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(3),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: muted ? c.withValues(alpha: 0.18) : kPanel,
-              borderRadius: BorderRadius.circular(3),
-              border: Border.all(color: muted ? c : Colors.white24),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(muted ? Icons.volume_off : Icons.volume_up, size: 15, color: muted ? c : Colors.white60),
-              const SizedBox(width: 6),
-              Text((muted ? '$what muted' : 'Mute $what').toUpperCase(), style: TextStyle(fontSize: 10, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: muted ? c : Colors.white70)),
             ]),
           ),
         ),
@@ -1352,8 +1408,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         backgroundColor: kInk,
         surfaceTintColor: Colors.transparent,
         actions: [
-          if (_mashupMode)
-            _barButton(
+          _barButton(
               icon: Icons.library_music,
               label: 'Songs',
               color: _libraryOpen ? kRigAmber : Colors.white70,
@@ -1496,58 +1551,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 : const Divider(height: 2, thickness: 1, color: kLine),
           ),
 
-          // 3. TIMELINE
+          // 3. THE DECKS (or, in Pro with a set loaded, every card)
           Expanded(
-            child: Row(
-              children: [
-                Expanded(
-                  child: !_hasContent
-                      ? EmptyScreen(
-                          busy: _busy,
-                          mashup: _mashupMode,
-                          scanned: _scanned,
-                          problem: _phase == Phase.error,
-                          songCount: _library.tracks.length,
-                          goLabel: _goLabel,
-                          accent: _mashupMode ? kMashupAccent : Colors.amber,
-                          onExample: (e) => setState(() {
-                            _vibeController.text = e;
-                            _currentVibePrompt = e;
-                          }),
-                          onChooseFolder: _chooseFolder,
-                          onWholeMac: _searchWholeMac,
-                        )
-                      : !_pro
-                          ? _nowPlaying()
-                          : (_mashupMode ? _mashupTimeline() : _blendTimeline()),
-                ),
-                if (_mashupMode && _libraryOpen)
-                  LibraryPanel(
-                    tracks: _library.tracks,
-                    mashups: _mashPlan?.mashups ?? const [],
-                    maker: _session?.maker,
-                    target: (_libTarget ?? math.max(0, _currentIndex)).clamp(0, math.max(0, (_mashPlan?.mashups.length ?? 1) - 1)),
-                    asVocal: _libAsVocal,
-                    busy: _busy,
-                    analyseStatus: _analyseStatus,
-                    onTarget: (i) => setState(() => _libTarget = i),
-                    onRole: (v) => setState(() => _libAsVocal = v),
-                    onUse: (song, asVocal) =>
-                        _replace((_libTarget ?? math.max(0, _currentIndex)).clamp(0, (_mashPlan?.mashups.length ?? 1) - 1), song, asVocal),
-                    onAnalyseAll: _analyseAll,
-                    onAnchor: _makeAnchor,
-                    onMixAround: (song) => _remix(seed: song),
-                    onClose: () => setState(() => _libraryOpen = false),
+            child: !_pro || !_hasContent
+                ? _rigView()
+                : Row(
+                    children: [
+                      Expanded(child: _mashupMode ? _mashupTimeline() : _blendTimeline()),
+                      if (_mashupMode && _libraryOpen) _songs(wide: false),
+                    ],
                   ),
-              ],
-            ),
           ),
 
-          // 4. LIVE FX
-          if (_fxOpen && _playable) FxDeck(fx: _fx, hasVocal: _mashupMode, bpm: _bpmNow, accent: _accent),
-
-          // 5. THE WHOLE SET
-          if (_playable && _duration > 0)
+          // 4. LIVE FX AND THE WHOLE SET, in Pro
+          if (_pro && _hasContent && _fxOpen && _playable) FxDeck(fx: _fx, hasVocal: _mashupMode, bpm: _bpmNow, accent: _accent),
+          if (_pro && _hasContent && _playable && _duration > 0)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: SetOverview(
@@ -1611,13 +1629,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   ),
                 ),
                 if (_waiting || _heldAtEnd)
-                  Row(children: [
-                    const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                    const SizedBox(width: 8),
-                    Text(_heldAtEnd ? 'Making the next mashup…' : 'Mixing this part…',
-                        style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                  ]),
-                const Spacer(),
+                  Tooltip(
+                    message: _heldAtEnd ? 'Making the next mashup…' : 'Mixing this part…',
+                    child: const Padding(
+                      padding: EdgeInsets.only(right: 10),
+                      child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                    ),
+                  ),
+                if (!_pro && _playable)
+                  Expanded(child: SizedBox(height: 40, child: QuickPads(fx: _fx, oneRow: true, onChanged: () => setState(() {}))))
+                else
+                  const Spacer(),
+                const SizedBox(width: 10),
                 RigToggle(
                   label: 'FX',
                   on: _fxOpen,
@@ -1625,9 +1648,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   onChanged: !_playable
                       ? null
                       : (_) {
-                          // Closing the panel puts everything back to clean.
-                          if (_fxOpen) _fx.reset();
-                          setState(() => _fxOpen = !_fxOpen);
+                          if (_fxOpen) return _closeFx();
+                          setState(() => _fxOpen = true);
                         },
                 ),
                 const SizedBox(width: 6),
