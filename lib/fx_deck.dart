@@ -300,13 +300,13 @@ class _Chip extends StatelessWidget {
   @override
   Widget build(BuildContext context) => InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(3),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
             color: selected ? accent.withValues(alpha: 0.25) : Colors.white.withValues(alpha: 0.05),
             border: Border.all(color: selected ? accent : Colors.white24),
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: BorderRadius.circular(3),
           ),
           child: Text(label, style: TextStyle(fontSize: 12, color: selected ? Colors.white : Colors.white70)),
         ),
@@ -320,7 +320,7 @@ class _SmallButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) => InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(3),
         child: Padding(padding: const EdgeInsets.all(2), child: Icon(icon, size: 18, color: Colors.white70)),
       );
 }
@@ -357,7 +357,7 @@ class _Pad extends StatelessWidget {
           decoration: BoxDecoration(
             color: lit ? accent.withValues(alpha: 0.85) : Colors.white.withValues(alpha: selected ? 0.10 : 0.05),
             border: Border.all(color: selected ? accent : Colors.white12, width: selected ? 1.5 : 1),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(3),
             boxShadow: lit ? [BoxShadow(color: accent.withValues(alpha: 0.6), blurRadius: 12)] : null,
           ),
           padding: const EdgeInsets.symmetric(horizontal: 4),

@@ -24,7 +24,7 @@ class MashupLaneHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF221A30),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(3),
         border: Border.all(color: kMashupAccent.withValues(alpha: 0.5), width: 1.5),
       ),
       child: Column(
@@ -36,7 +36,7 @@ class MashupLaneHeader extends StatelessWidget {
           const Text("AI acapellas + your sounds, loops & acapellas", style: TextStyle(fontSize: 9, color: Colors.white38)),
           if (anchor != null) ...[
             const SizedBox(height: 4),
-            Text('⚓ Anchor: ${anchor!.track.title}',
+            Text('Anchor: ${anchor!.track.title}',
                 style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amberAccent),
                 overflow: TextOverflow.ellipsis),
             Text('${anchor!.tempo.toStringAsFixed(1)} BPM · key ${anchor!.camelot}',
@@ -64,12 +64,12 @@ class AcapellaBlock extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         color: kMashupAccent.withValues(alpha: audible ? (live ? 0.4 : 0.22) : 0.06),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(3),
         border: Border.all(color: audible ? kMashupAccent : Colors.white24),
       ),
       child: Row(
         children: [
-          Text('🎤', style: TextStyle(fontSize: 18, color: Colors.white.withValues(alpha: audible ? 1 : 0.3))),
+          Icon(Icons.mic, size: 18, color: Colors.white.withValues(alpha: audible ? 1 : 0.3)),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -155,7 +155,7 @@ class TrackStemLaneWidget extends StatelessWidget {
       width: 320,
       decoration: BoxDecoration(
         color: isCurrent ? const Color(0xFF262233) : const Color(0xFF1E1E28),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(3),
         border: Border.all(
           color: isCurrent || expanded ? kMashupAccent : Colors.white24,
           width: isCurrent ? 2.5 : 1.5,
@@ -185,10 +185,10 @@ class TrackStemLaneWidget extends StatelessWidget {
                           m.beatOnly
                               ? const Text('BEAT BREAK  ·  drop a song here to add a vocal',
                                   style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: kMashupAccent))
-                              : _songLine('🎤', m.vocal.title, m.vocal.artist, Colors.pinkAccent),
+                              : _songLine(Icons.mic, m.vocal.title, m.vocal.artist, Colors.pinkAccent),
                         ),
                         const SizedBox(height: 4),
-                        _dropZone(false, _songLine('🥁', m.beat.title, m.beat.artist, Colors.greenAccent)),
+                        _dropZone(false, _songLine(Icons.graphic_eq, m.beat.title, m.beat.artist, Colors.greenAccent)),
                       ],
                     ),
                   ),
@@ -219,7 +219,7 @@ class TrackStemLaneWidget extends StatelessWidget {
           Container(
             height: 48,
             margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-            decoration: BoxDecoration(color: Colors.black45, borderRadius: BorderRadius.circular(6)),
+            decoration: BoxDecoration(color: Colors.black45, borderRadius: BorderRadius.circular(3)),
             child: CustomPaint(
               size: Size.infinite,
               painter: _MashupWavePainter(
@@ -235,12 +235,12 @@ class TrackStemLaneWidget extends StatelessWidget {
           // Vocal pitch: semitones (key) and fine cents (by ear)
           if (!m.beatOnly) _pitchRow(),
           // Live volume faders
-          if (!m.beatOnly) _faderRow('🎤 Vocal', m.vocalDb, Colors.pinkAccent, onVocalDb),
-          _faderRow('🥁 Beat', m.beatDb, Colors.greenAccent, onBeatDb),
+          if (!m.beatOnly) _faderRow('Vocal', m.vocalDb, Colors.pinkAccent, onVocalDb),
+          _faderRow('Beat', m.beatDb, Colors.greenAccent, onBeatDb),
           if (anchorMode)
             const Padding(
               padding: EdgeInsets.fromLTRB(12, 2, 12, 4),
-              child: Text('⚓ Tempo and key follow the anchor beat', style: TextStyle(fontSize: 9, color: Colors.amberAccent)),
+              child: Text('Tempo and key follow the anchor beat', style: TextStyle(fontSize: 9, color: Colors.amberAccent)),
             )
           else
             _tempoRow(),
@@ -424,7 +424,7 @@ class TrackStemLaneWidget extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
             decoration: BoxDecoration(
               color: hover ? (asVocal ? Colors.pinkAccent : Colors.greenAccent).withValues(alpha: 0.2) : Colors.transparent,
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: BorderRadius.circular(3),
               border: Border.all(color: hover ? (asVocal ? Colors.pinkAccent : Colors.greenAccent) : Colors.transparent),
             ),
             child: hover
@@ -435,9 +435,9 @@ class TrackStemLaneWidget extends StatelessWidget {
         },
       );
 
-  Widget _songLine(String icon, String title, String artist, Color color) => Row(
+  Widget _songLine(IconData icon, String title, String artist, Color color) => Row(
         children: [
-          Text(icon, style: const TextStyle(fontSize: 13)),
+          Icon(icon, size: 14, color: color),
           const SizedBox(width: 6),
           Expanded(
             child: Text.rich(
@@ -464,7 +464,7 @@ class TrackStemLaneWidget extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         color: stem.color.withValues(alpha: audible ? 0.12 : 0.03),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(3),
         border: Border.all(color: stem.color.withValues(alpha: audible ? 0.35 : 0.1)),
       ),
       child: Row(
@@ -485,14 +485,14 @@ class TrackStemLaneWidget extends StatelessWidget {
         message: tip,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(4),
+          borderRadius: BorderRadius.circular(3),
           child: Container(
             width: 22,
             padding: const EdgeInsets.symmetric(vertical: 2),
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: on ? color.withValues(alpha: 0.3) : Colors.transparent,
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: BorderRadius.circular(3),
               border: Border.all(color: on ? color : Colors.white24),
             ),
             child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: on ? color : Colors.white70)),
@@ -643,7 +643,7 @@ class MashupBridge extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             decoration: BoxDecoration(
               color: Colors.purple.shade900.withValues(alpha: 0.4),
-              borderRadius: BorderRadius.circular(4),
+              borderRadius: BorderRadius.circular(3),
               border: Border.all(color: kMashupAccent.withValues(alpha: 0.7)),
             ),
             child: const Text("BLEND", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: kMashupAccent)),
@@ -783,7 +783,7 @@ class SampleStrip extends StatelessWidget {
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
             color: hover ? kMashupAccent.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.03),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(3),
             border: Border.all(color: hover ? kMashupAccent : Colors.white12, style: hover ? BorderStyle.solid : BorderStyle.solid),
           ),
           child: Column(
@@ -834,12 +834,12 @@ class SampleStrip extends StatelessWidget {
           message: tip,
           child: InkWell(
             onTap: busy ? null : onTap,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: BorderRadius.circular(3),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
               decoration: BoxDecoration(
                 color: on ? kMashupAccent.withValues(alpha: 0.3) : Colors.transparent,
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(3),
                 border: Border.all(color: on ? kMashupAccent : Colors.white24),
               ),
               child: Text(label, style: TextStyle(fontSize: 9, color: onTap == null ? Colors.white24 : (on ? Colors.white : Colors.white60))),
@@ -851,7 +851,7 @@ class SampleStrip extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
       decoration: BoxDecoration(
         color: kMashupAccent.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(3),
         border: Border.all(color: kMashupAccent.withValues(alpha: 0.6)),
       ),
       child: Column(
@@ -859,7 +859,10 @@ class SampleStrip extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(s.vocalOnly ? '🎤 ' : (s.melodyOnly ? '🎹 ' : '🎛 '), style: const TextStyle(fontSize: 11)),
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Icon(s.vocalOnly ? Icons.mic : (s.melodyOnly ? Icons.piano : Icons.tune), size: 13, color: Colors.white70),
+              ),
               Expanded(
                 child: Text(s.track.title, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
               ),
@@ -879,9 +882,9 @@ class SampleStrip extends StatelessWidget {
           ),
           Row(
             children: [
-              toggle('🎤 Vocal only', s.vocalOnly, 'Play just the singing (an acapella). First time splits stems.', () => onToggleVocal(s)),
+              toggle('Vocal only', s.vocalOnly, 'Play just the singing (an acapella). First time splits stems.', () => onToggleVocal(s)),
               const SizedBox(width: 4),
-              toggle('🎹 Melody', s.melodyOnly,
+              toggle('Melody', s.melodyOnly,
                   'Play just the instruments — no drums, bass or vocals (e.g. an orchestra over a dance beat). First time splits stems.',
                   () => onToggleMelody(s)),
               const SizedBox(width: 4),

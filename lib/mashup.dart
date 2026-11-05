@@ -1502,7 +1502,7 @@ class MashupMaker {
 
     final duration = bt(endBar) + 1.5;
     final mins = (duration / 60).round();
-    final summary = '${vibe.summary} · ⚓ ${anchor.track.title}${promoted == null ? '' : ' → ${ms[promoted].beat.title}'} · ${ms.length} mashups · '
+    final summary = '${vibe.summary} · anchor: ${anchor.track.title}${promoted == null ? '' : ' → ${ms[promoted].beat.title}'} · ${ms.length} mashups · '
         '${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
     final json = <String, dynamic>{'duration': duration, 'clips': clips, if (warmth != null) 'warmth': warmth};
     return MashupSetPlan(ms, duration, summary, json, cuts);

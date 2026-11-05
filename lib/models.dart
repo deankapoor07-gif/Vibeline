@@ -20,6 +20,8 @@ class LibraryTrack {
   double? tuningHz;
   List<double> waveform = const [];
   bool analysisTried = false;
+  // Only in iCloud: left out of sets until it's downloaded.
+  bool inCloud = false;
 
   /// Its title without versions ("(Rap Remix)", "[Edit]", "feat. …"), so two
   /// versions of one song are never both in a set.

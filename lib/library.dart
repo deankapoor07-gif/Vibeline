@@ -126,7 +126,7 @@ class MusicLibrary {
     int matchMin = 0,
     bool Function(LibraryTrack)? matches,
   }) {
-    bool waiting(LibraryTrack t) => t.analysis == null && !t.analysisTried;
+    bool waiting(LibraryTrack t) => t.analysis == null && !t.analysisTried && !t.inCloud;
     final first = <LibraryTrack>[];
     if (matches != null) {
       final have = pool.where((t) => t.analysis != null && matches(t)).length;
@@ -175,6 +175,9 @@ class MusicLibrary {
 
   bool _knownLoaded = false;
 
+  /// Songs left out because they're only in iCloud.
+  int get inCloudCount => tracks.where((t) => t.inCloud).length;
+
   /// Loads the results for every song analysed on an earlier day (quick: no
   /// audio is opened). Only does the work once per search for songs.
   Future<void> loadKnown() async {
@@ -182,9 +185,10 @@ class MusicLibrary {
     final todo = {for (final t in tracks) if (t.analysis == null) t.path: t};
     if (todo.isNotEmpty) {
       await for (final row in _run(['known', ...todo.keys])) {
-        if (row['type'] != 'analysis') continue;
         final t = todo[row['path']];
-        if (t != null) _applyAnalysis(t, row);
+        if (t == null) continue;
+        if (row['type'] == 'in_icloud') t.inCloud = true;
+        if (row['type'] == 'analysis') _applyAnalysis(t, row);
       }
     }
     _knownLoaded = true;
@@ -243,7 +247,7 @@ class MusicLibrary {
   /// of the Mac free; [stop] is checked as each song finishes.
   Future<void> analyze(List<LibraryTrack> wanted, void Function(int done, int total) onProgress,
       {bool gentle = false, bool Function()? stop}) async {
-    final todo = wanted.where((t) => t.analysis == null && !t.analysisTried).toList();
+    final todo = wanted.where((t) => t.analysis == null && !t.analysisTried && !t.inCloud).toList();
     if (todo.isEmpty) return;
     final byPath = {for (final t in todo) t.path: t};
     var done = 0;

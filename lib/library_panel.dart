@@ -36,6 +36,11 @@ double? camelotOrder(String? camelot) {
 
 /// Your songs, ready to drop into a mashup as its vocal or its beat. Songs are
 /// ranked by how well they'd fit the mashup you're working on.
+/// The note about songs left out because they're only in iCloud.
+String iCloudNote(int n) => n == 1
+    ? "1 song is only in iCloud, so it's left out of your sets. Download it in Finder to use it."
+    : "$n songs are only in iCloud, so they're left out of your sets. Download them in Finder to use them.";
+
 class LibraryPanel extends StatefulWidget {
   final List<LibraryTrack> tracks;
   final List<Mashup> mashups;
@@ -138,6 +143,8 @@ class _LibraryPanelState extends State<LibraryPanel> {
     double rank(LibraryTrack t) => fits.containsKey(t.path) ? (fits[t.path]?.score ?? -50) : -100;
     sortSongs(rows, _sort, fit: rank);
     final analysed = widget.tracks.where((t) => t.analysis != null).length;
+    final inCloud = widget.tracks.where((t) => t.inCloud).length;
+    final usable = widget.tracks.length - inCloud;
 
     return Container(
       width: 340,
@@ -199,8 +206,8 @@ class _LibraryPanelState extends State<LibraryPanel> {
               child: SegmentedButton<bool>(
                 style: const ButtonStyle(visualDensity: VisualDensity.compact),
                 segments: const [
-                  ButtonSegment(value: true, label: Text('🎤 Replace vocal', style: TextStyle(fontSize: 11))),
-                  ButtonSegment(value: false, label: Text('🥁 Replace beat', style: TextStyle(fontSize: 11))),
+                  ButtonSegment(value: true, icon: Icon(Icons.mic, size: 14), label: Text('Replace vocal', style: TextStyle(fontSize: 11))),
+                  ButtonSegment(value: false, icon: Icon(Icons.graphic_eq, size: 14), label: Text('Replace beat', style: TextStyle(fontSize: 11))),
                 ],
                 selected: {widget.asVocal},
                 onSelectionChanged: (s) => widget.onRole(s.first),
@@ -253,13 +260,13 @@ class _LibraryPanelState extends State<LibraryPanel> {
                 Expanded(
                   child: Text(
                     widget.analyseStatus ??
-                        (analysed < widget.tracks.length
-                            ? '$analysed of ${widget.tracks.length} songs analysed — fit is shown for those.'
+                        (analysed < usable
+                            ? '$analysed of $usable songs analysed — fit is shown for those.'
                             : 'All songs analysed.'),
                     style: const TextStyle(fontSize: 9, color: Colors.white38),
                   ),
                 ),
-                if (widget.analyseStatus == null && analysed < widget.tracks.length)
+                if (widget.analyseStatus == null && analysed < usable)
                   TextButton(
                     onPressed: widget.onAnalyseAll,
                     style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero),
@@ -268,10 +275,22 @@ class _LibraryPanelState extends State<LibraryPanel> {
               ],
             ),
           ),
+          if (inCloud > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+              child: Tooltip(
+                message: 'In Finder, click the cloud icon next to a song to download it, then reopen this app.\n'
+                    'Downloaded songs take up space on your Mac.',
+                child: Text(
+                  iCloudNote(inCloud),
+                  style: const TextStyle(fontSize: 11, color: Colors.white70),
+                ),
+              ),
+            ),
           const Divider(height: 1, color: Colors.white12),
           const Padding(
             padding: EdgeInsets.fromLTRB(12, 4, 12, 2),
-            child: Text('Drag a song onto a card\'s 🎤 or 🥁 line, or use the buttons.',
+            child: Text('Drag a song onto a card\'s vocal or beat line, or use the buttons.',
                 style: TextStyle(fontSize: 9, color: Colors.white38)),
           ),
 
@@ -314,10 +333,13 @@ class _LibraryPanelState extends State<LibraryPanel> {
                     ),
                 ]),
                 Text(details, style: const TextStyle(fontSize: 10, color: Colors.white54), overflow: TextOverflow.ellipsis),
+                if (t.inCloud)
+                  const Text('In iCloud: download it in Finder to use it',
+                      style: TextStyle(fontSize: 10, color: Colors.white54)),
                 if (a != null)
                   Text('${a.steadyBpm.toStringAsFixed(0)} BPM · ${a.key}${a.camelot.isEmpty ? '' : ' · ${a.camelot}'}',
                       style: const TextStyle(fontSize: 10, color: kTealText)),
-                if (_m != null)
+                if (_m != null && !t.inCloud)
                   Text(
                     !known
                         ? (a == null ? 'not analysed yet (takes a moment when used)' : '')
@@ -330,15 +352,16 @@ class _LibraryPanelState extends State<LibraryPanel> {
               ],
             ),
           ),
-          if (widget.onMixAround != null) _use('✨', 'Build a new mix around this song (finds its best beat)', () => widget.onMixAround!(t)),
-          if (_m != null) ...[
-            _use('🎤', 'Use as the vocal of this mashup', () => widget.onUse(t, true)),
-            _use('🥁', 'Use as the beat of this mashup', () => widget.onUse(t, false)),
-            if (widget.onAnchor != null) _use('⚓', 'Make this the anchor beat', () => widget.onAnchor!(t)),
+          if (widget.onMixAround != null && !t.inCloud) _use(Icons.queue_music, 'Build a new mix around this song (finds its best beat)', () => widget.onMixAround!(t)),
+          if (_m != null && !t.inCloud) ...[
+            _use(Icons.mic, 'Use as the vocal of this mashup', () => widget.onUse(t, true)),
+            _use(Icons.graphic_eq, 'Use as the beat of this mashup', () => widget.onUse(t, false)),
+            if (widget.onAnchor != null) _use(Icons.anchor, 'Make this the anchor beat', () => widget.onAnchor!(t)),
           ],
         ],
       ),
     );
+    if (t.inCloud) return tile;
     return Draggable<LibraryTrack>(
       data: t,
       dragAnchorStrategy: pointerDragAnchorStrategy,
@@ -346,7 +369,7 @@ class _LibraryPanelState extends State<LibraryPanel> {
         color: Colors.transparent,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(color: kMashupAccent.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(6)),
+          decoration: BoxDecoration(color: kMashupAccent.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(3)),
           child: Text(t.title, style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
         ),
       ),
@@ -354,12 +377,12 @@ class _LibraryPanelState extends State<LibraryPanel> {
     );
   }
 
-  Widget _use(String icon, String tip, VoidCallback onTap) => Tooltip(
+  Widget _use(IconData icon, String tip, VoidCallback onTap) => Tooltip(
         message: tip,
         child: InkWell(
           onTap: widget.busy ? null : onTap,
-          borderRadius: BorderRadius.circular(4),
-          child: Padding(padding: const EdgeInsets.all(5), child: Text(icon, style: const TextStyle(fontSize: 15))),
+          borderRadius: BorderRadius.circular(3),
+          child: Padding(padding: const EdgeInsets.all(5), child: Icon(icon, size: 16, color: Colors.white70)),
         ),
       );
 }

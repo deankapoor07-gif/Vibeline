@@ -175,9 +175,9 @@ class _StoragePageState extends State<StoragePage> {
               child: Material(
                 color: on ? kPanel : Colors.transparent,
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8), side: BorderSide(color: on ? kPink : Colors.transparent)),
+                    borderRadius: BorderRadius.circular(3), side: BorderSide(color: on ? kPink : Colors.transparent)),
                 child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(3),
                   onTap: () => setState(() => _kind = k),
                   child: Padding(
                     padding: const EdgeInsets.all(12),

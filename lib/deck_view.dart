@@ -17,6 +17,7 @@ const kLine = Color(0xFF24242E);
 const kPink = Color(0xFFFF3DBB);
 const kTeal = Color(0xFF22E6C8);
 const kYellow = Color(0xFFFFD23F);
+const kCorner = 3.0;
 const kSetColors = [kPink, kTeal, Color(0xFF8F5BFF), Color(0xFFFF8A1F), Color(0xFF3DA5FF), Color(0xFF7DFF5A), kYellow];
 
 /// One deck on the Now Playing screen.
@@ -27,7 +28,9 @@ class DeckInfo {
   final Color color;
   final List<(String, Color)> tags;
   final Widget? action; // e.g. its mute button, top right of the card
-  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action});
+  final String bpm; // e.g. 124.0
+  final String keyCode; // e.g. 8A
+  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action, this.bpm = '', this.keyCode = ''});
 }
 
 /// The bass / mid / high loudness and peak of each rendered section, every
@@ -148,12 +151,12 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
         Expanded(
           child: Container(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-            decoration: BoxDecoration(color: const Color(0xFF0C0C11), borderRadius: BorderRadius.circular(12)),
+            decoration: BoxDecoration(color: const Color(0xFF0C0C11), borderRadius: BorderRadius.circular(3)),
             child: Column(
               children: [
                 Row(
                   children: [
-                    Text(widget.heading, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                    Text(widget.heading.toUpperCase(), style: const TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54)),
                     const Spacer(),
                     Flexible(
                       child: Text(
@@ -201,65 +204,84 @@ class _Deck extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: kPanel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: d.color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        children: [
-          SizedBox(width: 62, height: 62, child: CustomPaint(painter: _PlatterPainter(d.color, pos))),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      d.role,
-                      style: TextStyle(fontSize: 11, letterSpacing: 1.2, color: d.color, fontWeight: FontWeight.w600),
-                    ),
-                    const Spacer(),
-                    ?d.action,
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  d.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Colors.white),
-                ),
-                Text(
-                  d.artist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, color: Colors.white54),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  children: [
-                    for (final (label, c) in d.tags)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: c.withValues(alpha: 0.16),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(label, style: TextStyle(fontSize: 11, color: Color.lerp(c, Colors.white, 0.35))),
-                      ),
-                  ],
-                ),
-              ],
-            ),
+    return LayoutBuilder(
+      builder: (context, box) {
+        final roomy = box.maxWidth >= 380; // with the Songs panel open, the numbers matter more than the record
+        return Container(
+          padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
+          decoration: BoxDecoration(
+            color: kPanel,
+            border: Border(top: BorderSide(color: d.color, width: 2)),
           ),
-        ],
-      ),
+          child: Row(
+            children: [
+              if (roomy) ...[
+                SizedBox(width: 72, height: 72, child: CustomPaint(painter: _PlatterPainter(d.color, pos))),
+                const SizedBox(width: 12),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(d.role, style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: d.color, fontWeight: FontWeight.w800)),
+                        const Spacer(),
+                        ?d.action,
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      d.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white),
+                    ),
+                    Text(
+                      d.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: Colors.white60),
+                    ),
+                    const SizedBox(height: 5),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (d.bpm.isNotEmpty)
+                          Text.rich(
+                            TextSpan(children: [
+                              TextSpan(text: d.bpm, style: const TextStyle(fontSize: 22, height: 1, fontWeight: FontWeight.w700, color: Colors.white)),
+                              const TextSpan(text: ' BPM', style: TextStyle(fontSize: 9, letterSpacing: 0.7, color: Colors.white54)),
+                            ]),
+                            style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+                          ),
+                        if (d.keyCode.isNotEmpty) ...[
+                          const SizedBox(width: 10),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(border: Border.all(color: d.color), borderRadius: BorderRadius.circular(kCorner)),
+                            child: Text(d.keyCode, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: d.color)),
+                          ),
+                        ],
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Wrap(
+                            spacing: 8,
+                            children: [
+                              for (final (label, c) in d.tags)
+                                Text(label.toUpperCase(), style: TextStyle(fontSize: 9, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: Color.lerp(c, Colors.white, 0.25))),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -466,9 +488,9 @@ class QuickPads extends StatelessWidget {
           duration: const Duration(milliseconds: 80),
           height: 42,
           decoration: BoxDecoration(
-            color: lit ? c : kPanel,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: lit ? c : c.withValues(alpha: 0.45)),
+            color: lit ? c : const Color(0xFF17171F),
+            borderRadius: BorderRadius.circular(3),
+            border: Border(bottom: BorderSide(color: c, width: 3)),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -476,19 +498,12 @@ class QuickPads extends StatelessWidget {
               FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  f == BeatFx.vinylBrake ? 'Brake' : f.label,
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: lit ? kInk : c),
+                  (f == BeatFx.vinylBrake ? 'Brake' : f.label).toUpperCase(),
+                  style: TextStyle(fontSize: 11, letterSpacing: 0.6, fontWeight: FontWeight.w800, color: lit ? kInk : Colors.white),
                 ),
               ),
-              const SizedBox(height: 3),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: lit ? kInk.withValues(alpha: 0.4) : Colors.white24),
-                ),
-                child: Text('${i + 1}', style: TextStyle(fontSize: 10, color: lit ? kInk : Colors.white54)),
-              ),
+              const SizedBox(height: 2),
+              Text('${i + 1}', style: TextStyle(fontSize: 9, color: lit ? kInk : Colors.white38)),
             ],
           ),
         ),
@@ -535,7 +550,7 @@ class SetOverview extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Text('Whole set · click to jump', style: TextStyle(fontSize: 11, color: Colors.white54)),
+            const Text('SET · CLICK TO JUMP', style: TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54)),
             const Spacer(),
             for (final (k, name) in const [
               (MarkKind.drop, 'acapella drop'),
@@ -576,7 +591,7 @@ class SetOverview extends StatelessWidget {
                             alignment: Alignment.centerLeft,
                             decoration: BoxDecoration(
                               color: it.color.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(4),
+                              borderRadius: BorderRadius.circular(3),
                               border: Border.all(color: it.color),
                             ),
                             child: Text(
@@ -678,15 +693,15 @@ class _XYPadState extends State<XYPad> {
               message: 'Click to choose which effect the square plays',
               child: InkWell(
                 onTap: () => setState(() => _pick = (_pick + 1) % QuickPads.pads.length),
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(3),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        f == BeatFx.vinylBrake ? 'Brake' : f.label,
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c),
+                        (f == BeatFx.vinylBrake ? 'Brake' : f.label).toUpperCase(),
+                        style: TextStyle(fontSize: 11, letterSpacing: 0.6, fontWeight: FontWeight.w800, color: c),
                       ),
                       Icon(Icons.unfold_more, size: 14, color: c),
                     ],
@@ -703,12 +718,12 @@ class _XYPadState extends State<XYPad> {
             if (at == null)
               InkWell(
                 onTap: widget.onMore,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(3),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   child: Text(
-                    'More FX',
-                    style: TextStyle(fontSize: 11, color: widget.moreOpen ? Colors.white : Colors.white54),
+                    'MORE FX',
+                    style: TextStyle(fontSize: 10, letterSpacing: 0.6, fontWeight: FontWeight.w700, color: widget.moreOpen ? Colors.white : Colors.white54),
                   ),
                 ),
               ),
@@ -732,7 +747,7 @@ class _XYPadState extends State<XYPad> {
                     child: Container(
                       decoration: BoxDecoration(
                         color: kPanel,
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(3),
                         border: Border.all(color: at != null ? c : c.withValues(alpha: 0.35)),
                       ),
                       child: CustomPaint(painter: _XYPainter(c, at), size: size),

@@ -17,7 +17,10 @@ import 'mixer.dart';
 import 'models.dart';
 import 'planner.dart';
 import 'prestretch.dart';
+import 'empty_screen.dart';
 import 'prompt_song.dart';
+import 'rig.dart';
+import 'theme_picker.dart';
 import 'sections.dart';
 import 'storage_view.dart';
 import 'tuning.dart';
@@ -35,11 +38,11 @@ class VibelineApp extends StatelessWidget {
     return MaterialApp(
       title: 'D-Jay Noodles',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
+      theme: rigTheme(ThemeData.dark().copyWith(
         scaffoldBackgroundColor: kInk,
         primaryColor: kPink,
         colorScheme: const ColorScheme.dark(primary: kPink, secondary: kTeal, surface: kPanel),
-      ),
+      )),
       home: const TimelineWorkspaceScreen(),
     );
   }
@@ -202,11 +205,20 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     await _library.scan();
     await _library.loadKnown(); // so the Songs panel can show BPM and key
     _scanned = true;
+    final inCloud = _library.inCloudCount;
     _set(
-      '${_library.tracks.length} songs found · ${_library.shazamMatches} of them are Shazams. '
+      '${_library.tracks.length - inCloud} songs found · ${_library.shazamMatches} of them are Shazams. '
+      '${inCloud == 0 ? '' : '$inCloud more ${inCloud == 1 ? 'is' : 'are'} only in iCloud and left out. '}'
       'Type a vibe and press $_goLabel.',
       phase: _hasContent ? Phase.ready : Phase.idle,
     );
+  }
+
+  Future<void> _searchWholeMac() async {
+    if (_busy) return;
+    _library.wholeMac = true;
+    await _library.saveSettings();
+    await _scan();
   }
 
   Future<void> _chooseFolder() async {
@@ -226,7 +238,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   // ------------------------------------------------------------- Re-Mix AI
 
   /// [seed]: a song to build the set around ("mix <song>" in the vibe box,
-  /// or ✨ in the Songs panel).
+  /// or a song's mix button in the Songs panel).
   Future<void> _remix({LibraryTrack? seed}) async {
     if (_busy) return;
     _currentVibePrompt = _vibeController.text.trim().isEmpty ? _currentVibePrompt : _vibeController.text.trim();
@@ -240,7 +252,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       if (seed == null) {
         final found = songFromPrompt(prompt, _library.tracks);
         if (found != null && found.track == null) {
-          _set('Couldn\'t find "${found.query}" in your songs. Check the spelling, or find it in the Songs panel and press ✨.',
+          _set('Couldn\'t find "${found.query}" in your songs. Check the spelling, or find it in the Songs panel and press its mix button.',
               phase: Phase.error);
           return;
         }
@@ -375,7 +387,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // keeps preparing the rest in the background.
     final filling = session.fill(_library, count, (s) {
       if (started) {
-        if (mounted) setState(() => _background = s);
+        if (mounted && !session.cancelled) setState(() => _background = s);
       } else {
         _set('Making mashups · $s');
       }
@@ -723,7 +735,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   Future<void> _analyseAll() async {
-    final todo = _library.tracks.where((t) => t.analysis == null).toList();
+    final todo = _library.tracks.where((t) => t.analysis == null && !t.inCloud).toList();
     if (todo.isEmpty) return;
     _stopLearning();
     setState(() => _analyseStatus = 'Analysing ${todo.length} songs…');
@@ -761,7 +773,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       return;
     }
     setState(() => _anchorOn = true);
-    _set('⚓ "${t.title}" is the anchor beat', phase: Phase.ready);
+    _set('"${t.title}" is the anchor beat', phase: Phase.ready);
     _scheduleRelayout();
   }
 
@@ -1080,27 +1092,22 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       if (ms.isEmpty) return const [];
       final m = ms[i.clamp(0, ms.length - 1)];
       final beat = DeckInfo('BEAT', m.beat.title, m.beat.artist, kTeal, [
-        ('${m.playedBpm.toStringAsFixed(1)} BPM', kTeal),
-        (shiftCamelot(m.beatGrid.camelot, m.beatShift), Colors.white),
         if (!m.beatOnly) (_keyLabel(m.keyMatch), m.keyMatch == 'clash' ? Colors.redAccent : const Color(0xFF7DFF5A)),
-      ]);
+      ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(m.beatGrid.camelot, m.beatShift));
       if (m.beatOnly) return [beat];
       return [
         DeckInfo('VOCAL', m.vocal.title, m.vocal.artist, kPink, [
           ('${(m.vocalSpeed * 100).round()}% speed', kPink),
-          (shiftCamelot(m.vocalGrid.camelot, m.vocalShift), Colors.white),
           if (m.acapellaBars > 0) ('Acapella drop', kYellow),
-        ]),
+        ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(m.vocalGrid.camelot, m.vocalShift)),
         beat,
       ];
     }
     final ts = _plan?.tracks ?? const <PlannedTrack>[];
     if (ts.isEmpty) return const [];
     DeckInfo deck(String role, PlannedTrack p, Color c) => DeckInfo(role, p.track.title, p.track.artist, c, [
-          ('${p.playedBpm.toStringAsFixed(1)} BPM', c),
-          (shiftCamelot(p.grid.camelot, p.pitchSemitones), Colors.white),
           if (p.bridge) ('Beat bridge', kYellow),
-        ]);
+        ], bpm: p.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(p.grid.camelot, p.pitchSemitones));
     final cur = i.clamp(0, ts.length - 1);
     return [
       deck('NOW', ts[cur], kPink),
@@ -1163,6 +1170,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final decks = [
       for (final d in _decks)
         DeckInfo(d.role, d.title, d.artist, d.color, d.tags,
+            bpm: d.bpm,
+            keyCode: d.keyCode,
             action: !two
                 ? null
                 : d.role == 'VOCAL'
@@ -1234,13 +1243,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
             decoration: BoxDecoration(
               color: _scratchLit ? kYellow : kPanel,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(3),
               border: Border.all(color: _scratchLit ? kYellow : kYellow.withValues(alpha: 0.5)),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(Icons.album, size: 15, color: _scratchLit ? kInk : kYellow),
               const SizedBox(width: 6),
-              Text('Scratch', style: TextStyle(fontSize: 12, color: _scratchLit ? kInk : kYellow)),
+              Text('SCRATCH', style: TextStyle(fontSize: 11, letterSpacing: 0.7, fontWeight: FontWeight.w700, color: _scratchLit ? kInk : kYellow)),
             ]),
           ),
         ),
@@ -1250,18 +1259,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         message: hint,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(3),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
               color: muted ? c.withValues(alpha: 0.18) : kPanel,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(3),
               border: Border.all(color: muted ? c : Colors.white24),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               Icon(muted ? Icons.volume_off : Icons.volume_up, size: 15, color: muted ? c : Colors.white60),
               const SizedBox(width: 6),
-              Text(muted ? '$what muted' : 'Mute $what', style: TextStyle(fontSize: 12, color: muted ? c : Colors.white70)),
+              Text((muted ? '$what muted' : 'Mute $what').toUpperCase(), style: TextStyle(fontSize: 10, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: muted ? c : Colors.white70)),
             ]),
           ),
         ),
@@ -1291,46 +1300,33 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   Widget _barLabel(IconData icon, String label, Color color) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 18, color: color),
+          Icon(icon, size: 15, color: color),
           const SizedBox(width: 6),
-          Text(label, style: TextStyle(fontSize: 14, color: color)),
+          Text(label.toUpperCase(), style: TextStyle(fontSize: 11, letterSpacing: 0.7, fontWeight: FontWeight.w700, color: color)),
         ]),
       );
 
-  /// A setting that can't change while a set is being made: it keeps showing
-  /// whether it's on, rather than greying out as if it had been switched off.
-  Widget _lockableSwitch({required bool value, required Color color, required ValueChanged<bool> onChanged}) {
-    final sw = IgnorePointer(
-      ignoring: _busy,
-      child: ExcludeFocus(
-        excluding: _busy,
-        child: Switch(value: value, activeThumbColor: color, onChanged: onChanged),
-      ),
-    );
-    return _busy ? Tooltip(message: 'Locked while your set is being made', child: sw) : sw;
-  }
-
-  Widget _barButton({required IconData icon, required String label, String? tooltip, VoidCallback? onPressed}) {
+  Widget _barButton({required IconData icon, required String label, String? tooltip, Color color = Colors.white70, VoidCallback? onPressed}) {
     final button = TextButton(
       onPressed: onPressed,
       style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), minimumSize: const Size(0, 36)),
-      child: _barLabel(icon, label, onPressed == null ? Colors.white30 : Colors.white70),
+      child: _barLabel(icon, label, onPressed == null ? Colors.white30 : color),
     );
     return tooltip == null ? button : Tooltip(message: tooltip, child: button);
   }
 
   @override
   Widget build(BuildContext context) {
-    final statusLine = [_status, if (_readiness.isNotEmpty) _readiness, if (_learnStatus != null) _learnStatus!].join('   ·   ');
+    final statusLine = [_status, if (_themeHint != null) _themeHint!, if (_readiness.isNotEmpty) _readiness, if (_learnStatus != null) _learnStatus!].join('   ·   ');
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 50,
         titleSpacing: 16,
         title: Row(children: [
           const Text.rich(TextSpan(children: [
-            TextSpan(text: 'D-Jay ', style: TextStyle(color: kPink)),
-            TextSpan(text: 'Noodles', style: TextStyle(color: kTeal)),
-          ]), style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            TextSpan(text: 'D-JAY ', style: TextStyle(color: Colors.white)),
+            TextSpan(text: 'NOODLES', style: TextStyle(color: kPink)),
+          ]), style: TextStyle(fontSize: 14, letterSpacing: 2, fontWeight: FontWeight.w800)),
           const SizedBox(width: 20),
           Tooltip(
             message: 'Simple: the decks, waveform and pads.\nPro: every mashup card with all its knobs and sliders.',
@@ -1342,11 +1338,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 selectedForegroundColor: kInk,
                 foregroundColor: Colors.white70,
                 side: const BorderSide(color: Colors.white24),
-                textStyle: const TextStyle(fontSize: 12),
+                textStyle: const TextStyle(fontSize: 11, letterSpacing: 0.7, fontWeight: FontWeight.w700),
               ),
               segments: const [
-                ButtonSegment(value: false, label: Text('Simple')),
-                ButtonSegment(value: true, label: Text('Pro')),
+                ButtonSegment(value: false, label: Text('SIMPLE')),
+                ButtonSegment(value: true, label: Text('PRO')),
               ],
               selected: {_pro},
               onSelectionChanged: (v) => setState(() => _pro = v.first),
@@ -1357,10 +1353,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         surfaceTintColor: Colors.transparent,
         actions: [
           if (_mashupMode)
-            TextButton.icon(
+            _barButton(
+              icon: Icons.library_music,
+              label: 'Songs',
+              color: _libraryOpen ? kRigAmber : Colors.white70,
               onPressed: () => setState(() => _libraryOpen = !_libraryOpen),
-              icon: Icon(Icons.library_music, color: _libraryOpen ? kPink : Colors.white70, size: 18),
-              label: Text('Songs', style: TextStyle(color: _libraryOpen ? kPink : Colors.white70)),
             ),
           _barButton(
             icon: Icons.storage,
@@ -1374,9 +1371,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             child: _barLabel(Icons.folder_open, 'Music', _busy ? Colors.white30 : Colors.white70),
             onSelected: (whole) async {
               if (!whole) return _chooseFolder();
-              _library.wholeMac = true;
-              await _library.saveSettings();
-              await _scan();
+              await _searchWholeMac();
             },
             itemBuilder: (_) => [
               CheckedPopupMenuItem(value: true, checked: _library.wholeMac, child: const Text('Search the whole Mac')),
@@ -1400,12 +1395,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         children: [
           // 1. VIBE ENGINE PROMPT BAR
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             margin: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(color: kPanel, borderRadius: BorderRadius.circular(12)),
-            child: Row(
+            decoration: BoxDecoration(color: kPanel, borderRadius: BorderRadius.circular(3)),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(
               children: [
-                Icon(Icons.psychology, color: _accent),
+                const Text('VIBE', style: TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.w700, color: Colors.white54)),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
@@ -1425,82 +1421,56 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                SizedBox(
-                  width: 230,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TextField(
-                        controller: _themeController,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.theater_comedy, size: 18),
-                          prefixIconConstraints: BoxConstraints(minWidth: 30),
-                          hintText: 'Theme: 80s, punk…',
-                          hintStyle: TextStyle(fontSize: 14, color: Colors.white54),
-                          border: InputBorder.none,
-                          isDense: true,
-                        ),
-                        onChanged: (_) => setState(() {}),
-                        onSubmitted: (_) => _remix(),
-                      ),
-                      if (_themeHint != null)
-                        Text(_themeHint!, style: const TextStyle(fontSize: 11, color: Colors.white54)),
-                    ],
-                  ),
-                ),
+                ThemePicker(controller: _themeController, locked: _busy, onChanged: () => setState(() {})),
                 const SizedBox(width: 8),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _accent,
                     foregroundColor: kInk,
-                    textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                    textStyle: const TextStyle(fontSize: 12, letterSpacing: 0.7, fontWeight: FontWeight.w800),
+                    minimumSize: const Size(0, 32),
                   ),
                   onPressed: _busy ? null : _remix,
                   icon: _busy
                       ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70))
-                      : const Icon(Icons.auto_awesome, size: 16),
-                  label: Text(_goLabel),
+                      : const Icon(Icons.play_arrow, size: 16),
+                  label: Text(_goLabel.toUpperCase()),
                 ),
               ],
             ),
+            ]),
           ),
 
           // 2. TOOLBAR: mode + tuning
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             color: kInk,
-            child: Row(
+            width: double.infinity,
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
               children: [
-                Icon(Icons.layers, color: _mashupMode ? kPink : Colors.white38, size: 18),
-                const SizedBox(width: 8),
-                Text(
-                  'Mashups',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _mashupMode ? Colors.white : Colors.white54),
+                RigToggle(
+                  label: 'Mashups',
+                  on: _mashupMode,
+                  locked: _busy,
+                  tooltip: 'On: vocals from one song over the beat of another.\nOff: songs blended one after the other.',
+                  onChanged: _setMode,
                 ),
-                _lockableSwitch(value: _mashupMode, color: kPink, onChanged: _setMode),
-                if (_mashupMode) ...[
-                  const SizedBox(width: 8),
-                  Tooltip(
-                    message: 'Anchor beat: one steady groove the set comes home to. New vocals come in over it,\n'
+                if (_mashupMode)
+                  RigToggle(
+                    label: 'Anchor beat',
+                    on: _anchorOn,
+                    locked: _busy,
+                    tooltip: 'Anchor beat: one steady groove the set comes home to. New vocals come in over it,\n'
                         'the mashup\'s own beat takes over once the vocal settles, and it cuts back to the anchor now and then.',
-                    child: Row(children: [
-                      const Text('⚓', style: TextStyle(fontSize: 13)),
-                      const SizedBox(width: 4),
-                      const Text('Anchor beat', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                      _lockableSwitch(value: _anchorOn, color: kPink, onChanged: _toggleAnchor),
-                    ]),
+                    onChanged: _toggleAnchor,
                   ),
-                ],
-                const SizedBox(width: 16),
-                Tooltip(
-                  message: 'Retune every song, beat and vocal to A = 432 Hz before it plays.\nOff: songs keep their own tuning.',
-                  child: Row(children: [
-                    const Icon(Icons.tune, size: 16, color: Colors.white54),
-                    const SizedBox(width: 6),
-                    const Text('432 Hz tuning', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    Switch(value: Tuning.use432, activeColor: _accent, onChanged: _toggle432),
-                  ]),
+                RigToggle(
+                  label: '432 Hz',
+                  on: Tuning.use432,
+                  tooltip: 'Retune every song, beat and vocal to A = 432 Hz before it plays.\nOff: songs keep their own tuning.',
+                  onChanged: _toggle432,
                 ),
               ],
             ),
@@ -1532,7 +1502,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               children: [
                 Expanded(
                   child: !_hasContent
-                      ? _EmptyTimeline(busy: _busy, mashup: _mashupMode)
+                      ? EmptyScreen(
+                          busy: _busy,
+                          mashup: _mashupMode,
+                          scanned: _scanned,
+                          problem: _phase == Phase.error,
+                          songCount: _library.tracks.length,
+                          goLabel: _goLabel,
+                          accent: _mashupMode ? kMashupAccent : Colors.amber,
+                          onExample: (e) => setState(() {
+                            _vibeController.text = e;
+                            _currentVibePrompt = e;
+                          }),
+                          onChooseFolder: _chooseFolder,
+                          onWholeMac: _searchWholeMac,
+                        )
                       : !_pro
                           ? _nowPlaying()
                           : (_mashupMode ? _mashupTimeline() : _blendTimeline()),
@@ -1587,10 +1571,22 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   icon: const Icon(Icons.skip_previous),
                   onPressed: !_playable ? null : _previous,
                 ),
-                IconButton(
-                  tooltip: _playing ? 'Pause (space)' : 'Play (space)',
-                  icon: Icon(_playing ? Icons.pause_circle_filled : Icons.play_circle_fill, size: 46, color: _accent),
-                  onPressed: _togglePlay,
+                Tooltip(
+                  message: _playing ? 'Pause (space)' : 'Play (space)',
+                  child: InkWell(
+                    onTap: _togglePlay,
+                    borderRadius: BorderRadius.circular(kRigCorner),
+                    child: Container(
+                      width: 52,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: _playing ? kRigGreen : kRigFace,
+                        borderRadius: BorderRadius.circular(kRigCorner),
+                        border: Border.all(color: kRigGreen, width: 1.5),
+                      ),
+                      child: Icon(_playing ? Icons.pause : Icons.play_arrow, size: 26, color: _playing ? kInk : kRigGreen),
+                    ),
+                  ),
                 ),
                 IconButton(
                   tooltip: 'Next (→)',
@@ -1599,10 +1595,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 ),
                 const SizedBox(width: 16),
                 SizedBox(
-                  width: 120,
-                  child: Text(
-                    !_playable ? '--:-- / --:--' : '${_clock(_position)} / ${_clock(_duration)}',
-                    style: const TextStyle(color: Colors.white, fontSize: 15, fontFeatures: [FontFeature.tabularFigures()]),
+                  width: 150,
+                  child: Text.rich(
+                    TextSpan(children: [
+                      TextSpan(
+                        text: !_playable ? '--:--' : _clock(_position),
+                        style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w700),
+                      ),
+                      TextSpan(
+                        text: !_playable ? '  / --:--' : '  / ${_clock(_duration)}',
+                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                    ]),
+                    style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
                   ),
                 ),
                 if (_waiting || _heldAtEnd)
@@ -1613,49 +1618,37 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                         style: const TextStyle(color: Colors.white54, fontSize: 12)),
                   ]),
                 const Spacer(),
-                Tooltip(
-                  message: 'Live effects: Colour FX knobs and Beat FX pads',
-                  child: TextButton.icon(
-                    onPressed: !_playable
-                        ? null
-                        : () {
-                            // Closing the panel puts everything back to clean.
-                            if (_fxOpen) _fx.reset();
-                            setState(() => _fxOpen = !_fxOpen);
-                          },
-                    icon: Icon(Icons.graphic_eq, size: 18, color: _fxOpen ? _accent : Colors.white70),
-                    label: Text('FX', style: TextStyle(fontWeight: FontWeight.bold, color: _fxOpen ? _accent : Colors.white70)),
-                  ),
+                RigToggle(
+                  label: 'FX',
+                  on: _fxOpen,
+                  tooltip: 'Live effects: Colour FX knobs and Beat FX pads',
+                  onChanged: !_playable
+                      ? null
+                      : (_) {
+                          // Closing the panel puts everything back to clean.
+                          if (_fxOpen) _fx.reset();
+                          setState(() => _fxOpen = !_fxOpen);
+                        },
                 ),
-                Tooltip(
-                  message: 'Auto FX: the set throws in echoes, rolls and sweeps by itself at the changeovers',
-                  child: Row(children: [
-                    Text('Auto FX', style: TextStyle(color: _autoFxOn ? _accent : Colors.white54, fontSize: 12)),
-                    Switch(
-                      value: _autoFxOn,
-                      activeColor: _accent,
-                      onChanged: (on) {
-                        setState(() => _autoFxOn = on);
-                        _mixer.setLiveMap(_liveMap);
-                      },
-                    ),
-                  ]),
+                const SizedBox(width: 6),
+                RigToggle(
+                  label: 'Auto FX',
+                  on: _autoFxOn,
+                  tooltip: 'Auto FX: the set throws in echoes, rolls and sweeps by itself at the changeovers',
+                  onChanged: (on) {
+                    setState(() => _autoFxOn = on);
+                    _mixer.setLiveMap(_liveMap);
+                  },
                 ),
-                const SizedBox(width: 12),
-                Tooltip(
-                  message: 'Warmth: gives the whole set the sound of tape and vinyl, to suit your vibe',
-                  child: Row(
-                    children: [
-                      Text(
-                        // The exact settings are detail for Pro.
-                        _warmthOn && _pro && _vibe != null
-                            ? 'Warmth (drive ${_vibe!.drive.toStringAsFixed(1)} · crackle ${(_vibe!.crackle * 100).round()}%)'
-                            : 'Warmth',
-                        style: const TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
-                      Switch(value: _warmthOn, activeColor: _accent, onChanged: _toggleWarmth),
-                    ],
-                  ),
+                const SizedBox(width: 6),
+                RigToggle(
+                  // The exact settings are detail for Pro.
+                  label: _warmthOn && _pro && _vibe != null
+                      ? 'Warmth ${_vibe!.drive.toStringAsFixed(1)} · ${(_vibe!.crackle * 100).round()}%'
+                      : 'Warmth',
+                  on: _warmthOn,
+                  tooltip: 'Warmth: gives the whole set the sound of tape and vinyl, to suit your vibe',
+                  onChanged: _toggleWarmth,
                 ),
               ],
             ),
@@ -1783,38 +1776,6 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 }
 
-class _EmptyTimeline extends StatelessWidget {
-  final bool busy;
-  final bool mashup;
-  const _EmptyTimeline({required this.busy, required this.mashup});
-
-  @override
-  Widget build(BuildContext context) {
-    final accent = mashup ? kMashupAccent : Colors.amber;
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(mashup ? Icons.call_split : Icons.graphic_eq, size: 56, color: accent.withValues(alpha: busy ? 0.8 : 0.35)),
-          const SizedBox(height: 12),
-          Text(
-            busy ? (mashup ? 'Cooking up mashups…' : 'Building your mix…') : (mashup ? 'Your mashups will appear here' : 'Your mix will appear here'),
-            style: const TextStyle(fontSize: 18, color: Colors.white70),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            mashup
-                ? 'Try: "Party, mix genres, my Shazams", "country vocals over hip hop" or "festival, 4 hours"\nFirst time splits stems: about 20 seconds a song. Long sets keep preparing while they play.'
-                : 'Try: "Party, mix genres, modern, my Shazams" or "Cafe chill, 80s"',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white38),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ---------------------------------------------------------
 // INDIVIDUAL TRACK TIMELINE BLOCK WIDGET
 // ---------------------------------------------------------
@@ -1848,7 +1809,7 @@ class TrackTimelineNode extends StatelessWidget {
         height: 160,
         decoration: BoxDecoration(
           color: isCurrent ? const Color(0xFF34343F) : const Color(0xFF2C2C35),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(3),
           border: Border.all(color: color.withValues(alpha: isCurrent ? 1 : 0.6), width: isCurrent ? 3 : 2),
           boxShadow: [
             BoxShadow(
@@ -1883,7 +1844,7 @@ class TrackTimelineNode extends StatelessWidget {
                     const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(color: Colors.orangeAccent.withValues(alpha: 0.25), borderRadius: BorderRadius.circular(4)),
+                      decoration: BoxDecoration(color: Colors.orangeAccent.withValues(alpha: 0.25), borderRadius: BorderRadius.circular(3)),
                       child: const Text('BEAT BRIDGE', style: TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
                     ),
                   ],
@@ -1891,7 +1852,7 @@ class TrackTimelineNode extends StatelessWidget {
                     const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(color: Colors.lightBlueAccent.withValues(alpha: 0.25), borderRadius: BorderRadius.circular(4)),
+                      decoration: BoxDecoration(color: Colors.lightBlueAccent.withValues(alpha: 0.25), borderRadius: BorderRadius.circular(3)),
                       child: const Text('SHAZAM', style: TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.lightBlueAccent)),
                     ),
                   ],
@@ -1934,7 +1895,7 @@ class TrackTimelineNode extends StatelessWidget {
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
                 color: Colors.black38,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(3),
               ),
               child: CustomPaint(
                 size: Size.infinite,
@@ -2030,7 +1991,7 @@ class TransitionBridgeNode extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                 decoration: BoxDecoration(
                   color: Colors.amber.shade900.withValues(alpha: 0.4),
-                  borderRadius: BorderRadius.circular(4),
+                  borderRadius: BorderRadius.circular(3),
                   border: Border.all(color: Colors.amber.shade700),
                 ),
                 child: Text(

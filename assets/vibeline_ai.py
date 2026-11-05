@@ -418,11 +418,20 @@ def _on_this_mac(path):
         return False
 
 
+def _in_icloud(path):
+    try:
+        return bool(os.stat(path).st_flags & 0x40000000)  # SF_DATALESS
+    except OSError:
+        return False
+
+
 def cmd_known(paths):
     """Hands back songs already analysed, without opening any audio, so a set
-    can start straight away from them."""
+    can start straight away from them. Also says which are only in iCloud."""
     for p in paths:
         if not _on_this_mac(p):
+            if _in_icloud(p):
+                emit({"type": "in_icloud", "path": p})
             continue
         try:
             with open(_cache_path(p)) as fh:
