@@ -161,6 +161,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   bool get _busy => _phase == Phase.working;
   bool get _hasContent => _mashupMode ? _mashPlan != null : _plan != null;
+  /// The main button: nothing to re-mix until there's a set.
+  String get _goLabel => _hasContent ? 'Re-Mix' : 'Make my set';
   bool get _playable => _sections.sections.isNotEmpty;
 
   void _set(String status, {double? progress, Phase phase = Phase.working}) {
@@ -201,7 +203,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _scanned = true;
     _set(
       '${_library.tracks.length} songs found · ${_library.shazamMatches} of them are Shazams. '
-      'Type a vibe and hit Re-Mix AI.',
+      'Type a vibe and press $_goLabel.',
       phase: _hasContent ? Phase.ready : Phase.idle,
     );
   }
@@ -278,8 +280,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // between two that don't blend well.
     final ranked = vibe.themed ? all.where(vibe.fits).toList() : all;
     final bridges = vibe.themed ? all.where((t) => !vibe.fits(t)).take(60).toList() : <LibraryTrack>[];
+    final bridgeClock = ProgressClock();
     await _library.analyze(bridges, (done, total) {
-      _set('Finding beats to bridge with… $done / $total', progress: total == 0 ? null : done / total);
+      _set('Finding beats to bridge with… $done / $total${bridgeClock.tick(done, total)}', progress: total == 0 ? null : done / total);
     });
     final batch = math.max(48, vibe.trackCount * 5);
     final seed = DateTime.now().millisecondsSinceEpoch; // same seed: same songs when planned again below
@@ -287,8 +290,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     var wanted = <LibraryTrack>[];
     for (var round = 0; round < 3; round++) {
       wanted = ranked.take(batch * (round + 1)).toList();
+      final clock = ProgressClock();
       await _library.analyze(wanted, (done, total) {
-        _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
+        _set('Listening to songs for "${vibe.summary}"… $done / $total${clock.tick(done, total)}', progress: total == 0 ? null : done / total);
       });
       _set('Planning the set…');
       fitThemeTempo(vibe, wanted);
@@ -328,12 +332,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // A theme night: every song that fits the theme (they sing), plus the
     // best of the rest of the library as beats.
     final singers = ranked.where(vibe.fits).toList();
-    final pool = {
+    final pool = MusicLibrary.limitPool({
       ...singers,
       ...ranked.where((t) => !vibe.themed || !vibe.fits(t)).take(anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)),
-    }.toList();
+    }.toList());
+    final clock = ProgressClock();
     await _library.analyze(pool, (done, total) {
-      _set('Listening to songs for "${vibe.summary}"… $done / $total', progress: total == 0 ? null : done / total);
+      _set('Listening to songs for "${vibe.summary}"… $done / $total${clock.tick(done, total)}', progress: total == 0 ? null : done / total);
     });
     fitThemeTempo(vibe, singers);
     _set('Pairing vocals with beats…');
@@ -609,7 +614,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _set('Finding a new pairing…', phase: Phase.ready);
     final ok = await _session!.shuffle(i, _library, (s) => _set('New pairing · $s', phase: Phase.ready));
     if (!ok) {
-      _set('No more pairings left for this vibe — try Re-Mix AI.', phase: Phase.ready);
+      _set('No more pairings left for this vibe — try Re-Mix.', phase: Phase.ready);
       return;
     }
     _scheduleRelayout();
@@ -682,8 +687,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final todo = _library.tracks.where((t) => t.analysis == null).toList();
     if (todo.isEmpty) return;
     setState(() => _analyseStatus = 'Analysing ${todo.length} songs…');
+    final clock = ProgressClock();
     await _library.analyze(todo, (d, t) {
-      if (mounted && (d % 10 == 0 || d == t)) setState(() => _analyseStatus = 'Analysing songs… $d / $t');
+      final left = clock.tick(d, t);
+      if (mounted && (d % 10 == 0 || d == t)) setState(() => _analyseStatus = 'Analysing songs… $d / $t$left');
     });
     if (mounted) setState(() => _analyseStatus = null);
   }
@@ -747,8 +754,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _position = 0;
       _background = null;
       _status = mashup
-          ? 'Mashup Mode: vocals from one song over the beat of another. Hit Re-Mix AI.'
-          : 'Blend Mode: a DJ set that blends whole songs. Hit Re-Mix AI.';
+          ? 'Mashups: vocals from one song over the beat of another. Press Make my set.'
+          : 'Blend: a DJ set that blends whole songs. Press Make my set.';
       _phase = Phase.idle;
     });
   }
@@ -1250,6 +1257,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         ]),
       );
 
+  /// A setting that can't change while a set is being made: it keeps showing
+  /// whether it's on, rather than greying out as if it had been switched off.
+  Widget _lockableSwitch({required bool value, required Color color, required ValueChanged<bool> onChanged}) {
+    final sw = IgnorePointer(
+      ignoring: _busy,
+      child: ExcludeFocus(
+        excluding: _busy,
+        child: Switch(value: value, activeThumbColor: color, onChanged: onChanged),
+      ),
+    );
+    return _busy ? Tooltip(message: 'Locked while your set is being made', child: sw) : sw;
+  }
+
   Widget _barButton({required IconData icon, required String label, String? tooltip, VoidCallback? onPressed}) {
     final button = TextButton(
       onPressed: onPressed,
@@ -1328,11 +1348,6 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             ],
           ),
           _barButton(
-            icon: _playing ? Icons.pause : Icons.play_arrow,
-            label: _playing ? 'Pause' : 'Play',
-            onPressed: _togglePlay,
-          ),
-          _barButton(
             icon: Icons.file_download,
             label: 'Save',
             tooltip: 'Save the whole set to your Music folder',
@@ -1405,7 +1420,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   icon: _busy
                       ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70))
                       : const Icon(Icons.auto_awesome, size: 16),
-                  label: const Text('Re-Mix AI'),
+                  label: Text(_goLabel),
                 ),
               ],
             ),
@@ -1420,10 +1435,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 Icon(Icons.layers, color: _mashupMode ? kPink : Colors.white38, size: 18),
                 const SizedBox(width: 8),
                 Text(
-                  _mashupMode ? "Mashup Mode: ACTIVE" : "Mashup Mode: OFF",
+                  'Mashups',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _mashupMode ? Colors.white : Colors.white54),
                 ),
-                Switch(value: _mashupMode, activeColor: kPink, onChanged: _busy ? null : _setMode),
+                _lockableSwitch(value: _mashupMode, color: kPink, onChanged: _setMode),
                 if (_mashupMode) ...[
                   const SizedBox(width: 8),
                   Tooltip(
@@ -1433,7 +1448,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                       const Text('⚓', style: TextStyle(fontSize: 13)),
                       const SizedBox(width: 4),
                       const Text('Anchor beat', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                      Switch(value: _anchorOn, activeThumbColor: kPink, onChanged: _busy ? null : _toggleAnchor),
+                      _lockableSwitch(value: _anchorOn, color: kPink, onChanged: _toggleAnchor),
                     ]),
                   ),
                 ],
@@ -1443,8 +1458,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   child: Row(children: [
                     const Icon(Icons.tune, size: 16, color: Colors.white54),
                     const SizedBox(width: 6),
-                    Text(Tuning.use432 ? 'Tuning: 432 Hz' : 'Tuning: original',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    const Text('432 Hz tuning', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                     Switch(value: Tuning.use432, activeColor: _accent, onChanged: _toggle432),
                   ]),
                 ),
@@ -1589,13 +1603,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 ),
                 const SizedBox(width: 12),
                 Tooltip(
-                  message: 'Tape saturation + vinyl crackle on the master output, flavoured by your vibe',
+                  message: 'Warmth: gives the whole set the sound of tape and vinyl, to suit your vibe',
                   child: Row(
                     children: [
                       Text(
-                        _warmthOn
-                            ? 'Analog Warmth: ON${_vibe == null ? '' : ' (drive ${_vibe!.drive.toStringAsFixed(1)} · crackle ${(_vibe!.crackle * 100).round()}%)'}'
-                            : 'Analog Warmth: OFF',
+                        // The exact settings are detail for Pro.
+                        _warmthOn && _pro && _vibe != null
+                            ? 'Warmth (drive ${_vibe!.drive.toStringAsFixed(1)} · crackle ${(_vibe!.crackle * 100).round()}%)'
+                            : 'Warmth',
                         style: const TextStyle(color: Colors.white54, fontSize: 12),
                       ),
                       Switch(value: _warmthOn, activeColor: _accent, onChanged: _toggleWarmth),

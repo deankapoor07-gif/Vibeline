@@ -1,10 +1,42 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/services.dart' show rootBundle;
 
 import 'models.dart';
+
+/// Estimates the time left from how fast songs are finishing. Songs analysed
+/// before finish almost instantly, so those don't count towards the pace.
+class ProgressClock {
+  ProgressClock({DateTime Function()? now}) : _now = now ?? DateTime.now;
+
+  final DateTime Function() _now;
+  final List<int> _gapsMs = [];
+  DateTime? _last;
+
+  /// Call as each song finishes; returns e.g. " · about 12 min left", or an
+  /// empty string until there's enough to go on.
+  String tick(int done, int total) {
+    final now = _now();
+    if (_last != null) {
+      final gap = now.difference(_last!).inMilliseconds;
+      if (gap >= 50) {
+        _gapsMs.add(gap);
+        if (_gapsMs.length > 30) _gapsMs.removeAt(0);
+      }
+    }
+    _last = now;
+    if (_gapsMs.length < 8 || done >= total) return '';
+    final perSong = _gapsMs.reduce((a, b) => a + b) / _gapsMs.length;
+    final minutes = ((total - done) * perSong / 60000).ceil();
+    if (minutes <= 1) return ' · under a minute left';
+    if (minutes < 60) return ' · about $minutes min left';
+    final mins = minutes % 60;
+    return ' · about ${minutes ~/ 60} hr${mins == 0 ? '' : ' $mins min'} left';
+  }
+}
 
 /// Finds songs, works out which ones Dean Shazamed, and runs the Python
 /// analyser (tempo, beats, key, energy) on the ones a mix needs.
@@ -66,21 +98,55 @@ class MusicLibrary {
   /// Runs Rubber Band jobs (see prestretch.dart); one row per job.
   Stream<Map<String, dynamic>> prestretch(List<String> jobFiles) => _run(['prestretch', ...jobFiles]);
 
+  /// Longest song list sent on the command line; longer ones go in a file.
+  /// macOS allows about 1 MB, shared with everything else the app passes along.
+  static int maxArgBytes = 100 * 1024;
+
+  /// The most songs one set will listen to. A big drive can hold 20,000, and
+  /// each new song takes seconds to analyse.
+  static const maxPoolSongs = 2000;
+
+  /// Cuts a very large pool down to a size a set can get through: your
+  /// Shazamed songs and the songs on this Mac come first, then the best-ranked
+  /// songs from plugged-in drives. Keeps the pool's order within each group.
+  static List<LibraryTrack> limitPool(List<LibraryTrack> pool) {
+    bool first(LibraryTrack t) => t.shazam || !t.path.startsWith('/Volumes/');
+    final preferred = pool.where(first).toList();
+    final limit = math.min(maxPoolSongs, math.max(400, preferred.length + 100));
+    if (pool.length <= limit) return pool;
+    return [...preferred, ...pool.where((t) => !first(t))].take(limit).toList();
+  }
+
   Stream<Map<String, dynamic>> _run(List<String> args) async* {
     final script = await _scriptPath();
-    // The helper watches this app's process id and quits if the app closes.
-    // At lower priority, so playback and the screen stay smooth while it
-    // works flat out (splitting stems takes ~20 s a song).
-    final proc = await Process.start('/usr/bin/nice', ['-n', '10', python, '-I', script, ...args],
-        environment: {'VIBELINE_APP_PID': '$pid'});
-    proc.stderr.drain<void>();
-    await for (final line in proc.stdout.transform(utf8.decoder).transform(const LineSplitter())) {
-      if (line.trim().isEmpty) continue;
+    Directory? listDir;
+    try {
+      var sent = args;
+      final bytes = args.fold<int>(0, (n, a) => n + utf8.encode(a).length + 1);
+      if (args.length > 2 && bytes > maxArgBytes) {
+        listDir = await Directory.systemTemp.createTemp('noodles-list-');
+        final list = File('${listDir.path}/songs.json');
+        await list.writeAsString(jsonEncode(args.sublist(1)));
+        sent = [args.first, '@${list.path}'];
+      }
+      // The helper watches this app's process id and quits if the app closes.
+      // At lower priority, so playback and the screen stay smooth while it
+      // works flat out (splitting stems takes ~20 s a song).
+      final proc = await Process.start('/usr/bin/nice', ['-n', '10', python, '-I', script, ...sent],
+          environment: {'VIBELINE_APP_PID': '$pid'});
+      proc.stderr.drain<void>();
+      await for (final line in proc.stdout.transform(utf8.decoder).transform(const LineSplitter())) {
+        if (line.trim().isEmpty) continue;
+        try {
+          yield jsonDecode(line) as Map<String, dynamic>;
+        } catch (_) {}
+      }
+      await proc.exitCode;
+    } finally {
       try {
-        yield jsonDecode(line) as Map<String, dynamic>;
+        await listDir?.delete(recursive: true);
       } catch (_) {}
     }
-    await proc.exitCode;
   }
 
   Future<void> scan() async {

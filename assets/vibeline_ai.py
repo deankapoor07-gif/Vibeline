@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import hashlib
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".aiff", ".aif", ".flac"}
 CACHE_DIR = os.path.expanduser("~/Library/Caches/Vibeline/analysis")
@@ -229,28 +229,39 @@ def _fit_grid(ticks):
     return float(period), float(first), float(np.std(resid) if len(resid) else 0.0)
 
 
-def _beat_this(paths):
-    """Beats and downbeats from Beat This! (a modern AI beat tracker), run in
-    this process on the GPU. The older tracker got the start of the bar wrong
-    on about half of songs, which put vocal lines on the wrong beat."""
-    out = {}
-    if not paths:
-        return out
+def _beat_tracker():
+    """Beat This! (a modern AI beat tracker), run in this process on the GPU, or
+    None if it can't load. The older tracker got the start of the bar wrong on
+    about half of songs, which put vocal lines on the wrong beat."""
     try:
         import warnings
         warnings.filterwarnings("ignore")
         import torch
         from beat_this.inference import File2Beats
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        f2b = File2Beats(checkpoint_path="final0", device=device, dbn=False)
+        return File2Beats(checkpoint_path="final0", device=device, dbn=False)
     except Exception:
-        return out
+        return None
+
+
+def _track_beats(tracker, path):
+    """(beats, downbeats) for one song, or None if it can't be tracked."""
+    if tracker is None:
+        return None
+    try:
+        beats, downs = tracker(path)
+        return [float(x) for x in beats], [float(x) for x in downs]
+    except Exception:
+        return None
+
+
+def _beat_this(paths):
+    tracker = _beat_tracker() if paths else None
+    out = {}
     for p in paths:
-        try:
-            beats, downs = f2b(p)
-            out[p] = ([float(x) for x in beats], [float(x) for x in downs])
-        except Exception:
-            pass
+        bt = _track_beats(tracker, p)
+        if bt is not None:
+            out[p] = bt
     return out
 
 
@@ -389,15 +400,45 @@ def _safe_analyze(path, bt=None):
         return {"type": "analysis", "path": path, "ok": False, "error": str(e)}
 
 
+def _on_this_mac(path):
+    """False for a song whose drive is unplugged, or that macOS has moved to
+    iCloud. Reading one of those waits on a download, which can stall a whole
+    set and fill a nearly full disk."""
+    try:
+        return not os.stat(path).st_flags & 0x40000000  # SF_DATALESS
+    except OSError:
+        return False
+
+
 def cmd_analyze(paths):
     # Leave cores free for the app and the music.
     workers = max(1, min(4, (os.cpu_count() or 4) // 2))
-    misses = [p for p in paths if not os.path.exists(_cache_path(p))]
-    bts = _beat_this(misses)
+    ready = []
+    for p in paths:
+        if _on_this_mac(p):
+            ready.append(p)
+        else:
+            emit({"type": "analysis", "path": p, "ok": False, "error": "not on this Mac right now"})
+    cached = [p for p in ready if os.path.exists(_cache_path(p))]
+    known = set(cached)
+    misses = [p for p in ready if p not in known]
+    tracker = _beat_tracker() if misses else None
+    # One song at a time from start to finish, reporting each as it's done, so
+    # the count on screen keeps moving and stopping early loses nothing.
     with ProcessPoolExecutor(max_workers=workers, initializer=_guard) as pool:
-        futures = {pool.submit(_safe_analyze, p, bts.get(p)): p for p in paths}
-        for fut in as_completed(futures):
-            emit(fut.result())
+        pending = {pool.submit(_safe_analyze, p, None) for p in cached}
+
+        def report_until(most):
+            nonlocal pending
+            while len(pending) > most:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    emit(fut.result())
+
+        for p in misses:
+            report_until(workers * 2)
+            pending.add(pool.submit(_safe_analyze, p, _track_beats(tracker, p)))
+        report_until(0)
     emit({"type": "done"})
 
 
@@ -976,16 +1017,25 @@ def cmd_prestretch(job_files):
     emit({"type": "done"})
 
 
+def _expand_args(args):
+    """The app hands over very long song lists as one "@file" (a JSON list),
+    because macOS limits how much can go on a command line."""
+    if len(args) == 1 and args[0].startswith("@"):
+        with open(args[0][1:], encoding="utf-8") as fh:
+            return json.load(fh)
+    return args
+
+
 if __name__ == "__main__":
     _guard()
     if len(sys.argv) >= 3 and sys.argv[1] == "tags":
-        cmd_tags(sys.argv[2:])
+        cmd_tags(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "analyze":
-        cmd_analyze(sys.argv[2:])
+        cmd_analyze(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "separate":
-        cmd_separate(sys.argv[2:])
+        cmd_separate(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "prestretch":
-        cmd_prestretch(sys.argv[2:])
+        cmd_prestretch(_expand_args(sys.argv[2:]))
     else:
         print(__doc__)
         sys.exit(1)

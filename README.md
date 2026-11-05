@@ -7,7 +7,7 @@ instant pitch and volume control.
 
 ## What it does
 
-- **Re-Mix AI** — reads your music folder (plus your own files in the Music
+- **Make my set / Re-Mix** — reads your music folder (plus your own files in the Music
   app), favours your Shazams, pairs vocals with beats, splits stems (Demucs),
   matches key (±3 semitones) and tempo, and lays out a set. Long sets ("4 hours")
   build in the background while they play.
@@ -17,7 +17,7 @@ instant pitch and volume control.
 - **Songs panel** — your library ranked by fit; drag a song onto a card's 🎤 or
   🥁 line to replace the vocal or the beat.
 - **Sample lane** — drop sounds, loops or acapellas over any mashup.
-- **Blend Mode** — classic DJ set of whole songs (Mashup Mode off).
+- **Blend Mode** — classic DJ set of whole songs (Mashups off).
 - **432 Hz** — everything retuned to A = 432 Hz by default (switchable).
 - **Analog Warmth** — tape saturation and vinyl crackle, flavoured by the vibe.
 
