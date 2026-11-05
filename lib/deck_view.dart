@@ -99,7 +99,7 @@ class NowPlayingView extends StatefulWidget {
 class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProviderStateMixin {
   // The player reports its position every 200 ms; in between the screen
   // runs it on by the clock so the waveform and platters glide.
-  late final Ticker _ticker = createTicker((_) => setState(() {}));
+  late final Ticker _ticker;
   double _base = 0;
   DateTime _baseAt = DateTime.now();
   double _window = 4; // seconds each side of the playhead; scroll to zoom
@@ -113,6 +113,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
+    _ticker = createTicker((_) => setState(() {}));
     _base = widget.position;
     if (widget.playing) _ticker.start();
   }
@@ -137,203 +138,331 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
   @override
   Widget build(BuildContext context) {
     final pos = _pos;
-    return Column(
-      children: [
-        Row(
+    return LayoutBuilder(
+      builder: (context, box) {
+        // The decks are the star: the waveform is a slim strip underneath.
+        final waveHeight = (box.maxHeight * 0.26).clamp(56.0, 96.0);
+        final deckHeight = box.maxHeight - waveHeight - 8;
+        return Column(
           children: [
-            for (var i = 0; i < widget.decks.length; i++) ...[
-              if (i > 0) const SizedBox(width: 10),
-              Expanded(child: _Deck(widget.decks[i], pos)),
-            ],
-          ],
-        ),
-        const SizedBox(height: 10),
-        Expanded(
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-            decoration: BoxDecoration(color: const Color(0xFF0C0C11), borderRadius: BorderRadius.circular(3)),
-            child: Column(
-              children: [
-                Row(
+            if (deckHeight >= 60) ...[
+              SizedBox(
+                height: deckHeight,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(widget.heading.toUpperCase(), style: const TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54)),
-                    const Spacer(),
-                    Flexible(
-                      child: Text(
-                        widget.upNext,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: Colors.white54),
-                      ),
-                    ),
-                    if (widget.trailing != null) ...[const SizedBox(width: 10), widget.trailing!],
+                    for (var i = 0; i < widget.decks.length; i++) ...[
+                      if (i > 0) const SizedBox(width: 8),
+                      Expanded(child: _Deck(widget.decks[i], pos)),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 6),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (box.maxHeight >= 40)
+              SizedBox(
+                height: math.min(waveHeight, box.maxHeight),
+                child: _wave(pos),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _wave(double pos) => Container(
+        padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
+        decoration: BoxDecoration(color: const Color(0xFF0C0C11), borderRadius: BorderRadius.circular(3)),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    widget.heading.toUpperCase(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54),
+                  ),
+                ),
+                const SizedBox(width: 12),
                 Expanded(
-                  child: Tooltip(
-                    message: 'Scroll to zoom in and out',
-                    waitDuration: const Duration(seconds: 1),
-                    child: Listener(
-                      onPointerSignal: (e) {
-                        if (e is PointerScrollEvent) {
-                          setState(() => _window = (_window * math.pow(1.0015, e.scrollDelta.dy)).clamp(2.0, 30.0));
-                        }
-                      },
-                      child: SizedBox.expand(
-                        child: CustomPaint(
-                        painter: _WavePainter(widget.sections, widget.waves, pos, _window, widget.beats, widget.downbeats,
-                            vocal: !widget.vocalMuted, beat: !widget.beatMuted),
-                      ),
-                      ),
+                  child: Text(
+                    widget.upNext,
+                    textAlign: TextAlign.right,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, color: Colors.white54),
+                  ),
+                ),
+                if (widget.trailing != null) ...[const SizedBox(width: 10), widget.trailing!],
+              ],
+            ),
+            const SizedBox(height: 3),
+            Expanded(
+              child: Tooltip(
+                message: 'Scroll to zoom in and out',
+                waitDuration: const Duration(seconds: 1),
+                child: Listener(
+                  onPointerSignal: (e) {
+                    if (e is PointerScrollEvent) {
+                      setState(() => _window = (_window * math.pow(1.0015, e.scrollDelta.dy)).clamp(2.0, 30.0));
+                    }
+                  },
+                  child: SizedBox.expand(
+                    child: CustomPaint(
+                      painter: _WavePainter(widget.sections, widget.waves, pos, _window, widget.beats, widget.downbeats,
+                          vocal: !widget.vocalMuted, beat: !widget.beatMuted),
                     ),
                   ),
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
-      ],
-    );
-  }
+      );
 }
 
+/// A deck: a turntable, with the song's details beside it (or under it when
+/// the deck is tall and narrow, as when the Songs panel is open).
 class _Deck extends StatelessWidget {
   final DeckInfo d;
   final double pos;
   const _Deck(this.d, this.pos);
 
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, box) {
-        final roomy = box.maxWidth >= 380; // with the Songs panel open, the numbers matter more than the record
-        return Container(
-          padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
-          decoration: BoxDecoration(
-            color: kPanel,
-            border: Border(top: BorderSide(color: d.color, width: 2)),
-          ),
-          child: Row(
+  static const _pad = 10.0;
+  static const _infoWidth = 190.0;
+  static const _infoHeight = 104.0;
+
+  /// The next song's record is on the deck, but it isn't turning yet.
+  double get _spin => d.role == 'NEXT' ? 0 : pos;
+
+  Widget _turntable(double side) => SizedBox(width: side, height: side, child: CustomPaint(painter: _TurntablePainter(d.color, _spin)));
+
+  Widget _info(double width) => FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.topLeft,
+        child: SizedBox(width: math.max(width, 120), child: _details()),
+      );
+
+  Widget _details() => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              if (roomy) ...[
-                SizedBox(width: 72, height: 72, child: CustomPaint(painter: _PlatterPainter(d.color, pos))),
-                const SizedBox(width: 12),
-              ],
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(d.role, style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: d.color, fontWeight: FontWeight.w800)),
-                        const Spacer(),
-                        ?d.action,
-                      ],
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      d.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white),
-                    ),
-                    Text(
-                      d.artist,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12, color: Colors.white60),
-                    ),
-                    const SizedBox(height: 5),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        if (d.bpm.isNotEmpty)
-                          Text.rich(
-                            TextSpan(children: [
-                              TextSpan(text: d.bpm, style: const TextStyle(fontSize: 22, height: 1, fontWeight: FontWeight.w700, color: Colors.white)),
-                              const TextSpan(text: ' BPM', style: TextStyle(fontSize: 9, letterSpacing: 0.7, color: Colors.white54)),
-                            ]),
-                            style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
-                          ),
-                        if (d.keyCode.isNotEmpty) ...[
-                          const SizedBox(width: 10),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(border: Border.all(color: d.color), borderRadius: BorderRadius.circular(kCorner)),
-                            child: Text(d.keyCode, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: d.color)),
-                          ),
-                        ],
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Wrap(
-                            spacing: 8,
-                            children: [
-                              for (final (label, c) in d.tags)
-                                Text(label.toUpperCase(), style: TextStyle(fontSize: 9, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: Color.lerp(c, Colors.white, 0.25))),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+              Text(d.role, style: TextStyle(fontSize: 11, letterSpacing: 1.5, color: d.color, fontWeight: FontWeight.w800)),
+              const Spacer(),
+              ?d.action,
             ],
           ),
-        );
-      },
+          const SizedBox(height: 3),
+          Text(
+            d.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white),
+          ),
+          Text(
+            d.artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.white60),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 10,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.end,
+            children: [
+              if (d.bpm.isNotEmpty)
+                Text.rich(
+                  TextSpan(children: [
+                    TextSpan(text: d.bpm, style: const TextStyle(fontSize: 22, height: 1, fontWeight: FontWeight.w700, color: Colors.white)),
+                    const TextSpan(text: ' BPM', style: TextStyle(fontSize: 9, letterSpacing: 0.7, color: Colors.white54)),
+                  ]),
+                  style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+                ),
+              if (d.keyCode.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(border: Border.all(color: d.color), borderRadius: BorderRadius.circular(kCorner)),
+                  child: Text(d.keyCode, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: d.color)),
+                ),
+            ],
+          ),
+          if (d.tags.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Wrap(
+              spacing: 8,
+              runSpacing: 2,
+              children: [
+                for (final (label, c) in d.tags)
+                  Text(label.toUpperCase(), style: TextStyle(fontSize: 9, letterSpacing: 0.5, fontWeight: FontWeight.w700, color: Color.lerp(c, Colors.white, 0.25))),
+              ],
+            ),
+          ],
+        ],
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(_pad),
+      clipBehavior: Clip.hardEdge,
+      decoration: BoxDecoration(
+        color: kPanel,
+        border: Border(top: BorderSide(color: d.color, width: 2)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final w = box.maxWidth, h = box.maxHeight;
+          final beside = math.min(h, w - _infoWidth - _pad);
+          final above = math.min(w, h - _infoHeight - _pad);
+          if (beside >= above || above < 60) {
+            // Details beside the record.
+            final side = math.max(beside, 0.0);
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                if (side >= 60) ...[_turntable(side), const SizedBox(width: _pad)],
+                Expanded(child: LayoutBuilder(builder: (context, c) => Center(child: _info(c.maxWidth)))),
+              ],
+            );
+          }
+          // Details under the record.
+          return Column(
+            children: [
+              _turntable(above),
+              const SizedBox(height: _pad),
+              Expanded(child: _info(w)),
+            ],
+          );
+        },
+      ),
     );
   }
 }
 
-/// A record turning at 33⅓ — it turns with the music, so it stops when the
-/// set does.
-class _PlatterPainter extends CustomPainter {
+/// A record player seen from above: a metal platter with its strobe dots, a
+/// grooved record, a coloured label reading DJ, and the tonearm resting on the
+/// record. The record turns at 33⅓ with the music, so it stops when the set does.
+class _TurntablePainter extends CustomPainter {
   final Color color;
   final double pos;
-  _PlatterPainter(this.color, this.pos);
+  _TurntablePainter(this.color, this.pos);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final c = size.center(Offset.zero);
-    final r = size.shortestSide / 2;
-    canvas.drawCircle(c, r, Paint()..color = const Color(0xFF0B0B0E));
+    final side = size.shortestSide;
+    final r = side * 0.455;
+    final c = Offset(size.width / 2 - side * 0.035, size.height / 2);
+    final angle = pos * (100 / 3) / 60 * 2 * math.pi;
+
+    // Metal platter edge, with strobe dots that travel round with it.
+    canvas.drawCircle(c, r, Paint()..color = const Color(0xFF3A3A44));
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1, side * 0.006)
+        ..color = const Color(0xFF8A8A96),
+    );
+    final dots = Paint()..color = const Color(0xFFB8B8C4);
+    final dotSize = math.max(0.6, side * 0.004);
+    for (var i = 0; i < 72; i++) {
+      final a = angle + i * 2 * math.pi / 72;
+      canvas.drawCircle(c + Offset(math.cos(a), math.sin(a)) * (r * 0.965), dotSize, dots);
+    }
+
+    // The record.
+    final vinyl = r * 0.92;
+    canvas.drawCircle(c, vinyl, Paint()..color = const Color(0xFF09090B));
     final groove = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.6
-      ..color = const Color(0xFF1C1C22);
-    for (var g = r * 0.42; g < r - 2; g += 2.4) {
+      ..color = const Color(0xFF24242B);
+    final step = math.max(2.2, r * 0.028);
+    for (var g = r * 0.42; g < vinyl - 2; g += step) {
       canvas.drawCircle(c, g, groove);
     }
+    // Light catching the vinyl: it stays still while the record turns under it.
     canvas.drawCircle(
       c,
-      r - 1,
+      vinyl,
       Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = color,
+        ..shader = SweepGradient(
+          center: Alignment.center,
+          colors: const [Color(0x00FFFFFF), Color(0x24FFFFFF), Color(0x00FFFFFF), Color(0x00FFFFFF), Color(0x24FFFFFF), Color(0x00FFFFFF), Color(0x00FFFFFF)],
+          stops: const [0.05, 0.12, 0.2, 0.55, 0.62, 0.7, 1],
+        ).createShader(Rect.fromCircle(center: c, radius: vinyl)),
     );
-    final angle = pos * (100 / 3) / 60 * 2 * math.pi;
+
+    // The label, turning with the record so you can see it spin.
     canvas.save();
     canvas.translate(c.dx, c.dy);
     canvas.rotate(angle);
-    canvas.drawCircle(Offset.zero, r * 0.36, Paint()..color = color);
-    // A mark on the label and a light catching the vinyl show it turning.
-    canvas.drawRect(Rect.fromLTWH(-1.5, -r * 0.34, 3, r * 0.16), Paint()..color = kInk.withValues(alpha: 0.7));
-    canvas.drawLine(
-      Offset(0, -r * 0.46),
-      Offset(0, -r * 0.9),
+    final label = r * 0.38;
+    canvas.drawCircle(Offset.zero, label, Paint()..color = color);
+    canvas.drawCircle(
+      Offset.zero,
+      label * 0.9,
       Paint()
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.round
-        ..color = Colors.white.withValues(alpha: 0.18),
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(0.6, label * 0.018)
+        ..color = kInk.withValues(alpha: 0.35),
+    );
+    final dj = TextPainter(
+      text: TextSpan(
+        text: 'DJ',
+        style: TextStyle(fontSize: label * 0.95, height: 1, fontWeight: FontWeight.w900, letterSpacing: -label * 0.02, color: kInk),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    dj.paint(canvas, Offset(-dj.width / 2, -dj.height / 2));
+    canvas.restore();
+
+    // The tonearm: base at the top right, its head resting on the record.
+    final pivot = Offset(c.dx + r * 0.98, c.dy - r * 0.88);
+    final elbow = Offset(c.dx + r * 0.86, c.dy + r * 0.12);
+    final head = Offset(c.dx + r * 0.42, c.dy + r * 0.58);
+    final armWidth = math.max(1.5, side * 0.014);
+    final arm = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = armWidth
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = const Color(0xFFD6D6DE);
+    final shadow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = armWidth
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = Colors.black.withValues(alpha: 0.5);
+    Path armPath(Offset by) => Path()
+      ..moveTo(pivot.dx + by.dx, pivot.dy + by.dy)
+      ..lineTo(elbow.dx + by.dx, elbow.dy + by.dy)
+      ..lineTo(head.dx + by.dx, head.dy + by.dy);
+    canvas.drawPath(armPath(Offset(side * 0.008, side * 0.012)), shadow);
+    canvas.drawPath(armPath(Offset.zero), arm);
+    // Headshell.
+    canvas.save();
+    canvas.translate(head.dx, head.dy);
+    canvas.rotate((head - elbow).direction);
+    final shell = side * 0.055;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromCenter(center: Offset.zero, width: shell * 1.5, height: shell * 0.8), const Radius.circular(1)),
+      Paint()..color = const Color(0xFFD6D6DE),
     );
     canvas.restore();
-    canvas.drawCircle(c, 3, Paint()..color = kInk);
+    // Base.
+    canvas.drawCircle(pivot, side * 0.042, Paint()..color = const Color(0xFF55555F));
+    canvas.drawCircle(pivot, side * 0.022, Paint()..color = const Color(0xFFD6D6DE));
   }
 
   @override
-  bool shouldRepaint(_PlatterPainter old) => old.pos != pos || old.color != color;
+  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color;
 }
 
 /// The mix around the playhead, drawn the way DJ software does: the overall
