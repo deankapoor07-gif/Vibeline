@@ -200,6 +200,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     }
     _set('Reading your music folder…');
     await _library.scan();
+    await _library.loadKnown(); // so the Songs panel can show BPM and key
     _scanned = true;
     _set(
       '${_library.tracks.length} songs found · ${_library.shazamMatches} of them are Shazams. '
@@ -232,6 +233,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     try {
       if (!_scanned) await _scan();
       if (_phase == Phase.error) return;
+      _stopLearning();
+      _set('Getting your songs ready…');
+      await _library.loadKnown();
       var prompt = _currentVibePrompt;
       if (seed == null) {
         final found = songFromPrompt(prompt, _library.tracks);
@@ -332,14 +336,24 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // A theme night: every song that fits the theme (they sing), plus the
     // best of the rest of the library as beats.
     final singers = ranked.where(vibe.fits).toList();
-    final pool = MusicLibrary.limitPool({
+    final wanted = anchorOn ? math.max(240, count * 6) : math.max(80, count * 4);
+    final candidates = MusicLibrary.limitPool({
       ...singers,
-      ...ranked.where((t) => !vibe.themed || !vibe.fits(t)).take(anchorOn ? math.max(240, count * 6) : math.max(80, count * 4)),
+      ...ranked.where((t) => !vibe.themed || !vibe.fits(t)).take(wanted),
     }.toList());
+    // Start from songs already known; only wait for new ones if there aren't
+    // enough, or not enough that suit what was asked for. The rest are learned
+    // in the background once the set is made.
+    final bool Function(LibraryTrack)? suits = vibe.themed
+        ? vibe.fits
+        : vibe.genres.isNotEmpty
+            ? (t) => vibe.genres.contains(genreFamily(t.genre))
+            : null;
     final clock = ProgressClock();
-    await _library.analyze(pool, (done, total) {
+    await _library.analyze(MusicLibrary.songsToAnalyseFirst(candidates, minReady: wanted, matchMin: count * 4, matches: suits), (done, total) {
       _set('Listening to songs for "${vibe.summary}"… $done / $total${clock.tick(done, total)}', progress: total == 0 ? null : done / total);
     });
+    final pool = candidates.where((t) => t.analysis != null).toList();
     fitThemeTempo(vibe, singers);
     _set('Pairing vocals with beats…');
     final session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
@@ -396,10 +410,35 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _set('Couldn\'t find vocals and beats that fit together for that vibe. Try a broader vibe.', phase: Phase.error);
       return;
     }
+    _learnInBackground(candidates);
     setState(() => _background = session.mashups.length < count
         ? 'Prepared ${session.mashups.length} of $count mashups — ran out of good pairings for this vibe'
         : null);
     _scheduleRelayout();
+  }
+
+  int _learnRun = 0;
+  String? _learnStatus;
+
+  void _stopLearning() {
+    _learnRun++;
+    _learnStatus = null;
+  }
+
+  /// Analyses the songs a set didn't wait for, ready for the next one.
+  Future<void> _learnInBackground(List<LibraryTrack> songs) async {
+    _stopLearning();
+    final run = _learnRun;
+    final clock = ProgressClock();
+    try {
+      await _library.analyze(songs, (done, total) {
+        final left = clock.tick(done, total);
+        if (mounted && run == _learnRun && done % 5 == 0) {
+          setState(() => _learnStatus = 'Learning more of your songs for next time: $done / $total$left');
+        }
+      }, gentle: true, stop: () => run != _learnRun);
+    } catch (_) {}
+    if (mounted && run == _learnRun) setState(() => _learnStatus = null);
   }
 
   void _scheduleRelayout() {
@@ -686,6 +725,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   Future<void> _analyseAll() async {
     final todo = _library.tracks.where((t) => t.analysis == null).toList();
     if (todo.isEmpty) return;
+    _stopLearning();
     setState(() => _analyseStatus = 'Analysing ${todo.length} songs…');
     final clock = ProgressClock();
     await _library.analyze(todo, (d, t) {
@@ -1281,7 +1321,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final statusLine = [_status, if (_readiness.isNotEmpty) _readiness].join('   ·   ');
+    final statusLine = [_status, if (_readiness.isNotEmpty) _readiness, if (_learnStatus != null) _learnStatus!].join('   ·   ');
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 50,

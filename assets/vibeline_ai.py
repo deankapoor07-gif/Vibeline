@@ -100,6 +100,12 @@ def cmd_tags(folders):
     seen = set()
     for folder in folders:
         _scan(folder, seen, old, new)
+    # Remember songs on a drive that isn't plugged in right now, so plugging it
+    # back in doesn't mean reading every file again.
+    for path, entry in old.items():
+        if path not in new and path.startswith("/Volumes/"):
+            if not os.path.isdir("/".join(path.split("/")[:3])):
+                new[path] = entry
     try:
         os.makedirs(os.path.dirname(TAGS_CACHE), exist_ok=True)
         with open(TAGS_CACHE + ".tmp", "w") as f:
@@ -187,14 +193,26 @@ def _refine_phase(audio, beats):
     differently for every song; two songs mixed with different offsets flam.
     Slide the grid to where onset strength (spectral flux) peaks on average."""
     import numpy as np
-    import essentia.standard as es
-    hop = 64
-    w, fft, c2p = es.Windowing(type="hann"), es.FFT(), es.CartesianToPolar()
-    od = es.OnsetDetection(method="flux")
-    env = np.array([od(*c2p(fft(w(fr)))) for fr in es.FrameGenerator(audio, frameSize=1024, hopSize=hop, startFromZero=True)])
-    env = np.maximum(env - np.convolve(env, np.ones(61) / 61, "same"), 0)
+    hop, size = 64, 1024
+    frames = max(0, (len(audio) - size) // hop + 1)
     b = np.asarray(beats)
     base = ((b * SR - 512) / hop).astype(int)
+    # Only the moments near a beat count, so only those are worked out (the
+    # search below reaches 42 frames each way, and its average 30 further).
+    wanted = np.zeros(frames + 1, dtype=np.int8)
+    reach = 42 + 31
+    for c in base:
+        wanted[max(0, c - reach):min(frames, c + reach + 1)] = 1
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], wanted))))
+    env = np.zeros(frames)
+    window = np.hanning(size + 1)[:-1].astype(np.float32)
+    for start, stop in zip(edges[::2], edges[1::2]):
+        first = max(0, start - 1)  # flux compares with the frame before
+        slices = np.lib.stride_tricks.sliding_window_view(audio[first * hop:(stop - 1) * hop + size], size)[::hop]
+        mags = np.abs(np.fft.rfft(slices * window, axis=1))
+        flux = np.abs(np.diff(mags, axis=0)).sum(axis=1)
+        env[first + 1:first + 1 + len(flux)] = flux
+    env = np.maximum(env - np.convolve(env, np.ones(61) / 61, "same"), 0)
     best_k, best_v = 0, -1.0
     for k in range(-42, 43):  # about ±60 ms
         idx = base + k
@@ -237,9 +255,9 @@ def _beat_tracker():
         import warnings
         warnings.filterwarnings("ignore")
         import torch
-        from beat_this.inference import File2Beats
+        from beat_this.inference import Audio2Beats
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        return File2Beats(checkpoint_path="final0", device=device, dbn=False)
+        return Audio2Beats(checkpoint_path="final0", device=device, dbn=False)
     except Exception:
         return None
 
@@ -249,7 +267,10 @@ def _track_beats(tracker, path):
     if tracker is None:
         return None
     try:
-        beats, downs = tracker(path)
+        # Decoded the same way as the rest of the analysis: left to itself the
+        # beat tracker can't open m4a files and some mp3s.
+        import essentia.standard as es
+        beats, downs = tracker(es.MonoLoader(filename=path, sampleRate=SR)(), SR)
         return [float(x) for x in beats], [float(x) for x in downs]
     except Exception:
         return None
@@ -356,17 +377,7 @@ def analyze_file(path, bt=None):
     key = _ENHARMONIC.get(key, key)
     camelot = _CAMELOT.get((key, scale), "")
 
-    rms_db = float(20 * np.log10(np.sqrt(np.mean(audio ** 2)) + 1e-9))
-    # Concert pitch the recording sits at (Hz, within half a semitone of 440).
-    tuning = float(np.median(es.TuningFrequencyExtractor(frameSize=4096, hopSize=4096)(audio)))
     danceability, _ = es.Danceability(sampleRate=SR)(audio)
-
-    # Small waveform for the timeline card.
-    n_peaks = 160
-    hop = max(1, len(audio) // n_peaks)
-    peaks = [float(np.abs(audio[i * hop:(i + 1) * hop]).max()) for i in range(n_peaks)]
-    pmax = max(peaks) or 1.0
-    waveform = [round(p / pmax, 3) for p in peaks]
 
     result.update({
         "ok": True,
@@ -382,10 +393,7 @@ def analyze_file(path, bt=None):
         "key": f"{key} {scale}",
         "camelot": camelot,
         "keyStrength": float(key_strength),
-        "loudnessDb": round(rms_db, 2),
-        "tuning": round(tuning, 2),
         "danceability": round(float(danceability), 3),
-        "waveform": waveform,
     })
     os.makedirs(CACHE_DIR, exist_ok=True)
     with open(cache, "w") as fh:
@@ -410,9 +418,25 @@ def _on_this_mac(path):
         return False
 
 
+def cmd_known(paths):
+    """Hands back songs already analysed, without opening any audio, so a set
+    can start straight away from them."""
+    for p in paths:
+        if not _on_this_mac(p):
+            continue
+        try:
+            with open(_cache_path(p)) as fh:
+                emit(json.load(fh))
+        except (OSError, ValueError):
+            pass
+    emit({"type": "done"})
+
+
 def cmd_analyze(paths):
     # Leave cores free for the app and the music.
     workers = max(1, min(4, (os.cpu_count() or 4) // 2))
+    # Fewer when working in the background while a set plays.
+    workers = min(workers, int(os.environ.get("VIBELINE_WORKERS") or workers))
     ready = []
     for p in paths:
         if _on_this_mac(p):
@@ -1030,6 +1054,8 @@ if __name__ == "__main__":
     _guard()
     if len(sys.argv) >= 3 and sys.argv[1] == "tags":
         cmd_tags(_expand_args(sys.argv[2:]))
+    elif len(sys.argv) >= 3 and sys.argv[1] == "known":
+        cmd_known(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "analyze":
         cmd_analyze(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "separate":

@@ -4,6 +4,36 @@ import 'mashup.dart';
 import 'mashup_widgets.dart';
 import 'models.dart';
 
+enum SongSort { bestFit, bpm, key, title }
+
+/// Songs in order of a sort; songs not analysed yet go last.
+void sortSongs(List<LibraryTrack> rows, SongSort sort, {double Function(LibraryTrack)? fit}) {
+  int title(LibraryTrack a, LibraryTrack b) => a.title.toLowerCase().compareTo(b.title.toLowerCase());
+  int byNumber(LibraryTrack a, LibraryTrack b, double? Function(LibraryTrack) of) {
+    final x = of(a), y = of(b);
+    if (x == null || y == null) return x == y ? title(a, b) : (x == null ? 1 : -1);
+    return x == y ? title(a, b) : x.compareTo(y);
+  }
+
+  switch (sort) {
+    case SongSort.bestFit:
+      rows.sort((a, b) => fit!(b).compareTo(fit(a)));
+    case SongSort.bpm:
+      rows.sort((a, b) => byNumber(a, b, (t) => t.analysis?.steadyBpm));
+    case SongSort.key:
+      rows.sort((a, b) => byNumber(a, b, (t) => camelotOrder(t.analysis?.camelot)));
+    case SongSort.title:
+      rows.sort(title);
+  }
+}
+
+/// 1A, 1B, 2A… so songs that mix well sit together; null if there's no key.
+double? camelotOrder(String? camelot) {
+  final m = RegExp(r'^(\d+)([AB])$').firstMatch(camelot ?? '');
+  if (m == null) return null;
+  return int.parse(m[1]!) + (m[2] == 'B' ? 0.5 : 0);
+}
+
 /// Your songs, ready to drop into a mashup as its vocal or its beat. Songs are
 /// ranked by how well they'd fit the mashup you're working on.
 class LibraryPanel extends StatefulWidget {
@@ -44,6 +74,8 @@ class LibraryPanel extends StatefulWidget {
   State<LibraryPanel> createState() => _LibraryPanelState();
 }
 
+const kTealText = Color(0xFF7FE3D4);
+
 class _Fit {
   final double score;
   final String keyLabel;
@@ -55,7 +87,7 @@ class _Fit {
 class _LibraryPanelState extends State<LibraryPanel> {
   String _q = '';
   bool _shazamOnly = false;
-  bool _bestFit = true;
+  SongSort _sort = SongSort.bestFit;
   // Fit scores are worked out once per (mashup, role, analysed-song count).
   Object? _fitKey;
   Map<String, _Fit?> _fits = {};
@@ -103,12 +135,8 @@ class _LibraryPanelState extends State<LibraryPanel> {
       if (m != null && (identical(t, m.vocal) || identical(t, m.beat))) return false;
       return q.isEmpty || t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.genre.toLowerCase().contains(q);
     }).toList();
-    if (_bestFit) {
-      double rank(LibraryTrack t) => fits.containsKey(t.path) ? (fits[t.path]?.score ?? -50) : -100;
-      rows.sort((a, b) => rank(b).compareTo(rank(a)));
-    } else {
-      rows.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
-    }
+    double rank(LibraryTrack t) => fits.containsKey(t.path) ? (fits[t.path]?.score ?? -50) : -100;
+    sortSongs(rows, _sort, fit: rank);
     final analysed = widget.tracks.where((t) => t.analysis != null).length;
 
     return Container(
@@ -197,12 +225,18 @@ class _LibraryPanelState extends State<LibraryPanel> {
             child: Wrap(
               spacing: 6,
               children: [
-                FilterChip(
-                  label: const Text('Best fit first', style: TextStyle(fontSize: 10)),
-                  selected: _bestFit,
-                  onSelected: (v) => setState(() => _bestFit = v),
-                  visualDensity: VisualDensity.compact,
-                ),
+                for (final (sort, label) in const [
+                  (SongSort.bestFit, 'Best fit'),
+                  (SongSort.bpm, 'BPM'),
+                  (SongSort.key, 'Key'),
+                  (SongSort.title, 'A–Z'),
+                ])
+                  ChoiceChip(
+                    label: Text(label, style: const TextStyle(fontSize: 10)),
+                    selected: _sort == sort,
+                    onSelected: (_) => setState(() => _sort = sort),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 FilterChip(
                   label: const Text('My Shazams', style: TextStyle(fontSize: 10)),
                   selected: _shazamOnly,
@@ -261,7 +295,6 @@ class _LibraryPanelState extends State<LibraryPanel> {
       t.artist,
       if (t.genre.isNotEmpty) t.genre,
       if (t.year > 0) '${t.year}',
-      if (a != null) '${a.steadyBpm.toStringAsFixed(0)} BPM · ${a.camelot}',
     ].join(' · ');
     final tile = Container(
       padding: const EdgeInsets.fromLTRB(12, 5, 4, 5),
@@ -281,6 +314,9 @@ class _LibraryPanelState extends State<LibraryPanel> {
                     ),
                 ]),
                 Text(details, style: const TextStyle(fontSize: 10, color: Colors.white54), overflow: TextOverflow.ellipsis),
+                if (a != null)
+                  Text('${a.steadyBpm.toStringAsFixed(0)} BPM · ${a.key}${a.camelot.isEmpty ? '' : ' · ${a.camelot}'}',
+                      style: const TextStyle(fontSize: 10, color: kTealText)),
                 if (_m != null)
                   Text(
                     !known

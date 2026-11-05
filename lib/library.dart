@@ -117,9 +117,31 @@ class MusicLibrary {
     return [...preferred, ...pool.where((t) => !first(t))].take(limit).toList();
   }
 
-  Stream<Map<String, dynamic>> _run(List<String> args) async* {
+  /// What to analyse before a set can start, given what's already known:
+  /// enough songs that suit the request ([matches]), then enough overall. The
+  /// rest can wait for the background. Keeps the pool's order.
+  static List<LibraryTrack> songsToAnalyseFirst(
+    List<LibraryTrack> pool, {
+    required int minReady,
+    int matchMin = 0,
+    bool Function(LibraryTrack)? matches,
+  }) {
+    bool waiting(LibraryTrack t) => t.analysis == null && !t.analysisTried;
+    final first = <LibraryTrack>[];
+    if (matches != null) {
+      final have = pool.where((t) => t.analysis != null && matches(t)).length;
+      first.addAll(pool.where((t) => waiting(t) && matches(t)).take(math.max(0, matchMin - have)));
+    }
+    final ready = pool.where((t) => t.analysis != null).length;
+    final chosen = first.toSet();
+    first.addAll(pool.where((t) => waiting(t) && !chosen.contains(t)).take(math.max(0, minReady - ready - first.length)));
+    return first;
+  }
+
+  Stream<Map<String, dynamic>> _run(List<String> args, {bool gentle = false}) async* {
     final script = await _scriptPath();
     Directory? listDir;
+    Process? running;
     try {
       var sent = args;
       final bytes = args.fold<int>(0, (n, a) => n + utf8.encode(a).length + 1);
@@ -133,7 +155,8 @@ class MusicLibrary {
       // At lower priority, so playback and the screen stay smooth while it
       // works flat out (splitting stems takes ~20 s a song).
       final proc = await Process.start('/usr/bin/nice', ['-n', '10', python, '-I', script, ...sent],
-          environment: {'VIBELINE_APP_PID': '$pid'});
+          environment: {'VIBELINE_APP_PID': '$pid', if (gentle) 'VIBELINE_WORKERS': '2'});
+      running = proc;
       proc.stderr.drain<void>();
       await for (final line in proc.stdout.transform(utf8.decoder).transform(const LineSplitter())) {
         if (line.trim().isEmpty) continue;
@@ -143,13 +166,44 @@ class MusicLibrary {
       }
       await proc.exitCode;
     } finally {
+      running?.kill(); // if whoever was listening stopped early
       try {
         await listDir?.delete(recursive: true);
       } catch (_) {}
     }
   }
 
+  bool _knownLoaded = false;
+
+  /// Loads the results for every song analysed on an earlier day (quick: no
+  /// audio is opened). Only does the work once per search for songs.
+  Future<void> loadKnown() async {
+    if (_knownLoaded) return;
+    final todo = {for (final t in tracks) if (t.analysis == null) t.path: t};
+    if (todo.isNotEmpty) {
+      await for (final row in _run(['known', ...todo.keys])) {
+        if (row['type'] != 'analysis') continue;
+        final t = todo[row['path']];
+        if (t != null) _applyAnalysis(t, row);
+      }
+    }
+    _knownLoaded = true;
+  }
+
+  void _applyAnalysis(LibraryTrack t, Map<String, dynamic> row) {
+    t.analysisTried = true;
+    t.level = (row['loudnessDb'] as num?)?.toDouble();
+    t.tuningHz = (row['tuning'] as num?)?.toDouble();
+    t.waveform = ((row['waveform'] as List?) ?? const []).map((e) => (e as num).toDouble()).toList();
+    if (row['ok'] == true) {
+      try {
+        t.analysis = Analysis.fromJson(row)..pinTo(t.stems);
+      } catch (_) {}
+    }
+  }
+
   Future<void> scan() async {
+    _knownLoaded = false;
     final previous = {for (final t in tracks) t.path: t.analysis};
     tracks.clear();
     final folders = wholeMac
@@ -185,29 +239,22 @@ class MusicLibrary {
   }
 
   /// Analyses any of [wanted] not yet analysed. Cached on disk by the script,
-  /// so songs only take time the first time they're used.
-  Future<void> analyze(List<LibraryTrack> wanted, void Function(int done, int total) onProgress) async {
+  /// so songs only take time the first time they're used. [gentle] leaves more
+  /// of the Mac free; [stop] is checked as each song finishes.
+  Future<void> analyze(List<LibraryTrack> wanted, void Function(int done, int total) onProgress,
+      {bool gentle = false, bool Function()? stop}) async {
     final todo = wanted.where((t) => t.analysis == null && !t.analysisTried).toList();
     if (todo.isEmpty) return;
     final byPath = {for (final t in todo) t.path: t};
     var done = 0;
     onProgress(0, todo.length);
-    await for (final row in _run(['analyze', ...byPath.keys])) {
+    await for (final row in _run(['analyze', ...byPath.keys], gentle: gentle)) {
       if (row['type'] != 'analysis') continue;
       done++;
       final t = byPath[row['path']];
-      if (t != null) {
-        t.analysisTried = true;
-        t.level = (row['loudnessDb'] as num?)?.toDouble();
-        t.tuningHz = (row['tuning'] as num?)?.toDouble();
-        t.waveform = ((row['waveform'] as List?) ?? const []).map((e) => (e as num).toDouble()).toList();
-        if (row['ok'] == true) {
-          try {
-            t.analysis = Analysis.fromJson(row)..pinTo(t.stems);
-          } catch (_) {}
-        }
-      }
+      if (t != null) _applyAnalysis(t, row);
       onProgress(done, todo.length);
+      if (stop?.call() ?? false) break;
     }
   }
 
