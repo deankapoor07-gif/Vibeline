@@ -560,6 +560,68 @@ class MashupMaker {
     return s / (b - a);
   }
 
+  /// The stretch of a song to sing, as (first bar, length in bars). A section
+  /// that starts on a fresh line always wins if there's a good one, so a vocal
+  /// doesn't come in halfway through a verse; only a song with none falls back
+  /// to the best section anywhere.
+  static (int, int)? pickVocalSection({
+    required int firstBar,
+    required int lastBar,
+    required int room,
+    required double Function(int bar) vocalAt,
+    required double Function(int from, int to) energy,
+    required bool Function(int from, int to) lurches,
+  }) {
+    for (final freshOnly in const [true, false]) {
+      var best = -1e9;
+      var bestStart = -1, bestLen = 0;
+      for (final len in const [48, 40, 32, 24, 16]) {
+        if (len > room) continue;
+        for (var s = firstBar; s + len <= lastBar; s++) {
+          if ((s - firstBar) % 4 != 0) continue;
+          if (vocalAt(s) < 0.35) continue;
+          final isFresh = vocalAt(s - 1) < 0.45; // a new line, not mid-sentence
+          if (freshOnly && !isFresh) continue;
+          // End where the singer has finished the line (quiet for a moment
+          // after), so the vocal can leave smoothly rather than mid-word.
+          final after = vocalAt(s + len), after2 = vocalAt(s + len + 1);
+          final endsClean = after < 0.3 && after2 < 0.45
+              ? 0.9
+              : after < 0.45
+                  ? 0.2
+                  : -0.9;
+          // Avoid sections with a long stretch of no singing (solos, breakdowns).
+          var gap = 0, longest = 0;
+          var sung = 0.0;
+          for (var b = s; b < s + len; b++) {
+            final v = vocalAt(b);
+            sung += v;
+            gap = v < 0.15 ? gap + 1 : 0;
+            longest = math.max(longest, gap);
+          }
+          if (longest >= 6 || lurches(s, s + len + 2)) continue;
+          // Prefer sections that open into more energy (verse → chorus feel).
+          final lift = (energy(s + len ~/ 2, s + len) - energy(s, s + 4)).clamp(-0.2, 0.5);
+          final score = 1.2 * (sung / len) +
+              0.5 * energy(s, s + len) +
+              0.4 * lift +
+              (isFresh ? 0.4 : 0.0) +
+              endsClean +
+              len / 48 -
+              (s - firstBar) / 400 -
+              (longest >= 3 ? 0.4 : 0.0);
+          if (score > best) {
+            best = score;
+            bestStart = s;
+            bestLen = len;
+          }
+        }
+        if (bestStart >= 0 && best > 1.2) return (bestStart, bestLen);
+      }
+    }
+    return null;
+  }
+
   /// Chooses the vocal section (verse into chorus, starting on a fresh line)
   /// and the part of the beat it rides on.
   bool _placeVocal(Mashup m) {
@@ -579,52 +641,16 @@ class MashupMaker {
       return false;
     }
 
-    var best = -1e9;
-    var bestStart = -1, bestLen = 0;
-    for (final len in const [48, 40, 32, 24, 16]) {
-      if (len > beatRoom) continue;
-      for (var s = vg.firstBar; s + len <= vg.lastBar; s++) {
-        if ((s - vg.firstBar) % 4 != 0) continue;
-        final first = _vocalAt(m, s);
-        if (first < 0.35) continue;
-        final fresh = _vocalAt(m, s - 1) < 0.45 ? 0.4 : 0.0; // a new line, not mid-sentence
-        // End where the singer has finished the line (quiet for a moment
-        // after), so the vocal can leave smoothly rather than mid-word.
-        final after = _vocalAt(m, s + len), after2 = _vocalAt(m, s + len + 1);
-        final endsClean = after < 0.3 && after2 < 0.45
-            ? 0.9
-            : after < 0.45
-                ? 0.2
-                : -0.9;
-        // Avoid sections with a long stretch of no singing (solos, breakdowns).
-        var gap = 0, longest = 0;
-        for (var b = s; b < s + len; b++) {
-          gap = _vocalAt(m, b) < 0.15 ? gap + 1 : 0;
-          longest = math.max(longest, gap);
-        }
-        if (longest >= 6 || lurches(s, s + len + 2)) continue;
-        final gapPenalty = longest >= 3 ? 0.4 : 0.0;
-        // Prefer sections that open into more energy (verse → chorus feel).
-        final open = _meanEnergy(vg, s, s + 4);
-        final later = _meanEnergy(vg, s + len ~/ 2, s + len);
-        final lift = (later - open).clamp(-0.2, 0.5);
-        final score = 1.2 * _meanVocal(m, s, s + len) +
-            0.5 * _meanEnergy(vg, s, s + len) +
-            0.4 * lift +
-            fresh +
-            endsClean +
-            len / 48 -
-            (s - vg.firstBar) / 400 -
-            gapPenalty;
-        if (score > best) {
-          best = score;
-          bestStart = s;
-          bestLen = len;
-        }
-      }
-      if (bestStart >= 0 && best > 1.2) break;
-    }
-    if (bestStart < 0) return false;
+    final picked = pickVocalSection(
+      firstBar: vg.firstBar,
+      lastBar: vg.lastBar,
+      room: beatRoom,
+      vocalAt: (bar) => _vocalAt(m, bar),
+      energy: (from, to) => _meanEnergy(vg, from, to),
+      lurches: lurches,
+    );
+    if (picked == null) return false;
+    final (bestStart, bestLen) = picked;
     m
       ..vocalStart = bestStart
       ..vocalBars = bestLen
