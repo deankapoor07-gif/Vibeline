@@ -258,7 +258,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
       );
 }
 
-/// A deck: the song across the top, then its numbers and a turntable. The
+/// A deck: the song across the top, then its numbers and a jog wheel. The
 /// right-hand deck is a mirror image of the left, so the mixer sits between.
 class _Deck extends StatelessWidget {
   final DeckInfo d;
@@ -269,10 +269,10 @@ class _Deck extends StatelessWidget {
 
   static const _numbersWidth = 150.0;
 
-  /// A record only turns while it's the one playing.
+  /// A jog wheel only turns while it's the one playing.
   double get _spin => d.role == 'NEXT' || !d.loaded ? 0 : pos;
 
-  /// The BPM sits here only when there's no turntable to show it in the middle.
+  /// The BPM sits here only when there's no jog wheel to show it in the middle.
   Widget _numbers({required bool showBpm}) => FittedBox(
         fit: BoxFit.scaleDown,
         alignment: mirrored ? Alignment.topRight : Alignment.topLeft,
@@ -356,7 +356,7 @@ class _Deck extends StatelessWidget {
               child: SizedBox(
                 width: side,
                 height: side,
-                child: CustomPaint(painter: _TurntablePainter(_spin, d.color, bpm: d.bpm, loaded: d.loaded, lit: lit)),
+                child: CustomPaint(painter: _JogWheelPainter(_spin, d.color, bpm: d.bpm, loaded: d.loaded, lit: lit)),
               ),
             ),
           );
@@ -367,121 +367,88 @@ class _Deck extends StatelessWidget {
   }
 }
 
-/// A record player seen from above: a metal platter with its strobe dots, a
-/// grooved record, a plain grey label showing the BPM (DJ on an empty deck), and the tonearm resting on the
-/// record. The record turns at 33⅓ with the music, so it stops when the set does.
-/// The record itself stays black and silver, like the real thing; the deck's
-/// colour only shows as a glowing ring round the record while it's playing.
-class _TurntablePainter extends CustomPainter {
+/// A digital jog wheel seen from above: a dark housing with a ring of position
+/// dots, a light ring in the deck's colour that's on only while the deck can be
+/// heard, a platter with a turning marker, and the BPM in the hub (DJ on an empty
+/// deck). It turns at 33⅓ with the music, so it stops when the set does.
+class _JogWheelPainter extends CustomPainter {
   final double pos;
   final Color color;
   final String bpm;
   final bool loaded;
   final bool lit;
-  _TurntablePainter(this.pos, this.color, {this.bpm = '', this.loaded = true, this.lit = false});
+  _JogWheelPainter(this.pos, this.color, {this.bpm = '', this.loaded = true, this.lit = false});
 
   @override
   void paint(Canvas canvas, Size size) {
     final side = size.shortestSide;
-    final r = side * 0.455;
-    final c = Offset(size.width / 2 - side * 0.035, size.height / 2);
+    final r = side * 0.485;
+    final c = size.center(Offset.zero);
     final angle = pos * (100 / 3) / 60 * 2 * math.pi;
-
-    // Metal platter edge, with strobe dots that travel round with it.
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()
-        ..shader = SweepGradient(
-          colors: const [Color(0xFF55555F), Color(0xFF2C2C34), Color(0xFF4A4A54), Color(0xFF2C2C34), Color(0xFF55555F)],
-        ).createShader(Rect.fromCircle(center: c, radius: r)),
-    );
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(1, side * 0.006)
-        ..color = const Color(0xFF8A8A96),
-    );
-    final dots = Paint()..color = const Color(0xFFB8B8C4);
-    final dotSize = math.max(0.6, side * 0.004);
-    for (var i = 0; i < 72; i++) {
-      final a = angle + i * 2 * math.pi / 72;
-      canvas.drawCircle(c + Offset(math.cos(a), math.sin(a)) * (r * 0.965), dotSize, dots);
-    }
-
-    // The record.
-    final vinyl = r * 0.92;
-    canvas.drawCircle(c, vinyl, Paint()..color = const Color(0xFF09090B));
-    final groove = Paint()
+    Offset around(double a, double radius) => c + Offset(math.cos(a), math.sin(a)) * radius;
+    Paint line(double width, Color colour) => Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.6
-      ..color = const Color(0xFF24242B);
-    final step = math.max(2.2, r * 0.028);
-    for (var g = r * 0.42; g < vinyl - 2; g += step) {
-      canvas.drawCircle(c, g, groove);
+      ..strokeWidth = width
+      ..color = colour;
+
+    // The housing, with position dots that travel round as the deck plays.
+    canvas.drawCircle(c, r, Paint()..color = const Color(0xFF18181F));
+    canvas.drawCircle(c, r, line(math.max(1, side * 0.004), const Color(0xFF3A3A44)));
+    final dots = Paint()..color = const Color(0xFF6E6E7A);
+    final dotSize = math.max(0.6, side * 0.0032);
+    for (var i = 0; i < 90; i++) {
+      canvas.drawCircle(around(angle + i * 2 * math.pi / 90, r * 0.945), dotSize, dots);
     }
-    // Light catching the vinyl: it stays still while the record turns under it.
+
+    // The platter, with light falling across it that stays still as it turns.
+    final platter = r * 0.86;
+    final platterRect = Rect.fromCircle(center: c, radius: platter);
     canvas.drawCircle(
       c,
-      vinyl,
+      platter,
       Paint()
-        ..shader = SweepGradient(
-          center: Alignment.center,
-          colors: const [Color(0x00FFFFFF), Color(0x24FFFFFF), Color(0x00FFFFFF), Color(0x00FFFFFF), Color(0x24FFFFFF), Color(0x00FFFFFF), Color(0x00FFFFFF)],
-          stops: const [0.05, 0.12, 0.2, 0.55, 0.62, 0.7, 1],
-        ).createShader(Rect.fromCircle(center: c, radius: vinyl)),
+        ..shader = const RadialGradient(
+          center: Alignment(-0.25, -0.35),
+          radius: 1.05,
+          colors: [Color(0xFF2A2A33), Color(0xFF111116), Color(0xFF08080B)],
+          stops: [0, 0.6, 1],
+        ).createShader(platterRect),
+    );
+    final texture = line(0.5, const Color(0x12FFFFFF));
+    for (var g = r * 0.42; g < platter - 3; g += math.max(3, r * 0.04)) {
+      canvas.drawCircle(c, g, texture);
+    }
+
+    // The marker that shows the platter turning.
+    canvas.drawLine(
+      around(angle, platter * 0.56),
+      around(angle, platter * 0.94),
+      Paint()
+        ..strokeWidth = math.max(2, side * 0.008)
+        ..strokeCap = StrokeCap.round
+        ..color = !loaded
+            ? Colors.white24
+            : lit
+                ? Color.lerp(color, Colors.white, 0.35)!
+                : Colors.white70,
     );
 
-    // The ring round the record: lit in the deck's colour, otherwise a dark line.
-    final ringWidth = math.max(1.5, side * 0.007);
+    // The light ring: lit in the deck's colour, otherwise a dark line.
+    final ringWidth = math.max(2.0, side * 0.012);
     if (lit) {
       canvas.drawCircle(
         c,
-        vinyl,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = ringWidth * 3
-          ..color = color.withValues(alpha: 0.55)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(3, side * 0.016)),
+        platter,
+        line(ringWidth * 2.5, color.withValues(alpha: 0.6))..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(3, side * 0.018)),
       );
     }
-    canvas.drawCircle(
-      c,
-      vinyl,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = ringWidth
-        ..color = lit ? Color.lerp(color, Colors.white, 0.2)! : const Color(0xFF1C1C22),
-    );
+    canvas.drawCircle(c, platter, line(ringWidth, lit ? Color.lerp(color, Colors.white, 0.15)! : const Color(0xFF2A2A32)));
 
-    // The label, turning with the record so you can see it spin.
-    canvas.save();
-    canvas.translate(c.dx, c.dy);
-    canvas.rotate(angle);
-    final label = r * 0.38;
-    canvas.drawCircle(Offset.zero, label, Paint()..color = const Color(0xFF3A3A44));
-    canvas.drawCircle(
-      Offset.zero,
-      label * 0.9,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(0.6, label * 0.018)
-        ..color = Colors.white.withValues(alpha: 0.18),
-    );
-    // A small mark on the label's rim, so you can see the record turning.
-    canvas.drawLine(
-      Offset(0, -label * 0.96),
-      Offset(0, -label * 0.8),
-      Paint()
-        ..strokeWidth = math.max(1.5, label * 0.035)
-        ..strokeCap = StrokeCap.round
-        ..color = Colors.white70,
-    );
-    canvas.restore();
+    // The hub, with writing that stays upright so it can be read.
+    final hub = r * 0.4;
+    canvas.drawCircle(c, hub, Paint()..color = const Color(0xFF0B0B0F));
+    canvas.drawCircle(c, hub, line(math.max(1, side * 0.004), const Color(0xFF3A3A44)));
 
-    // The writing stays upright so it can be read while the record spins.
     void write(String text, double fontSize, double y, Color colour, {FontWeight weight = FontWeight.w800, double spacing = 0}) {
       final t = TextPainter(
         text: TextSpan(
@@ -494,52 +461,15 @@ class _TurntablePainter extends CustomPainter {
     }
 
     if (loaded && bpm.isNotEmpty) {
-      write(bpm, label * 0.5, -label * 0.1, Colors.white);
-      write('BPM', label * 0.17, label * 0.34, Colors.white60, weight: FontWeight.w700, spacing: label * 0.02);
+      write(bpm, hub * 0.5, -hub * 0.1, Colors.white, weight: FontWeight.w700);
+      write('BPM', hub * 0.17, hub * 0.34, Colors.white60, weight: FontWeight.w700, spacing: hub * 0.02);
     } else {
-      write('DJ', label * 0.95, 0, loaded ? Colors.white : Colors.white38, weight: FontWeight.w900, spacing: -label * 0.02);
+      write('DJ', hub * 0.7, 0, loaded ? Colors.white : Colors.white38, weight: FontWeight.w900, spacing: -hub * 0.02);
     }
-
-    // The tonearm: base at the top right, its head resting on the record.
-    final pivot = Offset(c.dx + r * 0.98, c.dy - r * 0.88);
-    final elbow = Offset(c.dx + r * 0.86, c.dy + r * 0.12);
-    final head = Offset(c.dx + r * 0.42, c.dy + r * 0.58);
-    final armWidth = math.max(1.5, side * 0.014);
-    final arm = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = armWidth
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = const Color(0xFFD6D6DE);
-    final shadow = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = armWidth
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = Colors.black.withValues(alpha: 0.5);
-    Path armPath(Offset by) => Path()
-      ..moveTo(pivot.dx + by.dx, pivot.dy + by.dy)
-      ..lineTo(elbow.dx + by.dx, elbow.dy + by.dy)
-      ..lineTo(head.dx + by.dx, head.dy + by.dy);
-    canvas.drawPath(armPath(Offset(side * 0.008, side * 0.012)), shadow);
-    canvas.drawPath(armPath(Offset.zero), arm);
-    // Headshell.
-    canvas.save();
-    canvas.translate(head.dx, head.dy);
-    canvas.rotate((head - elbow).direction);
-    final shell = side * 0.055;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Rect.fromCenter(center: Offset.zero, width: shell * 1.5, height: shell * 0.8), const Radius.circular(1)),
-      Paint()..color = const Color(0xFFD6D6DE),
-    );
-    canvas.restore();
-    // Base.
-    canvas.drawCircle(pivot, side * 0.042, Paint()..color = const Color(0xFF55555F));
-    canvas.drawCircle(pivot, side * 0.022, Paint()..color = const Color(0xFFD6D6DE));
   }
 
   @override
-  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color || old.bpm != bpm || old.loaded != loaded || old.lit != lit;
+  bool shouldRepaint(_JogWheelPainter old) => old.pos != pos || old.color != color || old.bpm != bpm || old.loaded != loaded || old.lit != lit;
 }
 
 /// The mix around the playhead, drawn the way DJ software does: the overall
