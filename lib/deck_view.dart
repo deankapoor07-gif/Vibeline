@@ -338,7 +338,7 @@ class _Deck extends StatelessWidget {
               child: SizedBox(
                 width: side,
                 height: side,
-                child: CustomPaint(painter: _TurntablePainter(d.color, _spin, loaded: d.loaded)),
+                child: CustomPaint(painter: _TurntablePainter(_spin, loaded: d.loaded)),
               ),
             ),
           );
@@ -350,13 +350,14 @@ class _Deck extends StatelessWidget {
 }
 
 /// A record player seen from above: a metal platter with its strobe dots, a
-/// grooved record, a coloured label reading DJ, and the tonearm resting on the
+/// grooved record, a plain grey label reading DJ, and the tonearm resting on the
 /// record. The record turns at 33⅓ with the music, so it stops when the set does.
+/// It looks the same loaded or empty, apart from the DJ lighting up: Dean wants
+/// proper turntables, with the deck's colour kept to the details beside them.
 class _TurntablePainter extends CustomPainter {
-  final Color color;
   final double pos;
   final bool loaded;
-  _TurntablePainter(this.color, this.pos, {this.loaded = true});
+  _TurntablePainter(this.pos, {this.loaded = true});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -410,19 +411,19 @@ class _TurntablePainter extends CustomPainter {
     canvas.translate(c.dx, c.dy);
     canvas.rotate(angle);
     final label = r * 0.38;
-    canvas.drawCircle(Offset.zero, label, Paint()..color = loaded ? color : const Color(0xFF3A3A44));
+    canvas.drawCircle(Offset.zero, label, Paint()..color = const Color(0xFF3A3A44));
     canvas.drawCircle(
       Offset.zero,
       label * 0.9,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = math.max(0.6, label * 0.018)
-        ..color = kInk.withValues(alpha: 0.35),
+        ..color = Colors.white.withValues(alpha: 0.18),
     );
     final dj = TextPainter(
       text: TextSpan(
         text: 'DJ',
-        style: TextStyle(fontSize: label * 0.95, height: 1, fontWeight: FontWeight.w900, letterSpacing: -label * 0.02, color: loaded ? kInk : Colors.white38),
+        style: TextStyle(fontSize: label * 0.95, height: 1, fontWeight: FontWeight.w900, letterSpacing: -label * 0.02, color: loaded ? Colors.white : Colors.white38),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -468,7 +469,7 @@ class _TurntablePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color || old.loaded != loaded;
+  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.loaded != loaded;
 }
 
 /// The mix around the playhead, drawn the way DJ software does: the overall
