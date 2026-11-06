@@ -169,11 +169,29 @@ const _rockNRollArtists = [
 ];
 
 /// Broad genre families, from the genre tag in each file.
+/// Styles a set can move between without the mood lurching.
+const _relatedFamilies = {
+  ('reggae', 'rnb'), ('reggae', 'hiphop'), ('reggae', 'latin'), ('reggae', 'pop'),
+  ('rnb', 'hiphop'), ('rnb', 'pop'), ('rnb', 'dance'), ('rnb', 'jazz'),
+  ('hiphop', 'pop'), ('hiphop', 'dance'), ('hiphop', 'latin'),
+  ('dance', 'pop'), ('dance', 'latin'), ('latin', 'pop'),
+  ('rock', 'pop'), ('rock', 'country'), ('country', 'pop'),
+};
+
+/// How far apart two songs' styles feel: 0 the same, 1 related (or a song with
+/// no useful genre tag, which can't be judged), 2 a jump in mood.
+int feelGap(String genreA, String genreB) {
+  final a = genreFamily(genreA), b = genreFamily(genreB);
+  if (a == b && a != 'other') return 0;
+  if (a == 'other' || b == 'other') return 1;
+  return _relatedFamilies.contains((a, b)) || _relatedFamilies.contains((b, a)) ? 1 : 2;
+}
+
 String genreFamily(String genre) {
   final g = genre.toLowerCase();
   if (g.contains('hip') || g.contains('rap') || g.contains('trap')) return 'hiphop';
   if (g.contains('r&b') || g.contains('soul') || g.contains('funk')) return 'rnb';
-  if (g.contains('house') || g.contains('dance') || g.contains('electr') || g.contains('techno') || g.contains('edm')) {
+  if (g.contains('house') || g.contains('dance') || g.contains('disco') || g.contains('electr') || g.contains('techno') || g.contains('edm')) {
     return 'dance';
   }
   if (g.contains('rock') || g.contains('alternative') || g.contains('metal') || g.contains('punk') || g.contains('indie')) {

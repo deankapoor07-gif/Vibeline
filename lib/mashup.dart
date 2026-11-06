@@ -431,9 +431,23 @@ class MashupMaker {
   static bool isUsed(Set<String> used, LibraryTrack t) => used.contains(t.path) || used.contains(songKey(t));
   static String songKey(LibraryTrack t) => t.songKey;
 
+  /// What it costs a set to move from beat [from] to beat [to]: same BPM isn't
+  /// the same feel, so the style and energy count too. Null if it's a jump in
+  /// mood, unless [loose] (when nothing connected is left, a set beats no set).
+  static double? moveCost(LibraryTrack? from, LibraryTrack to, {bool loose = false}) {
+    if (from == null) return 0;
+    final gap = feelGap(from.genre, to.genre);
+    if (gap >= 2 && !loose) return null;
+    final a = from.analysis?.energy, b = to.analysis?.energy;
+    return (gap >= 2 ? 3.0 : gap * 0.5) + (a == null || b == null ? 0 : 1.5 * (a - b).abs());
+  }
+
   /// Best pairing to follow [prev] at set position [p]: its beat must be
-  /// within 6% of the tempo the set is at, so the blend can match it.
-  _Pair? pickNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected) {
+  /// within 6% of the tempo the set is at, so the blend can match it, and feel
+  /// connected to the beat before it ([after], or [prev]'s).
+  _Pair? pickNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected,
+      {LibraryTrack? after, bool looseFeel = false}) {
+    final before = after ?? prev?.beat;
     final target = targetTempo(p);
     _Pair? best;
     var bestScore = -1e9;
@@ -441,7 +455,9 @@ class MashupMaker {
     for (final x in ranked) {
       if (isUsed(used, x.vocal) || isUsed(used, x.beat) || rejected.contains(x.key)) continue;
       if (prev != null && (math.log(x.tempo / prev.tempo)).abs() > math.log(1.06)) continue;
-      var s = x.score - 9 * (math.log(x.tempo / target)).abs() - 2 * (x.bGrid.energy - vibe.energyAt(p)).abs();
+      final move = moveCost(before, x.beat, loose: looseFeel);
+      if (move == null) continue;
+      var s = x.score - move - 9 * (math.log(x.tempo / target)).abs() - 2 * (x.bGrid.energy - vibe.energyAt(p)).abs();
       if (prev != null) s += keyCompat(prev.beatGrid.camelot, x.bGrid.camelot);
       if (s > bestScore) {
         bestScore = s;
@@ -1346,13 +1362,17 @@ class MashupMaker {
     int? promoted;
     var promotedLoop = 0;
     var bestScore = -1e9;
+    // The home groove has to suit what it plays between, not just be strong.
+    final homeNeighbours = [if (mid > 0) ...[ms[mid].beat, ms[mid + 1].beat], if (ms.isNotEmpty) ms.last.beat];
     for (var i = 1; i < (mid > 0 ? mid : ms.length - 1); i++) {
       final b = ms[i].beat, g = ms[i].beatGrid;
       if (!(b.stems?.hasCurves ?? false) || !solidAnchor(b) || weakBeat(b)) continue;
+      final gaps = [for (final n in homeNeighbours) feelGap(b.genre, n.genre)];
+      if (gaps.any((x) => x >= 2)) continue;
       final (loop, score) = loopStartFor(b, g);
       final (drumsOut, bassOut) = dropouts(b, g, loop, loop + AnchorBeat.loopBars);
       if (drumsOut > 0.02 || bassOut > 0.1) continue;
-      final sc = score + 0.05 * (b.stems!.relative('bass') ?? -10);
+      final sc = score + 0.05 * (b.stems!.relative('bass') ?? -10) - 0.2 * gaps.fold(0, (a, x) => a + x);
       if (sc > bestScore) {
         bestScore = sc;
         promoted = i;
@@ -1842,6 +1862,7 @@ class MashupSession {
   /// …and beats whose grooves have gaps, skipped until the set runs short.
   final Set<String> _gappy = {};
   bool _relaxed = false;
+  bool _looseFeel = false; // nothing connected left: allow a jump in mood rather than end the set
   bool cancelled = false;
   int target = 0;
 
@@ -1866,8 +1887,9 @@ class MashupSession {
   _Pair? _anchoredPair(_Pair p) =>
       _anchoredCache.putIfAbsent(p.key, () => anchor == null ? null : maker.anchored(p, anchor!));
 
-  /// Best unused pairing that fits the anchor (anchor mode).
-  _Pair? _pickAnchored(double pos, Set<String> used) {
+  /// Best unused pairing that fits the anchor (anchor mode) and feels
+  /// connected to the beat before it ([after]).
+  _Pair? _pickAnchored(double pos, Set<String> used, LibraryTrack? after) {
     _Pair? best;
     var bestScore = -1e9;
     var looked = 0;
@@ -1875,9 +1897,11 @@ class MashupSession {
       if (MashupMaker.isUsed(used, x.vocal) || MashupMaker.isUsed(used, x.beat) || _rejected.contains(x.key)) continue;
       if (_badBeats.contains(x.beat.path) || _gappy.contains(x.beat.path)) continue;
       if (anchor != null && (_sameSong(x.beat, anchor!.track) || _sameSong(x.vocal, anchor!.track))) continue;
+      final move = MashupMaker.moveCost(after, x.beat, loose: _looseFeel);
+      if (move == null) continue;
       final a = _anchoredPair(x);
       if (a == null) continue;
-      final s = a.score - 2 * (a.bGrid.energy - maker.vibe.energyAt(pos)).abs();
+      final s = a.score - move - 2 * (a.bGrid.energy - maker.vibe.energyAt(pos)).abs();
       if (s > bestScore) {
         bestScore = s;
         best = a;
@@ -2004,6 +2028,11 @@ class MashupSession {
     if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
     while (!cancelled && mashups.length < target) {
       if (misses >= (anchorMode ? 12 : 6)) {
+        if (!_looseFeel) {
+          _looseFeel = true;
+          misses = 0;
+          continue;
+        }
         // Anchor mode: rather than end the set short, allow beats with small
         // gaps once the unbroken ones run out.
         if (!anchorMode || _relaxed) break;
@@ -2019,7 +2048,10 @@ class MashupSession {
       final batch = mashups.length < 2 ? 2 : 4;
       for (var k = 0; k < batch && mashups.length + picks.length < target; k++) {
         final p = (mashups.length + picks.length) / math.max(1, target - 1);
-        final pick = anchorMode ? _pickAnchored(p, used) : maker.pickNext(_ranked, prevSim, p, used, _rejected);
+        final after = picks.isNotEmpty ? picks.last.beat : (mashups.isNotEmpty ? mashups.last.beat : (anchorMode ? anchor?.track : null));
+        final pick = anchorMode
+            ? _pickAnchored(p, used, after)
+            : maker.pickNext(_ranked, prevSim, p, used, _rejected, after: after, looseFeel: _looseFeel);
         if (pick == null) break;
         if (!anchorMode && prevTempo > 0 && (math.log(pick.tempo / prevTempo)).abs() > math.log(1.06)) break;
         picks.add(pick);
@@ -2030,6 +2062,10 @@ class MashupSession {
         prevSim = null; // later picks in the batch chain on tempo only
       }
       if (picks.isEmpty) {
+        if (!_looseFeel) {
+          _looseFeel = true;
+          continue;
+        }
         if (anchorMode && !_relaxed) {
           misses = 99;
           continue;
@@ -2068,8 +2104,8 @@ class MashupSession {
   Future<Mashup?> _another(MusicLibrary lib, Mashup? prev, double p, Set<String> avoid, void Function(String) onStatus) async {
     for (var attempt = 0; attempt < 6; attempt++) {
       final pick = anchorMode
-          ? _pickAnchored(p, {..._used, ...avoid})
-          : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected);
+          ? _pickAnchored(p, {..._used, ...avoid}, prev?.beat ?? anchor?.track)
+          : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected, looseFeel: true);
       if (pick == null) return null;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
       final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : _build(pick);
