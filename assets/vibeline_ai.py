@@ -32,6 +32,21 @@ _CAMELOT = {
 _ENHARMONIC = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
 
 
+def _quiet_crashes():
+    """A damaged song can crash the decoder, which is planned for: the song is
+    skipped and everything carries on. Leave quietly, so macOS doesn't put a
+    "Python quit unexpectedly" box in front of the user. A plain C exit is used
+    because Python's own signal handlers can't run during a crash."""
+    import ctypes
+    import signal
+    libc = ctypes.CDLL(None)
+    libc.signal.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    libc.signal.restype = ctypes.c_void_p
+    leave = ctypes.cast(libc._exit, ctypes.c_void_p).value
+    for s in (signal.SIGSEGV, signal.SIGBUS, signal.SIGILL, signal.SIGABRT, signal.SIGFPE):
+        libc.signal(int(s), leave)
+
+
 def _guard():
     """Run politely and never outlive the app: lower priority, and exit as soon
     as Vibeline is closed (otherwise a half-finished stem split would keep the
@@ -266,6 +281,12 @@ def _beat_tracker():
         return None
 
 
+def _worker_start():
+    """Every worker process: polite, tied to the app, and quiet if a song crashes it."""
+    _guard()
+    _quiet_crashes()
+
+
 def _decode_to_file(path, out):
     """Runs in its own process: a damaged file can crash the decoder outright."""
     import essentia.standard as es
@@ -284,7 +305,7 @@ class _Decoder:
         import numpy as np
         import tempfile
         if self._pool is None:
-            self._pool = ProcessPoolExecutor(max_workers=1, initializer=_guard)
+            self._pool = ProcessPoolExecutor(max_workers=1, initializer=_worker_start)
         fd, out = tempfile.mkstemp(prefix="noodles-decode-", suffix=".npy")
         os.close(fd)
         try:
@@ -515,7 +536,7 @@ def cmd_analyze(paths):
     decoder = _Decoder()
     # One song at a time from start to finish, reporting each as it's done, so
     # the count on screen keeps moving and stopping early loses nothing.
-    pool = ProcessPoolExecutor(max_workers=workers, initializer=_guard)
+    pool = ProcessPoolExecutor(max_workers=workers, initializer=_worker_start)
     pending = {}  # future -> (song, its beats, the pool it's in)
     retry = []  # songs that were in a pool when something crashed it
 
@@ -540,7 +561,7 @@ def cmd_analyze(paths):
                     retry.append((p, bt))
                     if owner is pool:
                         pool.shutdown(wait=False)
-                        pool = ProcessPoolExecutor(max_workers=workers, initializer=_guard)
+                        pool = ProcessPoolExecutor(max_workers=workers, initializer=_worker_start)
 
     try:
         for p in cached:
@@ -554,7 +575,7 @@ def cmd_analyze(paths):
             submit(p, bt)
         report_until(0)
         for p, bt in retry:
-            alone = ProcessPoolExecutor(max_workers=1, initializer=_guard)
+            alone = ProcessPoolExecutor(max_workers=1, initializer=_worker_start)
             try:
                 emit(alone.submit(_safe_analyze, p, bt).result())
             except BrokenProcessPool:
