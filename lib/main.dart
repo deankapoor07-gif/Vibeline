@@ -109,6 +109,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   bool _libraryOpen = true;
   // The mixer between the decks.
   double _vocalFader = kFaderHome, _beatFader = kFaderHome, _crossfader = 0, _master = 0;
+  final _eqVocal = [0.0, 0.0, 0.0], _eqBeat = [0.0, 0.0, 0.0]; // low, mid, high
   int? _libTarget;
   bool _libAsVocal = true;
   String? _analyseStatus;
@@ -1355,6 +1356,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       beatFader: _beatFader,
       crossfader: _crossfader,
       master: _master,
+      eqVocal: _eqVocal,
+      eqBeat: _eqBeat,
       muteVocal: _muteVocal,
       muteBeat: _muteBeat,
       fx: _fx,
@@ -1364,6 +1367,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       onBeatFader: (v) => _live(() => _beatFader = v),
       onCrossfader: (v) => _live(() => _crossfader = v),
       onMaster: (v) => _live(() => _master = v),
+      onEq: (vocal, band, v) {
+        setState(() => (vocal ? _eqVocal : _eqBeat)[band] = v);
+        _mixer.setEq(_eqVocal.map(eqDb).toList(), _eqBeat.map(eqDb).toList());
+      },
       onMuteVocal: () => _setMute(vocal: !_muteVocal),
       onMuteBeat: () => _setMute(beat: !_muteBeat),
       onKnob: () => setState(() {}),

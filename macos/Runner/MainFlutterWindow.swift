@@ -112,6 +112,14 @@ final class MixerChannel {
     case "liveMap":
       player.live = TimelinePlayer.LiveMap(args)
       result(nil)
+    case "eq":
+      func gains(_ key: String) -> [Float] {
+        let v = (args[key] as? [Double])?.map { Float($0) } ?? []
+        return v.count == 3 ? v : [0, 0, 0]
+      }
+      player.eqVocal = gains("vocal")
+      player.eqBeat = gains("beat")
+      result(nil)
     case "colourFx":
       let kind = ColourFX.Kind(rawValue: (args["kind"] as? Int) ?? 0) ?? .filter
       player.colourBeat.kind = kind
@@ -864,12 +872,17 @@ final class TimelinePlayer {
   private let engine = AVAudioEngine()
   private let beatBus = AVAudioMixerNode()
   private let voxBus = AVAudioMixerNode()
-  private let voxGain = AVAudioUnitEQ(numberOfBands: 1)
-  private let beatGain = AVAudioUnitEQ(numberOfBands: 1)
+  private let voxGain = AVAudioUnitEQ(numberOfBands: 3)
+  private let beatGain = AVAudioUnitEQ(numberOfBands: 3)
   private let master = AVAudioMixerNode()
   private let limiter = TimelinePlayer.makeLimiter()
   private var voxDb = Smoothed()
   private var beatDb = Smoothed()
+  /// The mixer's EQ knobs in dB: low, mid, high. Live only, like the faders.
+  var eqVocal: [Float] = [0, 0, 0]
+  var eqBeat: [Float] = [0, 0, 0]
+  private var voxEq = [Smoothed(), Smoothed(), Smoothed()]
+  private var beatEq = [Smoothed(), Smoothed(), Smoothed()]
 
   // Live effects: a Colour FX knob on each layer, Beat FX on the master.
   let colourBeat = ColourFX(sr: 44100)
@@ -911,6 +924,8 @@ final class TimelinePlayer {
       master: FXUnit.make(FXUnit.beatDesc, beatFX.process))
     Self.wire(engine, beatBus: beatBus, beatGain: beatGain, voxBus: voxBus, voxGain: voxGain,
       master: master, limiter: limiter, format: format, fx: fx)
+    Self.setUpEq(voxGain)
+    Self.setUpEq(beatGain)
     // All player nodes are created up front: attaching nodes to a running
     // engine stalls audio (and, on this app's shared thread, the screen).
     for _ in 0..<16 {
@@ -937,7 +952,7 @@ final class TimelinePlayer {
     voxGain: AVAudioUnitEQ, master: AVAudioMixerNode, limiter: AVAudioUnitEffect,
     format: AVAudioFormat, fx: (beat: AVAudioNode, vox: AVAudioNode, master: AVAudioNode)? = nil
   ) {
-    for g in [voxGain, beatGain] { g.bands[0].bypass = true }
+    for g in [voxGain, beatGain] { g.bands.forEach { $0.bypass = true } }
     [beatBus, beatGain, voxBus, voxGain, master, limiter].forEach { engine.attach($0) }
     if let fx { [fx.beat, fx.vox, fx.master].forEach { engine.attach($0) } }
     func chain(_ nodes: [AVAudioNode?]) {
@@ -951,6 +966,23 @@ final class TimelinePlayer {
     chain([voxBus, voxGain, catcher, fx?.vox, master])
     chain([master, fx?.master, limiter, engine.mainMixerNode])
     engine.mainMixerNode.outputVolume = ceiling
+  }
+
+  /// The three bands of a channel's EQ, flat until a knob moves. Saving a set
+  /// never comes through here, so the knobs don't change the saved mix.
+  static func setUpEq(_ g: AVAudioUnitEQ) {
+    let b = g.bands
+    b[0].filterType = .lowShelf
+    b[0].frequency = 250
+    b[1].filterType = .parametric
+    b[1].frequency = 1000
+    b[1].bandwidth = 2
+    b[2].filterType = .highShelf
+    b[2].frequency = 3500
+    for band in b {
+      band.gain = 0
+      band.bypass = false
+    }
   }
 
   /// The limiter holds peaks at full scale, but saving to AAC (and the
@@ -974,6 +1006,10 @@ final class TimelinePlayer {
     let (vdb, bdb) = live.at(p)
     voxGain.globalGain = voxDb.toward(vdb, 0.25)
     beatGain.globalGain = beatDb.toward(bdb, 0.25)
+    for i in 0..<3 {
+      if voxEq[i].value != eqVocal[i] { voxGain.bands[i].gain = voxEq[i].toward(eqVocal[i], 0.25) }
+      if beatEq[i].value != eqBeat[i] { beatGain.bands[i].gain = beatEq[i].toward(eqBeat[i], 0.25) }
+    }
     Self.syncBeat(beatFX, beatGrid, p)
     if !manualBeat { autoBeat = Self.applyCue(beatFX, live.cue(at: p), wasOn: autoBeat) }
   }

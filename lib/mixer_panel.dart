@@ -23,6 +23,10 @@ double masterDb(double v) {
   return v >= 0 ? v * 6 : v * 40;
 }
 
+/// An EQ knob (-1..1) as a level: the middle leaves that range alone, full
+/// right adds 6 dB and full left all but removes it. Live only, like the faders.
+double eqDb(double v) => v >= 0 ? v * 6 : v * 26;
+
 /// What the crossfader takes off each layer: full left is only the vocal, full
 /// right only the beat, and the middle leaves both alone.
 (double vocalDb, double beatDb) crossfadeDb(double x) {
@@ -34,10 +38,12 @@ double masterDb(double v) {
 class MixerPanel extends StatelessWidget {
   final bool hasVocal;
   final double vocalFader, beatFader, crossfader, master;
+  final List<double> eqVocal, eqBeat; // knobs for low, mid, high (-1..1)
   final bool muteVocal, muteBeat;
   final FxSettings fx;
   final double meterVocal, meterBeat;
   final void Function(double) onVocalFader, onBeatFader, onCrossfader, onMaster;
+  final void Function(bool vocal, int band, double value) onEq;
   final VoidCallback onMuteVocal, onMuteBeat, onKnob;
 
   const MixerPanel({
@@ -47,6 +53,8 @@ class MixerPanel extends StatelessWidget {
     required this.beatFader,
     required this.crossfader,
     required this.master,
+    required this.eqVocal,
+    required this.eqBeat,
     required this.muteVocal,
     required this.muteBeat,
     required this.fx,
@@ -56,12 +64,28 @@ class MixerPanel extends StatelessWidget {
     required this.onBeatFader,
     required this.onCrossfader,
     required this.onMaster,
+    required this.onEq,
     required this.onMuteVocal,
     required this.onMuteBeat,
     required this.onKnob,
   });
 
-  static const _width = 236.0, _minHeight = 262.0;
+  static const _width = 252.0, _minHeight = 300.0;
+
+  /// A channel's HI, MID and LOW knobs (bands run low, mid, high underneath).
+  Widget _eq(String name, bool vocal, Color c) {
+    final knobs = vocal ? eqVocal : eqBeat;
+    Widget knob(String label, String range, int band) => Tooltip(
+          message: '$name $range. Left cuts it, right lifts it. Double-click to put it back. Saved mixes are not affected.',
+          waitDuration: const Duration(seconds: 1),
+          child: Knob(label: label, value: knobs[band], bipolar: true, accent: c, size: 34, onChanged: (v) => onEq(vocal, band, v)),
+        );
+    return Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+      knob('HI', 'highs', 2),
+      knob('MID', 'mids', 1),
+      knob('LOW', 'lows', 0),
+    ]);
+  }
 
   Widget _channel(String name, Color c, double value, void Function(double) on, double meter, {required bool meterFirst}) {
     final m = _Meter(meter);
@@ -78,19 +102,22 @@ class MixerPanel extends StatelessWidget {
   Widget _master() => Tooltip(
         message: 'Master: the overall volume. Double-click to put it back. Saved mixes are not affected.',
         waitDuration: const Duration(seconds: 1),
-        child: Knob(label: 'MASTER\nLEVEL', value: master, bipolar: true, accent: kRigAmber, onChanged: onMaster),
+        child: Knob(label: 'MASTER', value: master, bipolar: true, accent: kRigAmber, size: 44, onChanged: onMaster),
       );
 
   Widget _body() {
     final title = fx.colour.label.toUpperCase();
     if (!hasVocal) {
       return Column(children: [
+        _eq('Music', false, kTeal),
+        const SizedBox(height: 8),
         Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
           Knob(
-            label: '$title\nBEAT',
+            label: title,
             value: fx.beatKnob,
             bipolar: true,
             accent: kTeal,
+            size: 44,
             onChanged: (v) {
               fx.beatKnob = v;
               fx.sendColour();
@@ -117,13 +144,20 @@ class MixerPanel extends StatelessWidget {
         const SizedBox(width: 6),
         const Text('BEAT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: kTeal)),
       ]),
-      const SizedBox(height: 10),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(child: _eq('Vocal', true, kPink)),
+        Container(width: 1, height: 40, color: kLine),
+        Expanded(child: _eq('Beat', false, kTeal)),
+      ]),
+      const SizedBox(height: 6),
       Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
         Knob(
-          label: '$title\nVOCAL',
+          label: title,
           value: fx.vocalKnob,
           bipolar: true,
           accent: kPink,
+          size: 44,
           onChanged: (v) {
             fx.vocalKnob = v;
             fx.sendColour();
@@ -132,10 +166,11 @@ class MixerPanel extends StatelessWidget {
         ),
         _master(),
         Knob(
-          label: '$title\nBEAT',
+          label: title,
           value: fx.beatKnob,
           bipolar: true,
           accent: kTeal,
+          size: 44,
           onChanged: (v) {
             fx.beatKnob = v;
             fx.sendColour();

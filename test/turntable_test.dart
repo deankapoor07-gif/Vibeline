@@ -46,6 +46,8 @@ void main() {
                   beatFader: kFaderHome,
                   crossfader: 0,
                   master: 0,
+                  eqVocal: const [0, 0, 0],
+                  eqBeat: const [0, 0, 0],
                   muteVocal: false,
                   muteBeat: false,
                   fx: FxSettings(Mixer()),
@@ -55,6 +57,7 @@ void main() {
                   onBeatFader: (_) {},
                   onCrossfader: (_) {},
                   onMaster: (_) {},
+                  onEq: (_, _, _) {},
                   onMuteVocal: () {},
                   onMuteBeat: () {},
                   onKnob: () {},
@@ -67,6 +70,13 @@ void main() {
       expect(t.takeException(), isNull);
     });
   }
+
+  test('EQ: the middle leaves that range alone, full left all but removes it', () {
+    expect(eqDb(0), 0);
+    expect(eqDb(1), 6);
+    expect(eqDb(-1), -26);
+    expect(eqDb(-0.5), -13);
+  });
 
   test('master: the middle leaves the level alone, full left is silent', () {
     expect(masterDb(0), 0);

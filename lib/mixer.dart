@@ -40,6 +40,10 @@ class Mixer {
   /// {vocal: [{start, end, cents, db}], beat: [{start, end, db}]}.
   Future<void> setLiveMap(Map<String, dynamic> live) => _channel.invokeMethod('liveMap', live);
 
+  /// The mixer's EQ: [vocal] and [beat] each hold low, mid and high in dB.
+  Future<void> setEq(List<double> vocal, List<double> beat) =>
+      _channel.invokeMethod('eq', {'vocal': vocal, 'beat': beat});
+
   /// Colour FX: [kind] 0 filter, 1 crush, 2 noise, 3 gate/comp; a knob per
   /// layer from -1 to 1 (0 = off).
   Future<void> setColourFx(int kind, double beat, double vocal) =>

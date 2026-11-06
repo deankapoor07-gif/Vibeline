@@ -380,8 +380,9 @@ class Knob extends StatelessWidget {
   final bool bipolar;
   final Color accent;
   final ValueChanged<double>? onChanged;
+  final double size;
 
-  const Knob({super.key, required this.label, required this.value, required this.bipolar, required this.accent, this.onChanged});
+  const Knob({super.key, required this.label, required this.value, required this.bipolar, required this.accent, this.onChanged, this.size = 54});
 
   double get _min => bipolar ? -1 : 0;
 
@@ -402,9 +403,9 @@ class Knob extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(width: 54, height: 54, child: CustomPaint(painter: _KnobPainter(value, bipolar, accent))),
-              const SizedBox(height: 4),
-              Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white60)),
+              SizedBox(width: size, height: size, child: CustomPaint(painter: _KnobPainter(value, bipolar, accent))),
+              SizedBox(height: size < 40 ? 1 : 4),
+              Text(label, textAlign: TextAlign.center, style: TextStyle(fontSize: size < 40 ? 8 : 10, fontWeight: FontWeight.bold, color: Colors.white60)),
             ],
           ),
         ),
@@ -420,20 +421,22 @@ class _KnobPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final c = size.center(Offset.zero);
-    final r = size.width / 2 - 4;
+    final k = size.width / 54; // everything scales with the knob
+    final r = size.width / 2 - 4 * k;
+    final stroke = 4 * k;
     const start = math.pi * 0.75, sweep = math.pi * 1.5;
     final rect = Rect.fromCircle(center: c, radius: r);
     final track = Paint()
       ..color = Colors.white12
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
+      ..strokeWidth = stroke
       ..strokeCap = StrokeCap.round;
     canvas.drawArc(rect, start, sweep, false, track);
     final f = bipolar ? (value + 1) / 2 : value; // 0..1 around the dial
     final arc = Paint()
       ..color = accent
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
+      ..strokeWidth = stroke
       ..strokeCap = StrokeCap.round;
     if (bipolar) {
       final mid = start + sweep / 2;
@@ -441,12 +444,12 @@ class _KnobPainter extends CustomPainter {
     } else {
       canvas.drawArc(rect, start, f * sweep, false, arc);
     }
-    canvas.drawCircle(c, r - 7, Paint()..color = const Color(0xFF26262E));
+    canvas.drawCircle(c, r - 7 * k, Paint()..color = const Color(0xFF26262E));
     final a = start + f * sweep;
-    canvas.drawLine(c + Offset(math.cos(a), math.sin(a)) * (r - 16), c + Offset(math.cos(a), math.sin(a)) * (r - 8),
+    canvas.drawLine(c + Offset(math.cos(a), math.sin(a)) * (r - 16 * k), c + Offset(math.cos(a), math.sin(a)) * (r - 8 * k),
         Paint()
           ..color = Colors.white
-          ..strokeWidth = 3
+          ..strokeWidth = 3 * k
           ..strokeCap = StrokeCap.round);
   }
 
