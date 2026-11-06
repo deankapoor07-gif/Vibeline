@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vibeline/mashup.dart';
+import 'package:vibeline/models.dart';
 
 // Bar by bar, as measured from a copy of Livin' On a Prayer.
 const vocal = <double>[0.001, 0.001, 0.001, 0.001, 0.368, 0.457, 0.368, 0.35, 0.24, 0.194, 0.276, 0.276, 0.408, 0.393, 0.27, 0.373, 0.708, 0.372, 0.675, 0.697, 0.328, 0.466, 0.568, 0.406, 0.813, 0.323, 0.627, 0.702, 0.384, 0.727, 0.527, 0.645, 0.687, 0.603, 0.554, 0.661, 0.677, 0.726, 0.543, 0.74, 0.977, 0.898, 0.821, 0.847, 0.669, 0.665, 0.754, 0.813, 0.347, 0.297, 0.669, 0.417, 0.708, 0.679, 0.368, 0.7, 0.389, 0.327, 0.814, 0.47, 0.679, 0.561, 0.715, 0.42, 0.491, 0.415, 0.655, 0.659, 0.595, 0.619, 0.734, 0.723, 0.601, 0.585, 0.95, 0.873, 0.816, 0.835, 0.718, 0.661, 0.884, 0.81, 0.707, 0.85, 0.111, 0.027, 0.002, 0.002, 0.089, 0.197, 0.003, 0.14, 0.684, 0.748, 0.858, 0.709, 0.937, 0.919, 0.84, 0.699, 0.723, 0.746, 0.756, 0.748, 0.677, 0.691, 0.676, 0.624, 0.841, 0.763, 0.734, 0.699, 0.764, 0.613, 0.321, 0.091, 0.042];
@@ -14,6 +15,39 @@ void main() {
     }
     return s / (b > a ? b - a : 1);
   }
+
+  group('a vocal has to suit the beat it sings over', () {
+    // Measured from the real songs: the first mashup of a Kiwi set, where the
+    // vocal suits the anchor but not the beat it spends the song over.
+    const everything = <double>[0.049, 0.237, 0.071, 0.108, 0.057, 0.081, 0.081, 0.037, 0.094, 0.051, 0.078, 0.054];
+    const wannaBeStartin = <double>[0.072, 0.066, 0.162, 0.048, 0.163, 0.047, 0.085, 0.066, 0.067, 0.104, 0.036, 0.084];
+    const pumpUpTheJam = <double>[0.224, 0.07, 0.079, 0.157, 0.051, 0.105, 0.044, 0.082, 0.065, 0.031, 0.058, 0.035];
+    const beatShift = 1; // what the beat takes to sit with this anchor
+
+    test('a great fit with the anchor cannot excuse a clash with its own beat', () {
+      expect(MashupMaker.vocalShiftByNotes(everything, wannaBeStartin, beatShift, pumpUpTheJam), isNull);
+    });
+
+    test('a vocal that suits its beat is kept', () {
+      expect(MashupMaker.vocalShiftByNotes(everything, everything, 0, pumpUpTheJam), 0);
+      expect(MashupMaker.vocalShiftByNotes(everything, everything, 0, null), 0);
+    });
+
+    test('with no choice to make, a clash still gets a pitch', () {
+      expect(MashupMaker.vocalShiftByNotes(everything, wannaBeStartin, beatShift, pumpUpTheJam, strict: false), isNotNull);
+    });
+  });
+
+  test('the beat deck follows the beat actually playing', () {
+    final anchor = LibraryTrack(path: '/anchor.mp3', title: 'Anchor', artist: '', genre: '', year: 0, duration: 200);
+    final first = LibraryTrack(path: '/first.mp3', title: 'First', artist: '', genre: '', year: 0, duration: 200);
+    final spans = [BeatSpan(0, anchor, '8A', home: true), BeatSpan(16, first, '9A'), BeatSpan(90, anchor, '8A', home: true)];
+    expect(BeatSpan.at(spans, 3)!.track, anchor);
+    expect(BeatSpan.at(spans, 16)!.track, first);
+    expect(BeatSpan.at(spans, 89.9)!.track, first);
+    expect(BeatSpan.at(spans, 100)!.home, isTrue);
+    expect(BeatSpan.at(const [], 5), isNull);
+  });
 
   test('a vocal starts on a fresh line, not halfway through a verse', () {
     final picked = MashupMaker.pickVocalSection(

@@ -1127,15 +1127,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       final ms = _mashPlan?.mashups ?? const <Mashup>[];
       if (ms.isEmpty) return _emptyDecks;
       final m = ms[i.clamp(0, ms.length - 1)];
-      final beat = DeckInfo('BEAT', m.beat.title, m.beat.artist, kTeal, [
-        if (!m.beatOnly) (_keyLabel(m.keyMatch), m.keyMatch == 'clash' ? Colors.redAccent : const Color(0xFF7DFF5A)),
-      ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(m.beatGrid.camelot, m.beatShift));
+      // The anchor opens the set and beats change hands a few bars after each
+      // vocal comes in, so show the beat you can actually hear right now.
+      final now = BeatSpan.at(_mashPlan?.beatSpans ?? const [], _position);
+      final other = now != null && !identical(now.track, m.beat);
+      final beat = DeckInfo('BEAT', other ? now.track.title : m.beat.title, other ? now.track.artist : m.beat.artist, kTeal, [
+        if (other)
+          (now.home ? 'Anchor beat' : 'Next beat coming', kYellow)
+        else if (!m.beatOnly)
+          (_keyLabel(m.keyMatch), m.keyMatch == 'clash' ? Colors.redAccent : const Color(0xFF7DFF5A)),
+      ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: other ? now.keyCode : shiftCamelot(m.beatGrid.camelot, m.beatShift));
       if (m.beatOnly) return [const DeckInfo('VOCAL', 'Beat break', 'No vocal in this part', kPink, [], loaded: false), beat];
       return [
         DeckInfo('VOCAL', m.vocal.title, m.vocal.artist, kPink, [
-          ('${(m.vocalSpeed * 100).round()}% speed', kPink),
           if (m.acapellaBars > 0) ('Acapella drop', kYellow),
-        ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(m.vocalGrid.camelot, m.vocalShift)),
+        ], bpm: m.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(m.vocalGrid.camelot, m.vocalShift), speed: '${(m.vocalSpeed * 100).round()}%'),
         beat,
       ];
     }
@@ -1231,8 +1237,20 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 beatMuted: _muteBeat,
                 trailing: _scratchButton(),
                 top: _playable ? null : _emptyTop(),
+                splitWaves: _mashupMode,
+                overviewHeight: _mashupMode ? 86 : 56,
                 overview: _playable && _duration > 0
-                    ? SetOverview(items: _overviewItems, marks: _marks, position: _position, duration: _duration, onSeek: _seekTo)
+                    ? SetOverview(
+                        items: _overviewItems,
+                        marks: _marks,
+                        position: _position,
+                        duration: _duration,
+                        onSeek: _seekTo,
+                        header: _mashupMode ? _nowPlayingRow() : null,
+                        sections: _mashupMode ? _sections.sections : null,
+                        waves: _mashupMode ? _waves : null,
+                        blockHeight: _mashupMode ? 46 : 28,
+                      )
                     : null,
                 mixer: _mixerPanel,
               ),
@@ -1255,6 +1273,60 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           if (showSongs) SizedBox(height: songsHeight, child: _songs(wide: true)),
         ]);
       },
+    );
+  }
+
+  /// What's playing and what's next, above the set's timeline.
+  Widget _nowPlayingRow() => SizedBox(
+        height: 28,
+        child: Row(children: [
+          Flexible(
+            child: Text(
+              _heading.toUpperCase(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(_upNext, textAlign: TextAlign.right, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+          ),
+          const SizedBox(width: 10),
+          _scratchButton(),
+        ]),
+      );
+
+  /// The slim bar along the bottom: what the app is doing, and the set's numbers.
+  Widget _statusBar(String status) {
+    final n = _mashupMode ? (_mashPlan?.mashups.length ?? 0) : (_plan?.tracks.length ?? 0);
+    const dim = TextStyle(fontSize: 10, letterSpacing: 0.6, fontWeight: FontWeight.w700, color: Colors.white54);
+    return Container(
+      height: 24,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: const BoxDecoration(color: kPanel, border: Border(top: BorderSide(color: kLine))),
+      child: Row(children: [
+        Expanded(
+          child: Tooltip(
+            message: status,
+            waitDuration: const Duration(milliseconds: 400),
+            child: Text(
+              status,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: _phase == Phase.error ? Colors.redAccent : Colors.white70),
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Text('${_library.tracks.length} SONGS', style: dim),
+        if (_playable && n > 0) ...[
+          const SizedBox(width: 14),
+          Text('$n ${_mashupMode ? 'MASHUPS' : 'SONGS IN SET'}', style: dim),
+          const SizedBox(width: 14),
+          Text('REMAINING ${_clock(math.max(0, _duration - _position))}', style: dim.copyWith(color: Colors.white, fontFeatures: const [FontFeature.tabularFigures()])),
+        ],
+      ]),
     );
   }
 
@@ -1405,11 +1477,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         toolbarHeight: 50,
         titleSpacing: 16,
         title: Row(children: [
-          const Text.rich(TextSpan(children: [
-            TextSpan(text: 'D-JAY ', style: TextStyle(color: Colors.white)),
-            TextSpan(text: 'NOODLES', style: TextStyle(color: kPink)),
-          ]), style: TextStyle(fontSize: 14, letterSpacing: 2, fontWeight: FontWeight.w800)),
-          const SizedBox(width: 20),
+          const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('D-JAY', style: TextStyle(fontSize: 18, height: 1, letterSpacing: 1, fontWeight: FontWeight.w900, color: Colors.white)),
+              SizedBox(height: 3),
+              Text('NOODLES', style: TextStyle(fontSize: 10, height: 1, letterSpacing: 3.2, fontWeight: FontWeight.w700, color: kPink)),
+            ],
+          ),
+          const SizedBox(width: 16),
+          Container(width: 1, height: 30, color: kLine),
+          const SizedBox(width: 16),
           Tooltip(
             message: 'Simple: the decks, waveform and pads.\nPro: every mashup card with all its knobs and sliders.',
             child: SegmentedButton<bool>(
@@ -1502,6 +1581,32 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                   ),
                 ),
                 const SizedBox(width: 12),
+                RigToggle(
+                  label: 'Mashups',
+                  on: _mashupMode,
+                  locked: _busy,
+                  tooltip: 'On: vocals from one song over the beat of another.\nOff: songs blended one after the other.',
+                  onChanged: _setMode,
+                ),
+                if (_mashupMode) ...[
+                  const SizedBox(width: 6),
+                  RigToggle(
+                    label: 'Anchor beat',
+                    on: _anchorOn,
+                    locked: _busy,
+                    tooltip: 'Anchor beat: one steady groove the set comes home to. New vocals come in over it,\n'
+                        'the mashup\'s own beat takes over once the vocal settles, and it cuts back to the anchor now and then.',
+                    onChanged: _toggleAnchor,
+                  ),
+                ],
+                const SizedBox(width: 6),
+                RigToggle(
+                  label: '432 Hz',
+                  on: Tuning.use432,
+                  tooltip: 'Retune every song, beat and vocal to A = 432 Hz before it plays.\nOff: songs keep their own tuning.',
+                  onChanged: _toggle432,
+                ),
+                const SizedBox(width: 12),
                 ThemePicker(controller: _themeController, locked: _busy, onChanged: () => setState(() {})),
                 const SizedBox(width: 8),
                 ElevatedButton.icon(
@@ -1522,51 +1627,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             ]),
           ),
 
-          // 2. TOOLBAR: mode + tuning
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            color: kInk,
-            width: double.infinity,
-            child: Row(children: [
-              Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                RigToggle(
-                  label: 'Mashups',
-                  on: _mashupMode,
-                  locked: _busy,
-                  tooltip: 'On: vocals from one song over the beat of another.\nOff: songs blended one after the other.',
-                  onChanged: _setMode,
-                ),
-                if (_mashupMode)
-                  RigToggle(
-                    label: 'Anchor beat',
-                    on: _anchorOn,
-                    locked: _busy,
-                    tooltip: 'Anchor beat: one steady groove the set comes home to. New vocals come in over it,\n'
-                        'the mashup\'s own beat takes over once the vocal settles, and it cuts back to the anchor now and then.',
-                    onChanged: _toggleAnchor,
-                  ),
-                RigToggle(
-                  label: '432 Hz',
-                  on: Tuning.use432,
-                  tooltip: 'Retune every song, beat and vocal to A = 432 Hz before it plays.\nOff: songs keep their own tuning.',
-                  onChanged: _toggle432,
-                ),
-              ],
-            ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(
-                  statusLine,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, height: 1.2, color: _phase == Phase.error ? Colors.redAccent : Colors.white70),
-                ),
-              ),
-            ]),
-          ),
+          const SizedBox(height: 6),
           SizedBox(
             height: 2,
             child: _busy
@@ -1574,7 +1635,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 : const Divider(height: 2, thickness: 1, color: kLine),
           ),
 
-          // 3. THE DECKS (or, in Pro with a set loaded, every card)
+          // 2. THE DECKS (or, in Pro with a set loaded, every card)
           Expanded(
             child: !_pro || !_hasContent
                 ? _rigView()
@@ -1698,6 +1759,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               ],
             ),
           ),
+          _statusBar(statusLine),
         ],
       ),
     );

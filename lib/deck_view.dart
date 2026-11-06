@@ -31,8 +31,9 @@ class DeckInfo {
   final Widget? action; // e.g. its mute button, top right of the card
   final String bpm; // e.g. 124.0
   final String keyCode; // e.g. 8A
+  final String speed; // e.g. 102%
   final bool loaded; // false: nothing on this deck
-  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action, this.bpm = '', this.keyCode = '', this.loaded = true});
+  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action, this.bpm = '', this.keyCode = '', this.speed = '', this.loaded = true});
 }
 
 /// The bass / mid / high loudness and peak of each rendered section, every
@@ -40,6 +41,7 @@ class DeckInfo {
 /// muted singer or beat drops out of the picture too).
 class WaveCache {
   static const binsPerSecond = 100;
+  static const miniPerSecond = 2;
   final Mixer mixer;
   void Function()? onLoaded;
   WaveCache(this.mixer);
@@ -47,10 +49,53 @@ class WaveCache {
   final _data = <String, Float32List>{};
   final _pending = <String>{};
 
+  // A small picture of each section for the set timeline: kept for the whole
+  // set, and fetched one at a time so it never gets in the way of the music.
+  final _mini = <String, Float32List>{};
+  final _miniWanted = <String>{};
+  final _miniQueue = <Section>[];
+  bool _miniBusy = false;
+  int miniVersion = 0;
+
+  Float32List? mini(Section s) {
+    final p = s.path;
+    if (p == null) return null;
+    final d = _mini[p];
+    if (d != null) return d;
+    if (_miniWanted.add(p)) {
+      _miniQueue.add(s);
+      _nextMini();
+    }
+    return null;
+  }
+
+  void _nextMini() {
+    if (_miniBusy || _miniQueue.isEmpty) return;
+    final s = _miniQueue.removeAt(0);
+    final p = s.path;
+    if (p == null) return _nextMini();
+    _miniBusy = true;
+    mixer.waveform([p, ?s.voxPath]).then((v) {
+      final each = binsPerSecond ~/ miniPerSecond;
+      final out = Float32List(v.length ~/ 4 ~/ each + 1);
+      for (var i = 3; i < v.length; i += 4) {
+        final at = i ~/ 4 ~/ each;
+        if (v[i] > out[at]) out[at] = v[i];
+      }
+      _mini[p] = out;
+      miniVersion++;
+      onLoaded?.call();
+    }, onError: (_) {}).whenComplete(() {
+      _miniBusy = false;
+      _nextMini();
+    });
+  }
+
   Float32List? of(Section s, {bool vocal = true, bool beat = true}) {
     final p = s.path;
     if (p == null) return null;
     final paths = [if (beat) p, if (vocal) ?s.voxPath];
+    if (paths.isEmpty) return null;
     final key = '$p|$vocal|$beat';
     final d = _data[key];
     if (d != null || !_pending.add(key)) return d;
@@ -79,6 +124,10 @@ class NowPlayingView extends StatefulWidget {
   final Widget? trailing; // beside "up next" (the Scratch button)
   final Widget? top; // in place of the waveform when there's no set
   final Widget? overview; // the whole set, under the waveform
+  final double overviewHeight;
+  /// A wave of its own above each deck (vocal and beat), rather than one
+  /// across the top. With no set loaded there's nothing to draw, so it stays off.
+  final bool splitWaves;
   /// The mixer between the decks; it's given how loud each layer is right now.
   final Widget Function(double Function(bool vocal) level)? mixer;
 
@@ -98,6 +147,8 @@ class NowPlayingView extends StatefulWidget {
     this.trailing,
     this.top,
     this.overview,
+    this.overviewHeight = 56,
+    this.splitWaves = false,
     this.mixer,
   });
 
@@ -150,14 +201,20 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
     return LayoutBuilder(
       builder: (context, box) {
         // Songs first, as on a DJ deck: the waveform up top, then the decks.
-        final topHeight = widget.top != null ? 92.0 : 62.0;
-        final hasOverview = widget.overview != null && box.maxHeight >= topHeight + 56;
-        final used = topHeight + (hasOverview ? 56 : 0) + 6;
+        final split = widget.splitWaves && widget.top == null;
+        final topHeight = widget.top != null
+            ? 92.0
+            : split
+                ? 0.0
+                : 62.0;
+        final hasOverview = widget.overview != null && box.maxHeight >= topHeight + widget.overviewHeight;
+        final used = topHeight + (hasOverview ? widget.overviewHeight : 0) + 6;
         final deckHeight = box.maxHeight - used;
+        final deckWaves = split && deckHeight >= 170;
         return Column(
           children: [
-            if (box.maxHeight >= topHeight) SizedBox(height: topHeight, child: widget.top ?? _wave(pos)),
-            if (hasOverview) SizedBox(height: 56, child: widget.overview!),
+            if (topHeight > 0 && box.maxHeight >= topHeight) SizedBox(height: topHeight, child: widget.top ?? _wave(pos)),
+            if (hasOverview) SizedBox(height: widget.overviewHeight, child: widget.overview!),
             if (deckHeight >= 90) ...[
               const SizedBox(height: 6),
               SizedBox(
@@ -170,7 +227,18 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
                         const SizedBox(width: 6),
                         if (widget.mixer != null && box.maxWidth >= 620) ...[widget.mixer!(_levelOf), const SizedBox(width: 6)],
                       ],
-                      Expanded(child: _Deck(widget.decks[i], pos, lit: _isLit(widget.decks[i]), mirrored: i == 1)),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (deckWaves) ...[
+                              SizedBox(height: 46, child: _deckWave(pos, widget.decks[i], vocal: i == 0)),
+                              const SizedBox(height: 4),
+                            ],
+                            Expanded(child: _Deck(widget.decks[i], pos, lit: _isLit(widget.decks[i]), mirrored: i == 1)),
+                          ],
+                        ),
+                      ),
                     ],
                   ],
                 ),
@@ -206,6 +274,32 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
     return 0;
   }
 
+  /// Scroll over a wave to zoom every wave in and out.
+  void _zoom(PointerSignalEvent e) {
+    if (e is PointerScrollEvent) {
+      setState(() => _window = (_window * math.pow(1.0015, e.scrollDelta.dy)).clamp(2.0, 30.0));
+    }
+  }
+
+  /// The wave above a deck: only that deck's layer, in its colour.
+  Widget _deckWave(double pos, DeckInfo d, {required bool vocal}) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(color: const Color(0xFF0C0C11), border: Border.all(color: kLine)),
+        child: Tooltip(
+          message: 'Scroll to zoom in and out',
+          waitDuration: const Duration(seconds: 1),
+          child: Listener(
+            onPointerSignal: _zoom,
+            child: SizedBox.expand(
+              child: CustomPaint(
+                painter: _WavePainter(widget.sections, widget.waves, pos, _window, widget.beats, widget.downbeats,
+                    vocal: vocal && !widget.vocalMuted, beat: !vocal && !widget.beatMuted, tint: d.color),
+              ),
+            ),
+          ),
+        ),
+      );
+
   Widget _wave(double pos) => Container(
         padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
         decoration: BoxDecoration(color: const Color(0xFF0C0C11), borderRadius: BorderRadius.circular(3)),
@@ -239,11 +333,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
                 message: 'Scroll to zoom in and out',
                 waitDuration: const Duration(seconds: 1),
                 child: Listener(
-                  onPointerSignal: (e) {
-                    if (e is PointerScrollEvent) {
-                      setState(() => _window = (_window * math.pow(1.0015, e.scrollDelta.dy)).clamp(2.0, 30.0));
-                    }
-                  },
+                  onPointerSignal: _zoom,
                   child: SizedBox.expand(
                     child: CustomPaint(
                       painter: _WavePainter(widget.sections, widget.waves, pos, _window, widget.beats, widget.downbeats,
@@ -272,6 +362,26 @@ class _Deck extends StatelessWidget {
   /// A jog wheel only turns while it's the one playing.
   double get _spin => d.role == 'NEXT' || !d.loaded ? 0 : pos;
 
+  /// A small lit readout, like the ones on a real deck.
+  Widget _tile(String label, String value) => Container(
+        width: 62,
+        padding: const EdgeInsets.fromLTRB(6, 4, 6, 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0B0B0F),
+          border: Border.all(color: d.loaded ? d.color.withValues(alpha: 0.55) : Colors.white24),
+          borderRadius: BorderRadius.circular(kCorner),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: const TextStyle(fontSize: 8, letterSpacing: 1, fontWeight: FontWeight.w700, color: Colors.white54)),
+            const SizedBox(height: 2),
+            Text(value, style: TextStyle(fontSize: 15, height: 1, fontWeight: FontWeight.w800, color: d.loaded ? d.color : Colors.white38, fontFeatures: const [FontFeature.tabularFigures()])),
+          ],
+        ),
+      );
+
   /// The BPM sits here only when there's no jog wheel to show it in the middle.
   Widget _numbers({required bool showBpm}) => FittedBox(
         fit: BoxFit.scaleDown,
@@ -298,7 +408,7 @@ class _Deck extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Colors.white60),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               if (showBpm) ...[
                 Text(
                   d.bpm.isEmpty ? '--' : d.bpm,
@@ -308,16 +418,13 @@ class _Deck extends StatelessWidget {
                 const Text('BPM', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
                 const SizedBox(height: 8),
               ],
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  border: Border.all(color: d.loaded ? d.color : Colors.white24),
-                  borderRadius: BorderRadius.circular(kCorner),
-                ),
-                child: Text(d.keyCode.isEmpty ? '--' : d.keyCode, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: d.loaded ? d.color : Colors.white38)),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _tile('KEY', d.keyCode.isEmpty ? '--' : d.keyCode),
+                  if (d.speed.isNotEmpty) ...[const SizedBox(width: 6), _tile('SPEED', d.speed)],
+                ],
               ),
-              const SizedBox(height: 2),
-              const Text('KEY', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
               for (final (label, c) in d.tags) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -394,7 +501,7 @@ class _JogWheelPainter extends CustomPainter {
     // The housing, with position dots that travel round as the deck plays.
     canvas.drawCircle(c, r, Paint()..color = const Color(0xFF18181F));
     canvas.drawCircle(c, r, line(math.max(1, side * 0.004), const Color(0xFF3A3A44)));
-    final dots = Paint()..color = const Color(0xFF6E6E7A);
+    final dots = Paint()..color = const Color(0xFF8E8E9A);
     final dotSize = math.max(0.6, side * 0.0032);
     for (var i = 0; i < 90; i++) {
       canvas.drawCircle(around(angle + i * 2 * math.pi / 90, r * 0.945), dotSize, dots);
@@ -442,7 +549,8 @@ class _JogWheelPainter extends CustomPainter {
         line(ringWidth * 2.5, color.withValues(alpha: 0.6))..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(3, side * 0.018)),
       );
     }
-    canvas.drawCircle(c, platter, line(ringWidth, lit ? Color.lerp(color, Colors.white, 0.15)! : const Color(0xFF2A2A32)));
+    // Off, it keeps a dim hint of the deck's colour.
+    canvas.drawCircle(c, platter, line(ringWidth, lit ? Color.lerp(color, Colors.white, 0.15)! : color.withValues(alpha: 0.3)));
 
     // The hub, with writing that stays upright so it can be read.
     final hub = r * 0.4;
@@ -464,7 +572,7 @@ class _JogWheelPainter extends CustomPainter {
       write(bpm, hub * 0.5, -hub * 0.1, Colors.white, weight: FontWeight.w700);
       write('BPM', hub * 0.17, hub * 0.34, Colors.white60, weight: FontWeight.w700, spacing: hub * 0.02);
     } else {
-      write('DJ', hub * 0.7, 0, loaded ? Colors.white : Colors.white38, weight: FontWeight.w900, spacing: -hub * 0.02);
+      write('DJ', hub * 0.7, 0, loaded ? Colors.white : Colors.white60, weight: FontWeight.w900, spacing: -hub * 0.02);
     }
   }
 
@@ -485,8 +593,9 @@ class _WavePainter extends CustomPainter {
   final List<double> beats;
   final Set<double> downbeats;
   final bool vocal, beat;
+  final Color? tint; // one colour in shades, rather than bass/mid/high colours
   _WavePainter(this.sections, this.waves, this.pos, this.window, this.beats, this.downbeats,
-      {required this.vocal, required this.beat});
+      {required this.vocal, required this.beat, this.tint});
 
   static const _layers = [
     (Color(0xFF8A8A99), 0.95), // peak
@@ -528,7 +637,16 @@ class _WavePainter extends CustomPainter {
     }
 
     final half = size.width / 2;
-    for (final (layer, (color, gain)) in [(3, _layers[0]), (1, _layers[1]), (0, _layers[2]), (2, _layers[3])]) {
+    final t = tint;
+    final shades = t == null
+        ? _layers
+        : [
+            (Color.lerp(t, Colors.black, 0.5)!, _layers[0].$2),
+            (t, _layers[1].$2),
+            (Color.lerp(t, Colors.white, 0.25)!, _layers[2].$2),
+            (Color.lerp(t, Colors.white, 0.6)!, _layers[3].$2),
+          ];
+    for (final (layer, (color, gain)) in [(3, shades[0]), (1, shades[1]), (0, shades[2]), (2, shades[3])]) {
       for (final ahead in [false, true]) {
         final path = Path();
         var open = false;
@@ -675,6 +793,10 @@ class SetOverview extends StatelessWidget {
   final double position;
   final double duration;
   final void Function(double t) onSeek;
+  final Widget? header; // what's playing and what's next, instead of the plain title
+  final List<Section>? sections; // with [waves]: a small wave in each block
+  final WaveCache? waves;
+  final double blockHeight;
 
   const SetOverview({
     super.key,
@@ -683,9 +805,58 @@ class SetOverview extends StatelessWidget {
     required this.position,
     required this.duration,
     required this.onSeek,
+    this.header,
+    this.sections,
+    this.waves,
+    this.blockHeight = 28,
   });
 
   static const markColor = {MarkKind.drop: kPink, MarkKind.bridge: kYellow, MarkKind.fx: kTeal};
+
+  static String _length(double seconds) {
+    final s = seconds.round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  /// One stretch of the set: its name, a small wave and how long it runs.
+  Widget _block(OverviewItem it) {
+    final tall = blockHeight >= 40;
+    final q = sections, w = waves;
+    return Container(
+      clipBehavior: Clip.hardEdge,
+      decoration: BoxDecoration(
+        color: it.color.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: it.color),
+      ),
+      child: Stack(children: [
+        if (tall && q != null && w != null)
+          Positioned(
+            left: 4,
+            right: 4,
+            top: 16,
+            bottom: 2,
+            child: RepaintBoundary(child: CustomPaint(painter: _MiniWavePainter(q, w, it.start, it.end, it.color))),
+          ),
+        Positioned(
+          left: 5,
+          right: tall ? 34 : 0,
+          top: tall ? 2 : 0,
+          bottom: tall ? null : 0,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(it.label, maxLines: 1, overflow: TextOverflow.clip, style: TextStyle(fontSize: 10, color: it.color)),
+          ),
+        ),
+        if (tall)
+          Positioned(
+            right: 5,
+            top: 2,
+            child: Text(_length(it.end - it.start), style: TextStyle(fontSize: 10, color: it.color, fontFeatures: const [FontFeature.tabularFigures()])),
+          ),
+      ]),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -694,8 +865,12 @@ class SetOverview extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Text('SET · CLICK TO JUMP', style: TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54)),
-            const Spacer(),
+            if (header != null)
+              Expanded(child: header!)
+            else ...[
+              const Text('SET · CLICK TO JUMP', style: TextStyle(fontSize: 10, letterSpacing: 0.8, fontWeight: FontWeight.w700, color: Colors.white54)),
+              const Spacer(),
+            ],
             for (final (k, name) in const [
               (MarkKind.drop, 'acapella drop'),
               (MarkKind.bridge, 'beat bridge'),
@@ -709,7 +884,7 @@ class SetOverview extends StatelessWidget {
               ],
           ],
         ),
-        const SizedBox(height: 6),
+        SizedBox(height: header != null ? 4 : 6),
         LayoutBuilder(
           builder: (context, box) {
             final w = box.maxWidth;
@@ -720,7 +895,7 @@ class SetOverview extends StatelessWidget {
                 behavior: HitTestBehavior.opaque,
                 onTapDown: (e) => onSeek((e.localPosition.dx / w).clamp(0.0, 1.0) * duration),
                 child: SizedBox(
-                  height: 34,
+                  height: blockHeight + 6,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
@@ -729,27 +904,13 @@ class SetOverview extends StatelessWidget {
                           left: x(it.start) + 1.5,
                           width: math.max(2, x(it.end) - x(it.start) - 3),
                           top: 3,
-                          height: 28,
-                          child: Container(
-                            padding: const EdgeInsets.only(left: 5),
-                            alignment: Alignment.centerLeft,
-                            decoration: BoxDecoration(
-                              color: it.color.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(3),
-                              border: Border.all(color: it.color),
-                            ),
-                            child: Text(
-                              it.label,
-                              maxLines: 1,
-                              overflow: TextOverflow.clip,
-                              style: TextStyle(fontSize: 10, color: it.color),
-                            ),
-                          ),
+                          height: blockHeight,
+                          child: _block(it),
                         ),
                       for (final (t, k) in marks)
                         Positioned(
                           left: x(t) - 4.5,
-                          top: k == MarkKind.fx ? 25 : 0,
+                          top: k == MarkKind.fx ? blockHeight - 3 : 0,
                           child: Icon(
                             k == MarkKind.fx ? Icons.change_history : Icons.circle,
                             size: 9,
@@ -772,6 +933,43 @@ class SetOverview extends StatelessWidget {
       ],
     );
   }
+}
+
+/// A small picture of one stretch of the set, drawn up from the block's floor.
+class _MiniWavePainter extends CustomPainter {
+  final List<Section> sections;
+  final WaveCache waves;
+  final double start, end;
+  final Color color;
+  final int version;
+  _MiniWavePainter(this.sections, this.waves, this.start, this.end, this.color) : version = waves.miniVersion;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (end <= start) return;
+    final bar = Paint()..color = color.withValues(alpha: 0.6);
+    final mid = size.height / 2;
+    var at = 0;
+    for (var x = 0.0; x < size.width; x += 2) {
+      final t = start + x / size.width * (end - start);
+      while (at < sections.length && sections[at].end <= t) {
+        at++;
+      }
+      if (at >= sections.length) break;
+      final s = sections[at];
+      if (t < s.start) continue;
+      final d = waves.mini(s);
+      if (d == null) continue;
+      final i = ((t - s.start) * WaveCache.miniPerSecond).floor();
+      if (i < 0 || i >= d.length) continue;
+      final h = math.max(0.5, d[i].clamp(0.0, 1.0) * mid);
+      canvas.drawRect(Rect.fromLTRB(x, mid - h, x + 1.2, mid + h), bar);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MiniWavePainter old) =>
+      old.version != version || old.start != start || old.end != end || old.color != color || !identical(old.sections, sections);
 }
 
 /// The XY pad: press and drag to play an effect. Left to right is its length

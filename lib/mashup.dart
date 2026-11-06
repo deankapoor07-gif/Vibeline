@@ -135,6 +135,15 @@ class Mashup {
 
   String get keyMatch {
     if (beatOnly) return 'beat';
+    // Once both songs are split, their real notes say it better than the key
+    // labels, which are only an estimate.
+    final v = vocal.stems?.chroma['vocals'], b = beat.stems?.chroma['music'];
+    if (v != null && b != null) {
+      final f = MashupMaker.notesFit(v, vocalShift, b, beatShift);
+      if (f >= 0.6) return vocalShift == 0 ? 'perfect' : 'shifted';
+      if (f >= 0.45) return 'compatible';
+      return f >= MashupMaker.vocalFitMin ? 'loose' : 'clash';
+    }
     final c = keyCompat(shiftCamelot(beatGrid.camelot, beatShift), shiftCamelot(vocalGrid.camelot, vocalShift));
     if (c >= 0.99) return vocalShift == autoShift && vocalShift != 0 ? 'shifted' : 'perfect';
     if (c >= 0.8) return 'compatible';
@@ -241,13 +250,35 @@ class AnchorBeat {
   double get cents => Tuning.toReference(track.stems?.tuning['other'] ?? track.analysis?.tuning);
 }
 
+/// Which beat is carrying the set from [start] on. The anchor opens the set
+/// and the set comes home to a groove ([home]), so this isn't always the beat
+/// of the mashup being sung.
+class BeatSpan {
+  final double start;
+  final LibraryTrack track;
+  final String keyCode;
+  final bool home;
+  const BeatSpan(this.start, this.track, this.keyCode, {this.home = false});
+
+  /// The span playing at [t] in a list in time order.
+  static BeatSpan? at(List<BeatSpan> spans, double t) {
+    BeatSpan? now;
+    for (final s in spans) {
+      if (s.start > t) break;
+      now = s;
+    }
+    return now;
+  }
+}
+
 class MashupSetPlan {
   final List<Mashup> mashups;
   final double duration;
   final String summary;
   final Map<String, dynamic> renderJson;
   final List<double> cuts; // section boundaries (where blends finish)
-  MashupSetPlan(this.mashups, this.duration, this.summary, this.renderJson, this.cuts);
+  final List<BeatSpan> beatSpans; // empty when each mashup simply plays its own beat
+  MashupSetPlan(this.mashups, this.duration, this.summary, this.renderJson, this.cuts, [this.beatSpans = const []]);
 
   /// Your live volume moves for each mashup, for the player.
   /// Beat regions change hands halfway through each blend.
@@ -1184,8 +1215,20 @@ class MashupMaker {
       if (strict && notesFit(b, bs, a, 0) < beatFitMin) return null;
     }
     if (p.vocal == p.beat) return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, p.shift, p.score, bs);
-    double fit(int s) => a == null ? notesFit(v, s, b, bs) : (notesFit(v, s, b, bs) + notesFit(v, s, a, 0)) / 2;
-    var vs = p.shift, best = -2.0;
+    final vs = vocalShiftByNotes(v, b, bs, a, strict: strict);
+    if (vs == null) return null;
+    return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, vs, p.score, bs);
+  }
+
+  /// The shift that best fits a vocal's notes [v] to its beat [b] (moved
+  /// [beatShift]) and the anchor [a]. A singer spends a few quiet bars over the
+  /// anchor and the rest of the song over their own beat, so the beat counts
+  /// most, and a good fit with the anchor can't excuse a clash with the beat.
+  /// Null if they clash ([strict]).
+  static int? vocalShiftByNotes(List<double> v, List<double> b, int beatShift, List<double>? a, {bool strict = true}) {
+    double own(int s) => notesFit(v, s, b, beatShift);
+    double fit(int s) => a == null ? own(s) : 0.75 * own(s) + 0.25 * notesFit(v, s, a, 0);
+    var vs = 0, best = -2.0;
     for (final s in vocalShifts) {
       final f = fit(s) - 0.05 * s.abs() - (s > 0 ? 0.02 : 0);
       if (f > best) {
@@ -1193,8 +1236,8 @@ class MashupMaker {
         vs = s;
       }
     }
-    if (strict && fit(vs) < vocalFitMin) return null;
-    return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, vs, p.score, bs);
+    if (strict && (fit(vs) < vocalFitMin || own(vs) < vocalFitMin)) return null;
+    return vs;
   }
 
   /// A pairing re-fitted to the anchor: both songs at the anchor's tempo, the
@@ -1339,6 +1382,18 @@ class MashupMaker {
       if (!home[i]) beatEnd[i] = beatIn[i + 1]; // carries the next vocal in
     }
     final endBar = ms.isEmpty ? 16 : beatEnd.last + 12;
+
+    // Which beat is carrying the set when, for the beat deck.
+    final homeBeat = promoted == null
+        ? BeatSpan(0, anchor.track, anchor.camelot, home: true)
+        : BeatSpan(0, ms[promoted].beat, shiftCamelot(ms[promoted].beatGrid.camelot, ms[promoted].beatShift), home: true);
+    final beatSpans = <BeatSpan>[
+      BeatSpan(0, anchor.track, anchor.camelot, home: true),
+      for (var i = 0; i < ms.length; i++) ...[
+        BeatSpan(bt(beatIn[i]), ms[i].beat, shiftCamelot(ms[i].beatGrid.camelot, ms[i].beatShift)),
+        if (home[i]) BeatSpan(bt(beatEnd[i]), homeBeat.track, homeBeat.keyCode, home: true),
+      ],
+    ];
 
     // Vocal spans (for the vocal pocket on whatever beat is under them).
     final spans = <(double, double)>[
@@ -1529,10 +1584,10 @@ class MashupMaker {
 
     final duration = bt(endBar) + 1.5;
     final mins = (duration / 60).round();
-    final summary = '${vibe.summary} · anchor: ${anchor.track.title}${promoted == null ? '' : ' → ${ms[promoted].beat.title}'} · ${ms.length} mashups · '
+    final summary = '${vibe.summary} · opens on ${anchor.track.title}${promoted == null ? '' : ' · home groove ${ms[promoted].beat.title}'} · ${ms.length} mashups · '
         '${mins >= 60 ? '${mins ~/ 60}h ${mins % 60}m' : '$mins min'}';
     final json = <String, dynamic>{'duration': duration, 'clips': clips, if (warmth != null) 'warmth': warmth};
-    return MashupSetPlan(ms, duration, summary, json, cuts);
+    return MashupSetPlan(ms, duration, summary, json, cuts, beatSpans);
   }
 
   /// The vocal pocket for several vocals (whichever is singing at the time).

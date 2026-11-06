@@ -104,6 +104,20 @@ class MixerPanel extends StatelessWidget {
       ]);
     }
     return Column(children: [
+      Row(children: [
+        const Text('VOCAL', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: kPink)),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Tooltip(
+            message: 'Crossfader: slide left for only the vocal, right for only the beat. Double-click to centre.',
+            waitDuration: const Duration(seconds: 1),
+            child: RigCrossfader(value: crossfader, onChanged: onCrossfader),
+          ),
+        ),
+        const SizedBox(width: 6),
+        const Text('BEAT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: kTeal)),
+      ]),
+      const SizedBox(height: 10),
       Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
         Knob(
           label: '$title\nVOCAL',
@@ -143,20 +157,6 @@ class MixerPanel extends StatelessWidget {
           _channel('Beat', kTeal, beatFader, onBeatFader, muteBeat ? 0 : meterBeat, meterFirst: true),
         ]),
       ),
-      const SizedBox(height: 8),
-      Row(children: [
-        const Text('VOCAL', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: kPink)),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Tooltip(
-            message: 'Crossfader: slide left for only the vocal, right for only the beat. Double-click to centre.',
-            waitDuration: const Duration(seconds: 1),
-            child: RigCrossfader(value: crossfader, onChanged: onCrossfader),
-          ),
-        ),
-        const SizedBox(width: 6),
-        const Text('BEAT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: kTeal)),
-      ]),
     ]);
   }
 
