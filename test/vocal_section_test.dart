@@ -64,6 +64,34 @@ void main() {
     expect(at(vocal, picked.$1), greaterThanOrEqualTo(0.5));
   });
 
+  group('a vocal comes in on singing that carries on', () {
+    // A short phrase at bar 8, then a gap, and the real verse from bar 24.
+    double shape(int b) {
+      if (b >= 8 && b < 10) return b == 8 ? 0.8 : 0.1;
+      if (b == 10 || b == 11) return 0.05;
+      return b >= 24 && b < 100 ? 0.7 : (b >= 12 && b < 22 ? 0.6 : 0.0);
+    }
+
+    (int, int)? pick(double Function(int) v) => MashupMaker.pickVocalSection(
+          firstBar: 0,
+          lastBar: 120,
+          room: 200,
+          vocalAt: v,
+          energy: (a, b) => 0.5,
+          lurches: (a, b) => false,
+        );
+
+    test('not a short phrase that vanishes straight after', () {
+      expect(pick(shape)!.$1, isNot(8));
+      expect(pick(shape)!.$1, 24);
+    });
+
+    test('a song with only short phrases still gets a section', () {
+      final picked = pick((b) => b % 8 == 0 ? 0.8 : (b % 8 == 7 ? 0.3 : (b % 8 == 1 ? 0.2 : 0.7)));
+      expect(picked, isNotNull);
+    });
+  });
+
   test('a song that never pauses still gets a section', () {
     final picked = MashupMaker.pickVocalSection(
       firstBar: 0,

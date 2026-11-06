@@ -619,7 +619,7 @@ class MashupMaker {
     required double Function(int from, int to) energy,
     required bool Function(int from, int to) lurches,
   }) {
-    for (final tier in const [2, 1, 0]) {
+    for (final tier in const [3, 2, 1, 0]) {
       var best = -1e9;
       var bestStart = -1, bestLen = 0;
       for (final len in const [48, 40, 32, 24, 16]) {
@@ -629,7 +629,10 @@ class MashupMaker {
           if (vocalAt(s) < 0.35) continue;
           final isFresh = vocalAt(s - 1) < 0.45; // a new line, not mid-sentence
           if (tier >= 1 && !isFresh) continue;
-          if (tier == 2 && (vocalAt(s - 2) >= 0.45 || vocalAt(s) < 0.5)) continue;
+          if (tier >= 2 && (vocalAt(s - 2) >= 0.45 || vocalAt(s) < 0.5)) continue;
+          // Best of all, the singing carries on: a short phrase with a gap after
+          // it sounds like the vocal came in and vanished.
+          if (tier == 3 && [s + 1, s + 2, s + 3].any((b) => vocalAt(b) < 0.3)) continue;
           // End where the singer has finished the line (quiet for a moment
           // after), so the vocal can leave smoothly rather than mid-word.
           final after = vocalAt(s + len), after2 = vocalAt(s + len + 1);
