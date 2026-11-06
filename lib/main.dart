@@ -1060,8 +1060,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   /// 1–8 are the FX pads (tap to keep on, hold for just while held). Ignored
   /// while you're typing in a box.
   bool _onKey(KeyEvent e) {
-    final focus = FocusManager.instance.primaryFocus?.context?.widget;
-    if (focus is EditableText) return false;
+    if (typingIn(FocusManager.instance.primaryFocus?.context)) return false;
     final k = e.logicalKey;
     final digit = [
       LogicalKeyboardKey.digit1, LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3, LogicalKeyboardKey.digit4,
@@ -1573,6 +1572,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 Expanded(
                   child: TextField(
                     controller: _vibeController,
+                    onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                     decoration: InputDecoration(
                       hintText: _mashupMode
                           ? 'e.g. country vocals over hip hop, 2 hours'
@@ -1582,6 +1582,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                       isDense: true,
                     ),
                     onSubmitted: (value) {
+                      FocusManager.instance.primaryFocus?.unfocus();
                       setState(() => _currentVibePrompt = value);
                       _remix();
                     },

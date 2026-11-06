@@ -14,6 +14,11 @@ const kRigAmber = Color(0xFFFF9F1C);
 const kRigGreen = Color(0xFF3DDC6A);
 const kRigFace = Color(0xFF16161D);
 
+/// True when the keyboard is going into a text box, so its keys are for typing,
+/// not shortcuts. The focused element sits inside the box, not at its top level.
+bool typingIn(BuildContext? focused) =>
+    focused != null && (focused.widget is EditableText || focused.findAncestorWidgetOfExactType<EditableText>() != null);
+
 ThemeData rigTheme(ThemeData base) {
   final square = RoundedRectangleBorder(borderRadius: BorderRadius.circular(kRigCorner));
   return base.copyWith(

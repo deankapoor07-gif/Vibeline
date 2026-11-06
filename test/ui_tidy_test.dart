@@ -17,6 +17,21 @@ void main() {
     }
   });
 
+  testWidgets('shortcuts leave the keys alone while you type in a box', (t) async {
+    final box = FocusNode(), button = FocusNode();
+    await t.pumpWidget(_app(Column(children: [
+      TextField(focusNode: box),
+      Focus(focusNode: button, child: const Text('not a box')),
+    ])));
+    box.requestFocus();
+    await t.pump();
+    expect(typingIn(FocusManager.instance.primaryFocus?.context), isTrue);
+    button.requestFocus();
+    await t.pump();
+    expect(typingIn(FocusManager.instance.primaryFocus?.context), isFalse);
+    expect(typingIn(null), isFalse);
+  });
+
   testWidgets('the theme list fills in the theme, and No theme clears it', (t) async {
     final c = TextEditingController();
     await t.pumpWidget(_app(StatefulBuilder(

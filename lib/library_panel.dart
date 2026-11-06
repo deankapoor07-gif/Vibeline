@@ -248,6 +248,7 @@ class _LibraryPanelState extends State<LibraryPanel> {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
             child: TextField(
+              onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
               decoration: const InputDecoration(
                 hintText: 'Search title, artist or genre…',
                 prefixIcon: Icon(Icons.search, size: 18),
@@ -490,6 +491,7 @@ class _LibraryPanelState extends State<LibraryPanel> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: TextField(
+                        onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                         style: const TextStyle(fontSize: 12),
                         decoration: const InputDecoration(
                           hintText: 'Search title, artist or genre…',
