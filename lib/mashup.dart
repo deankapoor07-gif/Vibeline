@@ -142,7 +142,7 @@ class Mashup {
       final f = MashupMaker.notesFit(v, vocalShift, b, beatShift);
       if (f >= 0.6) return vocalShift == 0 ? 'perfect' : 'shifted';
       if (f >= 0.45) return 'compatible';
-      return f >= MashupMaker.vocalFitMin ? 'loose' : 'clash';
+      return f >= MashupMaker.vocalFitLoose ? 'loose' : 'clash';
     }
     final c = keyCompat(shiftCamelot(beatGrid.camelot, beatShift), shiftCamelot(vocalGrid.camelot, vocalShift));
     if (c >= 0.99) return vocalShift == autoShift && vocalShift != 0 ? 'shifted' : 'perfect';
@@ -412,9 +412,18 @@ class MashupMaker {
         s += 0.55 * (tags[v.path]! + (tags[b.path] ?? 0));
         if (vibe.vocalFamily != null) s += genreFamily(v.genre) == vibe.vocalFamily ? 2.0 : -2.0;
         if (vibe.beatFamily != null) s += genreFamily(b.genre) == vibe.beatFamily ? 2.0 : -2.0;
-        final contrast = genreFamily(v.genre) != genreFamily(b.genre);
-        s += contrast ? 1.2 : -0.4;
-        if (v.year > 0 && b.year > 0 && (v.year - b.year).abs() >= 10) s += 0.5;
+        // Asked for by name ("country vocals over hip hop"): the pairing is
+        // already decided, so only the energy still counts.
+        final asked = vibe.vocalFamily != null || vibe.beatFamily != null;
+        final vEnergy = v.analysis!.energy, bEnergy = b.analysis!.energy;
+        s += asked ? -1.2 * (vEnergy - bEnergy).abs() : pairFeel(v.genre, b.genre, vEnergy, bEnergy);
+        if (vibe.themed && genreFamily(v.genre) == 'other' && _gentleFamilies.contains(genreFamily(b.genre))) s += 0.4;
+        s -= beatBusyCost(
+          drums: b.stems?.relative('drums'),
+          bass: b.stems?.relative('bass'),
+          vocalShare: b.stems?.vocalShare,
+        );
+        if (v.year > 0 && b.year > 0 && (v.year - b.year).abs() >= 10) s += 0.15;
         if (v.analysis!.tempoDrift > 0.04) s -= 0.4;
         s += rng.nextDouble() * 0.5;
         pairs.add(_Pair(v, b, vg, bg, shift, s));
@@ -431,6 +440,28 @@ class MashupMaker {
   static bool isUsed(Set<String> used, LibraryTrack t) => used.contains(t.path) || used.contains(songKey(t));
   static String songKey(LibraryTrack t) => t.songKey;
 
+  /// How well a vocal and beat should suit each other, before their notes are
+  /// known: related styles and similar energy, so they don't compete.
+  static double pairFeel(String vocalGenre, String beatGenre, double vocalEnergy, double beatEnergy) {
+    final style = switch (feelGap(vocalGenre, beatGenre)) { 0 => 0.5, 1 => 0.2, _ => -1.2 };
+    return style - 1.2 * (vocalEnergy - beatEnergy).abs();
+  }
+
+  /// What a beat costs for leaving less room for a singer: [drums] and [bass]
+  /// are how they sit against its melody parts in dB (low means the melody
+  /// dominates), and [vocalShare] how much singing its own song had (more can
+  /// leave traces behind). Unknown until the song has been split.
+  static double beatBusyCost({double? drums, double? bass, double? vocalShare}) {
+    var cost = 0.0;
+    if (drums != null && bass != null) cost += (-(drums + bass) / 2 / 10).clamp(0.0, 1.0) * 0.8;
+    if (vocalShare != null) cost += ((vocalShare - 0.25) / 0.25).clamp(0.0, 1.0) * 0.6;
+    return cost;
+  }
+
+  /// Gentle styles for a theme vocal whose genre tag says nothing about its
+  /// sound (Christmas, say).
+  static const _gentleFamilies = {'rnb', 'pop', 'jazz', 'country', 'reggae'};
+
   /// What it costs a set to move from beat [from] to beat [to]: same BPM isn't
   /// the same feel, so the style and energy count too. Null if it's a jump in
   /// mood, unless [loose] (when nothing connected is left, a set beats no set).
@@ -446,7 +477,7 @@ class MashupMaker {
   /// within 6% of the tempo the set is at, so the blend can match it, and feel
   /// connected to the beat before it ([after], or [prev]'s).
   _Pair? pickNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected,
-      {LibraryTrack? after, bool looseFeel = false}) {
+      {LibraryTrack? after, bool looseFeel = false, double minFit = vocalFitMin}) {
     final before = after ?? prev?.beat;
     final target = targetTempo(p);
     _Pair? best;
@@ -457,6 +488,11 @@ class MashupMaker {
       if (prev != null && (math.log(x.tempo / prev.tempo)).abs() > math.log(1.06)) continue;
       final move = moveCost(before, x.beat, loose: looseFeel);
       if (move == null) continue;
+      // Already split: their notes can rule them out without any more work.
+      if (byNotes(x, null, minVocal: minFit) == null) {
+        rejected.add(x.key);
+        continue;
+      }
       var s = x.score - move - 9 * (math.log(x.tempo / target)).abs() - 2 * (x.bGrid.energy - vibe.energyAt(p)).abs();
       if (prev != null) s += keyCompat(prev.beatGrid.camelot, x.bGrid.camelot);
       if (s > bestScore) {
@@ -1210,14 +1246,18 @@ class MashupMaker {
 
   /// A singer's own band scores about 0.7 on [notesFit]; below these the
   /// notes clash, whatever the key labels say.
-  static const vocalFitMin = 0.3, beatFitMin = 0.5;
+  static const vocalFitMin = 0.45, beatFitMin = 0.5;
+
+  /// The lowest a vocal can fit its beat when a set has run out of better
+  /// pairings, or if its fit with the anchor pulls the overall score down.
+  static const vocalFitLoose = 0.3;
 
   /// The pairing's key shifts chosen on the songs' real notes (once both are
   /// split): the beat into the anchor's notes, and the vocal into the notes
   /// it sings over (the anchor where it comes in, then its own beat). Null
   /// if they clash whatever the shift ([strict]); unchanged when the notes
   /// aren't known.
-  _Pair? byNotes(_Pair p, AnchorBeat? anchor, {bool strict = true}) {
+  _Pair? byNotes(_Pair p, AnchorBeat? anchor, {bool strict = true, double minVocal = vocalFitMin}) {
     final v = p.vocal.stems?.chroma['vocals'], b = p.beat.stems?.chroma['music'];
     if (v == null || b == null) return p;
     final a = anchor?.track.stems?.chroma['music'];
@@ -1234,7 +1274,7 @@ class MashupMaker {
       if (strict && notesFit(b, bs, a, 0) < beatFitMin) return null;
     }
     if (p.vocal == p.beat) return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, p.shift, p.score, bs);
-    final vs = vocalShiftByNotes(v, b, bs, a, strict: strict);
+    final vs = vocalShiftByNotes(v, b, bs, a, strict: strict, minVocal: minVocal);
     if (vs == null) return null;
     return _Pair(p.vocal, p.beat, p.vGrid, p.bGrid, vs, p.score, bs);
   }
@@ -1244,7 +1284,8 @@ class MashupMaker {
   /// anchor and the rest of the song over their own beat, so the beat counts
   /// most, and a good fit with the anchor can't excuse a clash with the beat.
   /// Null if they clash ([strict]).
-  static int? vocalShiftByNotes(List<double> v, List<double> b, int beatShift, List<double>? a, {bool strict = true}) {
+  static int? vocalShiftByNotes(List<double> v, List<double> b, int beatShift, List<double>? a,
+      {bool strict = true, double minVocal = vocalFitMin}) {
     double own(int s) => notesFit(v, s, b, beatShift);
     double fit(int s) => a == null ? own(s) : 0.75 * own(s) + 0.25 * notesFit(v, s, a, 0);
     var vs = 0, best = -2.0;
@@ -1255,7 +1296,7 @@ class MashupMaker {
         vs = s;
       }
     }
-    if (strict && (fit(vs) < vocalFitMin || own(vs) < vocalFitMin)) return null;
+    if (strict && (fit(vs) < vocalFitLoose || own(vs) < minVocal)) return null;
     return vs;
   }
 
@@ -1865,7 +1906,13 @@ class MashupSession {
   /// …and beats whose grooves have gaps, skipped until the set runs short.
   final Set<String> _gappy = {};
   bool _relaxed = false;
-  bool _looseFeel = false; // nothing connected left: allow a jump in mood rather than end the set
+  bool _looseFeel = false; // nothing better left: allow weaker matches rather than end the set
+  double get _minFit => _looseFeel ? MashupMaker.vocalFitLoose : MashupMaker.vocalFitMin;
+
+  void _loosen() {
+    _looseFeel = true;
+    _rejected.clear(); // what the stricter rules turned down gets another look
+  }
   bool cancelled = false;
   int target = 0;
 
@@ -1879,7 +1926,7 @@ class MashupSession {
   /// Builds a pairing once its songs are split, keyed on their real notes;
   /// null (and not tried again) if the notes clash.
   Mashup? _build(_Pair p) {
-    final q = maker.byNotes(p, anchorMode ? anchor : null);
+    final q = maker.byNotes(p, anchorMode ? anchor : null, minVocal: _minFit);
     if (q == null) {
       _rejected.add(p.key);
       return null;
@@ -1904,6 +1951,11 @@ class MashupSession {
       if (move == null) continue;
       final a = _anchoredPair(x);
       if (a == null) continue;
+      // Already split: their notes can rule them out without any more work.
+      if (maker.byNotes(a, anchor, minVocal: _minFit) == null) {
+        _rejected.add(x.key);
+        continue;
+      }
       final s = a.score - move - 2 * (a.bGrid.energy - maker.vibe.energyAt(pos)).abs();
       if (s > bestScore) {
         bestScore = s;
@@ -2032,7 +2084,7 @@ class MashupSession {
     while (!cancelled && mashups.length < target) {
       if (misses >= (anchorMode ? 12 : 6)) {
         if (!_looseFeel) {
-          _looseFeel = true;
+          _loosen();
           misses = 0;
           continue;
         }
@@ -2054,7 +2106,7 @@ class MashupSession {
         final after = picks.isNotEmpty ? picks.last.beat : (mashups.isNotEmpty ? mashups.last.beat : (anchorMode ? anchor?.track : null));
         final pick = anchorMode
             ? _pickAnchored(p, used, after)
-            : maker.pickNext(_ranked, prevSim, p, used, _rejected, after: after, looseFeel: _looseFeel);
+            : maker.pickNext(_ranked, prevSim, p, used, _rejected, after: after, looseFeel: _looseFeel, minFit: _minFit);
         if (pick == null) break;
         if (!anchorMode && prevTempo > 0 && (math.log(pick.tempo / prevTempo)).abs() > math.log(1.06)) break;
         picks.add(pick);
@@ -2066,7 +2118,7 @@ class MashupSession {
       }
       if (picks.isEmpty) {
         if (!_looseFeel) {
-          _looseFeel = true;
+          _loosen();
           continue;
         }
         if (anchorMode && !_relaxed) {
@@ -2108,7 +2160,7 @@ class MashupSession {
     for (var attempt = 0; attempt < 6; attempt++) {
       final pick = anchorMode
           ? _pickAnchored(p, {..._used, ...avoid}, prev?.beat ?? anchor?.track)
-          : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected, looseFeel: true);
+          : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected, looseFeel: true, minFit: _minFit);
       if (pick == null) return null;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
       final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : _build(pick);

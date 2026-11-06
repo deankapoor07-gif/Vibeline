@@ -33,6 +33,14 @@ void main() {
       expect(MashupMaker.vocalShiftByNotes(everything, everything, 0, null), 0);
     });
 
+    test('a borderline fit passes only when a set has run out of better ones', () {
+      // Two real songs that fit at about 0.36: under the normal bar, over the loose one.
+      const v = <double>[0.097, 0.088, 0.088, 0.086, 0.114, 0.094, 0.067, 0.056, 0.06, 0.075, 0.074, 0.101];
+      const b = <double>[0.098, 0.133, 0.047, 0.114, 0.036, 0.103, 0.111, 0.038, 0.107, 0.029, 0.145, 0.041];
+            expect(MashupMaker.vocalShiftByNotes(v, b, 0, null), isNull);
+      expect(MashupMaker.vocalShiftByNotes(v, b, 0, null, minVocal: MashupMaker.vocalFitLoose), isNotNull);
+    });
+
     test('with no choice to make, a clash still gets a pitch', () {
       expect(MashupMaker.vocalShiftByNotes(everything, wannaBeStartin, beatShift, pumpUpTheJam, strict: false), isNotNull);
     });

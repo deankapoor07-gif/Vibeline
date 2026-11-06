@@ -23,6 +23,28 @@ void main() {
     expect(MashupMaker.moveCost(null, song('Dance')), 0, reason: 'nothing before it');
   });
 
+  test('a vocal and beat that suit each other score higher than a clash of styles', () {
+    final suits = MashupMaker.pairFeel('R&B/Soul', 'R&B/Soul', 0.5, 0.5);
+    final related = MashupMaker.pairFeel('R&B/Soul', 'Pop', 0.5, 0.5);
+    final clash = MashupMaker.pairFeel('Reggae', 'Hard Rock', 0.5, 0.5);
+    expect(suits, greaterThan(related));
+    expect(related, greaterThan(clash));
+  });
+
+  test('a big gap in energy counts against a pair even in matching styles', () {
+    expect(MashupMaker.pairFeel('Pop', 'Pop', 0.2, 0.9), lessThan(MashupMaker.pairFeel('Pop', 'Pop', 0.5, 0.5)));
+  });
+
+  test('a beat with strong drums and bass and little singing leaves the most room', () {
+    final plain = MashupMaker.beatBusyCost(drums: 2, bass: 2, vocalShare: 0.2);
+    final melodic = MashupMaker.beatBusyCost(drums: -8, bass: -8, vocalShare: 0.2);
+    final sung = MashupMaker.beatBusyCost(drums: 2, bass: 2, vocalShare: 0.45);
+    expect(plain, 0);
+    expect(melodic, greaterThan(plain));
+    expect(sung, greaterThan(plain));
+    expect(MashupMaker.beatBusyCost(), 0, reason: 'not split yet: nothing to go on');
+  });
+
   test('a set still finishes when only jumps are left, as the last choice', () {
     final jump = MashupMaker.moveCost(song('Reggae'), song('Dance'), loose: true)!;
     final related = MashupMaker.moveCost(song('Reggae'), song('Pop'), loose: true)!;
