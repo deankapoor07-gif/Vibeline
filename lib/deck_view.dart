@@ -272,7 +272,8 @@ class _Deck extends StatelessWidget {
   /// A record only turns while it's the one playing.
   double get _spin => d.role == 'NEXT' || !d.loaded ? 0 : pos;
 
-  Widget _numbers() => FittedBox(
+  /// The BPM sits here only when there's no turntable to show it in the middle.
+  Widget _numbers({required bool showBpm}) => FittedBox(
         fit: BoxFit.scaleDown,
         alignment: mirrored ? Alignment.topRight : Alignment.topLeft,
         child: SizedBox(
@@ -298,13 +299,15 @@ class _Deck extends StatelessWidget {
                 style: const TextStyle(fontSize: 11, color: Colors.white60),
               ),
               const SizedBox(height: 10),
-              Text(
-                d.bpm.isEmpty ? '--' : d.bpm,
-                style: const TextStyle(fontSize: 26, height: 1, fontWeight: FontWeight.w700, color: Colors.white, fontFeatures: [FontFeature.tabularFigures()]),
-              ),
-              const SizedBox(height: 2),
-              const Text('BPM', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
-              const SizedBox(height: 8),
+              if (showBpm) ...[
+                Text(
+                  d.bpm.isEmpty ? '--' : d.bpm,
+                  style: const TextStyle(fontSize: 26, height: 1, fontWeight: FontWeight.w700, color: Colors.white, fontFeatures: [FontFeature.tabularFigures()]),
+                ),
+                const SizedBox(height: 2),
+                const Text('BPM', style: TextStyle(fontSize: 9, letterSpacing: 1, color: Colors.white54)),
+                const SizedBox(height: 8),
+              ],
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                 decoration: BoxDecoration(
@@ -346,14 +349,14 @@ class _Deck extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, box) {
           final side = math.min(box.maxHeight, box.maxWidth - _numbersWidth - 8);
-          final numbers = SizedBox(width: math.min(_numbersWidth, box.maxWidth), height: box.maxHeight, child: _numbers());
+          final numbers = SizedBox(width: math.min(_numbersWidth, box.maxWidth), height: box.maxHeight, child: _numbers(showBpm: side < 50));
           if (side < 50) return Align(alignment: mirrored ? Alignment.topRight : Alignment.topLeft, child: numbers);
           final table = Expanded(
             child: Center(
               child: SizedBox(
                 width: side,
                 height: side,
-                child: CustomPaint(painter: _TurntablePainter(_spin, d.color, loaded: d.loaded, lit: lit)),
+                child: CustomPaint(painter: _TurntablePainter(_spin, d.color, bpm: d.bpm, loaded: d.loaded, lit: lit)),
               ),
             ),
           );
@@ -365,16 +368,17 @@ class _Deck extends StatelessWidget {
 }
 
 /// A record player seen from above: a metal platter with its strobe dots, a
-/// grooved record, a plain grey label reading DJ, and the tonearm resting on the
+/// grooved record, a plain grey label showing the BPM (DJ on an empty deck), and the tonearm resting on the
 /// record. The record turns at 33⅓ with the music, so it stops when the set does.
 /// The record itself stays black and silver, like the real thing; the deck's
 /// colour only shows as a glowing ring round the record while it's playing.
 class _TurntablePainter extends CustomPainter {
   final double pos;
   final Color color;
+  final String bpm;
   final bool loaded;
   final bool lit;
-  _TurntablePainter(this.pos, this.color, {this.loaded = true, this.lit = false});
+  _TurntablePainter(this.pos, this.color, {this.bpm = '', this.loaded = true, this.lit = false});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -466,15 +470,35 @@ class _TurntablePainter extends CustomPainter {
         ..strokeWidth = math.max(0.6, label * 0.018)
         ..color = Colors.white.withValues(alpha: 0.18),
     );
-    final dj = TextPainter(
-      text: TextSpan(
-        text: 'DJ',
-        style: TextStyle(fontSize: label * 0.95, height: 1, fontWeight: FontWeight.w900, letterSpacing: -label * 0.02, color: loaded ? Colors.white : Colors.white38),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    dj.paint(canvas, Offset(-dj.width / 2, -dj.height / 2));
+    // A small mark on the label's rim, so you can see the record turning.
+    canvas.drawLine(
+      Offset(0, -label * 0.96),
+      Offset(0, -label * 0.8),
+      Paint()
+        ..strokeWidth = math.max(1.5, label * 0.035)
+        ..strokeCap = StrokeCap.round
+        ..color = Colors.white70,
+    );
     canvas.restore();
+
+    // The writing stays upright so it can be read while the record spins.
+    void write(String text, double fontSize, double y, Color colour, {FontWeight weight = FontWeight.w800, double spacing = 0}) {
+      final t = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(fontSize: fontSize, height: 1, fontWeight: weight, letterSpacing: spacing, color: colour, fontFeatures: const [FontFeature.tabularFigures()]),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      t.paint(canvas, c + Offset(-t.width / 2, y - t.height / 2));
+    }
+
+    if (loaded && bpm.isNotEmpty) {
+      write(bpm, label * 0.5, -label * 0.1, Colors.white);
+      write('BPM', label * 0.17, label * 0.34, Colors.white60, weight: FontWeight.w700, spacing: label * 0.02);
+    } else {
+      write('DJ', label * 0.95, 0, loaded ? Colors.white : Colors.white38, weight: FontWeight.w900, spacing: -label * 0.02);
+    }
 
     // The tonearm: base at the top right, its head resting on the record.
     final pivot = Offset(c.dx + r * 0.98, c.dy - r * 0.88);
@@ -515,7 +539,7 @@ class _TurntablePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color || old.loaded != loaded || old.lit != lit;
+  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color || old.bpm != bpm || old.loaded != loaded || old.lit != lit;
 }
 
 /// The mix around the playhead, drawn the way DJ software does: the overall
