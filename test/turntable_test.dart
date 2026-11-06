@@ -35,6 +35,7 @@ void main() {
                   vocalFader: kFaderHome,
                   beatFader: kFaderHome,
                   crossfader: 0,
+                  master: 0,
                   muteVocal: false,
                   muteBeat: false,
                   fx: FxSettings(Mixer()),
@@ -43,6 +44,7 @@ void main() {
                   onVocalFader: (_) {},
                   onBeatFader: (_) {},
                   onCrossfader: (_) {},
+                  onMaster: (_) {},
                   onMuteVocal: () {},
                   onMuteBeat: () {},
                   onKnob: () {},
@@ -55,6 +57,13 @@ void main() {
       expect(t.takeException(), isNull);
     });
   }
+
+  test('master: the middle leaves the level alone, full left is silent', () {
+    expect(masterDb(0), 0);
+    expect(masterDb(1), closeTo(6, 0.001));
+    expect(masterDb(-0.5), closeTo(-20, 0.001));
+    expect(masterDb(-1), -60);
+  });
 
   test('faders: home leaves the level alone, the bottom is silent', () {
     expect(faderDb(kFaderHome), 0);

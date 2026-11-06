@@ -108,7 +108,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   // Song library panel
   bool _libraryOpen = true;
   // The mixer between the decks.
-  double _vocalFader = kFaderHome, _beatFader = kFaderHome, _crossfader = 0;
+  double _vocalFader = kFaderHome, _beatFader = kFaderHome, _crossfader = 0, _master = 0;
   int? _libTarget;
   bool _libAsVocal = true;
   String? _analyseStatus;
@@ -636,8 +636,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     final (xVocal, xBeat) = crossfadeDb(_crossfader);
     return {
       ..._withExtras(_planLive),
-      'trimVocal': faderDb(_vocalFader) + xVocal,
-      'trimBeat': faderDb(_beatFader) + xBeat,
+      'trimVocal': faderDb(_vocalFader) + xVocal + masterDb(_master),
+      'trimBeat': faderDb(_beatFader) + xBeat + masterDb(_master),
     };
   }
 
@@ -1275,13 +1275,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       );
 
   Widget _mixerPanel(double Function(bool vocal) level) {
-    double scale(double fader, double cross) => math.pow(10, (faderDb(fader) + cross) / 20).toDouble();
+    double scale(double fader, double cross) => math.pow(10, (faderDb(fader) + cross + masterDb(_master)) / 20).toDouble();
     final (xVocal, xBeat) = crossfadeDb(_crossfader);
     return MixerPanel(
       hasVocal: _mashupMode,
       vocalFader: _vocalFader,
       beatFader: _beatFader,
       crossfader: _crossfader,
+      master: _master,
       muteVocal: _muteVocal,
       muteBeat: _muteBeat,
       fx: _fx,
@@ -1290,6 +1291,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       onVocalFader: (v) => _live(() => _vocalFader = v),
       onBeatFader: (v) => _live(() => _beatFader = v),
       onCrossfader: (v) => _live(() => _crossfader = v),
+      onMaster: (v) => _live(() => _master = v),
       onMuteVocal: () => _setMute(vocal: !_muteVocal),
       onMuteBeat: () => _setMute(beat: !_muteBeat),
       onKnob: () => setState(() {}),

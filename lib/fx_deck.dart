@@ -404,7 +404,7 @@ class Knob extends StatelessWidget {
             children: [
               SizedBox(width: 54, height: 54, child: CustomPaint(painter: _KnobPainter(value, bipolar, accent))),
               const SizedBox(height: 4),
-              Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white60)),
+              Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white60)),
             ],
           ),
         ),

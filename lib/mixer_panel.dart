@@ -16,6 +16,13 @@ double faderDb(double v) {
   return (v - kFaderHome) / kFaderHome * 40;
 }
 
+/// The master knob (-1..1) as a level: the middle is 0 dB, full right +6, full
+/// left off. It only changes what you hear, never the saved mix.
+double masterDb(double v) {
+  if (v <= -0.99) return -60;
+  return v >= 0 ? v * 6 : v * 40;
+}
+
 /// What the crossfader takes off each layer: full left is only the vocal, full
 /// right only the beat, and the middle leaves both alone.
 (double vocalDb, double beatDb) crossfadeDb(double x) {
@@ -26,11 +33,11 @@ double faderDb(double v) {
 /// The mixer between the decks. Everything on it changes the sound live.
 class MixerPanel extends StatelessWidget {
   final bool hasVocal;
-  final double vocalFader, beatFader, crossfader;
+  final double vocalFader, beatFader, crossfader, master;
   final bool muteVocal, muteBeat;
   final FxSettings fx;
   final double meterVocal, meterBeat;
-  final void Function(double) onVocalFader, onBeatFader, onCrossfader;
+  final void Function(double) onVocalFader, onBeatFader, onCrossfader, onMaster;
   final VoidCallback onMuteVocal, onMuteBeat, onKnob;
 
   const MixerPanel({
@@ -39,6 +46,7 @@ class MixerPanel extends StatelessWidget {
     required this.vocalFader,
     required this.beatFader,
     required this.crossfader,
+    required this.master,
     required this.muteVocal,
     required this.muteBeat,
     required this.fx,
@@ -47,6 +55,7 @@ class MixerPanel extends StatelessWidget {
     required this.onVocalFader,
     required this.onBeatFader,
     required this.onCrossfader,
+    required this.onMaster,
     required this.onMuteVocal,
     required this.onMuteBeat,
     required this.onKnob,
@@ -66,31 +75,38 @@ class MixerPanel extends StatelessWidget {
     return Expanded(child: Row(children: meterFirst ? [m, const SizedBox(width: 6), f] : [f, const SizedBox(width: 6), m]));
   }
 
+  Widget _master() => Tooltip(
+        message: 'Master: the overall volume. Double-click to put it back. Saved mixes are not affected.',
+        waitDuration: const Duration(seconds: 1),
+        child: Knob(label: 'MASTER\nLEVEL', value: master, bipolar: true, accent: kRigAmber, onChanged: onMaster),
+      );
+
   Widget _body() {
     final title = fx.colour.label.toUpperCase();
     if (!hasVocal) {
       return Column(children: [
-        Knob(
-          label: title,
-          value: fx.beatKnob,
-          bipolar: true,
-          accent: kRigAmber,
-          onChanged: (v) {
-            fx.beatKnob = v;
-            fx.sendColour();
-            onKnob();
-          },
-        ),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+          Knob(
+            label: '$title\nBEAT',
+            value: fx.beatKnob,
+            bipolar: true,
+            accent: kTeal,
+            onChanged: (v) {
+              fx.beatKnob = v;
+              fx.sendColour();
+              onKnob();
+            },
+          ),
+          _master(),
+        ]),
         const SizedBox(height: 10),
         Expanded(child: _Meter(meterBeat, wide: true)),
       ]);
     }
     return Column(children: [
-      Text(title, style: const TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.w700, color: Colors.white54)),
-      const SizedBox(height: 2),
       Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
         Knob(
-          label: 'VOCAL',
+          label: '$title\nVOCAL',
           value: fx.vocalKnob,
           bipolar: true,
           accent: kPink,
@@ -100,8 +116,9 @@ class MixerPanel extends StatelessWidget {
             onKnob();
           },
         ),
+        _master(),
         Knob(
-          label: 'BEAT',
+          label: '$title\nBEAT',
           value: fx.beatKnob,
           bipolar: true,
           accent: kTeal,
@@ -147,7 +164,8 @@ class MixerPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: _width,
-      color: kPanel,
+      decoration: const BoxDecoration(gradient: kRigPanelFace),
+      foregroundDecoration: BoxDecoration(border: Border.all(color: kLine)),
       child: LayoutBuilder(
         builder: (context, box) => FittedBox(
           fit: BoxFit.scaleDown,

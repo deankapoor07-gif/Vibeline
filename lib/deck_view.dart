@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 
 import 'fx_deck.dart';
 import 'mixer.dart';
+import 'rig.dart';
 import 'sections.dart';
 
 // The look: near-black, crisp white text, and a few loud colours that each
@@ -169,7 +170,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
                         const SizedBox(width: 6),
                         if (widget.mixer != null && box.maxWidth >= 620) ...[widget.mixer!(_levelOf), const SizedBox(width: 6)],
                       ],
-                      Expanded(child: _Deck(widget.decks[i], pos, mirrored: i == 1)),
+                      Expanded(child: _Deck(widget.decks[i], pos, lit: _isLit(widget.decks[i]), mirrored: i == 1)),
                     ],
                   ],
                 ),
@@ -179,6 +180,14 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
         );
       },
     );
+  }
+
+  /// A deck's ring is on only while you can actually hear that deck.
+  bool _isLit(DeckInfo d) {
+    if (!widget.playing || !d.loaded || d.role == 'NEXT') return false;
+    if (d.role == 'VOCAL' && widget.vocalMuted) return false;
+    if (d.role == 'BEAT' && widget.beatMuted) return false;
+    return true;
   }
 
   /// How loud one layer of the set is at this moment, from its waveform (0..1).
@@ -254,8 +263,9 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
 class _Deck extends StatelessWidget {
   final DeckInfo d;
   final double pos;
+  final bool lit;
   final bool mirrored;
-  const _Deck(this.d, this.pos, {this.mirrored = false});
+  const _Deck(this.d, this.pos, {this.lit = false, this.mirrored = false});
 
   static const _numbersWidth = 150.0;
 
@@ -325,8 +335,13 @@ class _Deck extends StatelessWidget {
       padding: const EdgeInsets.all(8),
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
-        color: kPanel,
-        border: Border(top: BorderSide(color: d.loaded ? d.color : Colors.white24, width: 2)),
+        gradient: kRigPanelFace,
+        border: Border(
+          top: BorderSide(color: d.loaded ? d.color : Colors.white24, width: 2),
+          left: const BorderSide(color: kLine),
+          right: const BorderSide(color: kLine),
+          bottom: const BorderSide(color: kLine),
+        ),
       ),
       child: LayoutBuilder(
         builder: (context, box) {
@@ -338,7 +353,7 @@ class _Deck extends StatelessWidget {
               child: SizedBox(
                 width: side,
                 height: side,
-                child: CustomPaint(painter: _TurntablePainter(_spin, loaded: d.loaded)),
+                child: CustomPaint(painter: _TurntablePainter(_spin, d.color, loaded: d.loaded, lit: lit)),
               ),
             ),
           );
@@ -352,12 +367,14 @@ class _Deck extends StatelessWidget {
 /// A record player seen from above: a metal platter with its strobe dots, a
 /// grooved record, a plain grey label reading DJ, and the tonearm resting on the
 /// record. The record turns at 33⅓ with the music, so it stops when the set does.
-/// It looks the same loaded or empty, apart from the DJ lighting up: Dean wants
-/// proper turntables, with the deck's colour kept to the details beside them.
+/// The record itself stays black and silver, like the real thing; the deck's
+/// colour only shows as a glowing ring round the record while it's playing.
 class _TurntablePainter extends CustomPainter {
   final double pos;
+  final Color color;
   final bool loaded;
-  _TurntablePainter(this.pos, {this.loaded = true});
+  final bool lit;
+  _TurntablePainter(this.pos, this.color, {this.loaded = true, this.lit = false});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -367,7 +384,14 @@ class _TurntablePainter extends CustomPainter {
     final angle = pos * (100 / 3) / 60 * 2 * math.pi;
 
     // Metal platter edge, with strobe dots that travel round with it.
-    canvas.drawCircle(c, r, Paint()..color = const Color(0xFF3A3A44));
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..shader = SweepGradient(
+          colors: const [Color(0xFF55555F), Color(0xFF2C2C34), Color(0xFF4A4A54), Color(0xFF2C2C34), Color(0xFF55555F)],
+        ).createShader(Rect.fromCircle(center: c, radius: r)),
+    );
     canvas.drawCircle(
       c,
       r,
@@ -404,6 +428,28 @@ class _TurntablePainter extends CustomPainter {
           colors: const [Color(0x00FFFFFF), Color(0x24FFFFFF), Color(0x00FFFFFF), Color(0x00FFFFFF), Color(0x24FFFFFF), Color(0x00FFFFFF), Color(0x00FFFFFF)],
           stops: const [0.05, 0.12, 0.2, 0.55, 0.62, 0.7, 1],
         ).createShader(Rect.fromCircle(center: c, radius: vinyl)),
+    );
+
+    // The ring round the record: lit in the deck's colour, otherwise a dark line.
+    final ringWidth = math.max(1.5, side * 0.007);
+    if (lit) {
+      canvas.drawCircle(
+        c,
+        vinyl,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = ringWidth * 3
+          ..color = color.withValues(alpha: 0.55)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(3, side * 0.016)),
+      );
+    }
+    canvas.drawCircle(
+      c,
+      vinyl,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ringWidth
+        ..color = lit ? Color.lerp(color, Colors.white, 0.2)! : const Color(0xFF1C1C22),
     );
 
     // The label, turning with the record so you can see it spin.
@@ -469,7 +515,7 @@ class _TurntablePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.loaded != loaded;
+  bool shouldRepaint(_TurntablePainter old) => old.pos != pos || old.color != color || old.loaded != loaded || old.lit != lit;
 }
 
 /// The mix around the playhead, drawn the way DJ software does: the overall

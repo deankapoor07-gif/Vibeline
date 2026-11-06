@@ -1,5 +1,12 @@
 import 'package:flutter/material.dart';
 
+/// The brushed face of the deck and mixer panels: a touch lighter at the top.
+const kRigPanelFace = LinearGradient(
+  begin: Alignment.topCenter,
+  end: Alignment.bottomCenter,
+  colors: [Color(0xFF16161D), Color(0xFF0E0E13)],
+);
+
 /// The look of the hardware: square corners, small labels in capitals, and
 /// lights that show what's on.
 const kRigCorner = 3.0;
