@@ -182,17 +182,28 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   bool _autoplayPending = false;
+  /// A new set is still being made: it plays only once all of it is ready,
+  /// so nothing is built behind the music (which made it stutter) and the
+  /// set can't change under you before it starts.
+  bool _building = false;
 
   void _sectionsChanged() {
     if (!mounted) return;
     setState(() {});
-    // Start playing only once the opening is rendered (no silent start).
-    if (_autoplayPending && _sections.sections.isNotEmpty && _sections.sections.first.path != null) {
+    if (!_autoplayPending) return;
+    if (_sections.settled) {
       _autoplayPending = false;
+      _set(_readyStatus ?? 'Ready', phase: Phase.ready);
       _mixer.play(from: 0);
       setState(() => _playing = true);
+    } else {
+      final n = _sections.sections.length;
+      _set('Mixing your set · ${_sections.ready} of $n parts ready · it starts playing once the whole set is done',
+          progress: n == 0 ? null : _sections.ready / n);
     }
   }
+
+  String? _readyStatus;
 
   Future<void> _startup() async {
     await _library.loadSettings();
@@ -386,28 +397,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         return;
       }
     }
-    var started = false;
-    // Builds progressively: plays as soon as the first mashups are ready and
-    // keeps preparing the rest in the background.
+    // The whole set is made first and only then plays: mixing the rest behind
+    // the music made it stutter, and a theme night could start over without
+    // the anchor and swap the opening song while you listened. Parts already
+    // made are mixed meanwhile, so the wait is shorter.
+    _building = true;
     final filling = session.fill(_library, count, (s) {
-      if (started) {
-        if (mounted && !session.cancelled) setState(() => _background = s);
-      } else {
-        _set('Making mashups · $s');
-      }
+      if (!session.cancelled) _set('Making mashups · $s · it starts playing once the whole set is done');
     }, () {
-      if (session.cancelled) return;
-      if (!started) {
-        started = true;
-        _relayoutMashups(autoplay: true);
-      } else {
-        _scheduleRelayout();
-      }
+      if (!session.cancelled) _scheduleRelayout();
     });
     _preparing = true;
     try {
       await filling;
     } finally {
+      _building = false;
       if (mounted) {
         setState(() {
           _preparing = false;
@@ -426,11 +430,18 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _set('Couldn\'t find vocals and beats that fit together for that vibe. Try a broader vibe.', phase: Phase.error);
       return;
     }
-    _learnInBackground(candidates);
     setState(() => _background = session.mashups.length < count
         ? 'Prepared ${session.mashups.length} of $count mashups — ran out of good pairings for this vibe'
         : null);
-    _scheduleRelayout();
+    _relayout?.cancel();
+    await _relayoutMashups(autoplay: true);
+    // Learning more songs waits until the set is mixed, so it doesn't slow that down.
+    unawaited(() async {
+      while (mounted && _autoplayPending && !session.cancelled) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+      if (mounted && !session.cancelled) _learnInBackground(candidates);
+    }());
   }
 
   int _learnRun = 0;
@@ -537,7 +548,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     await _mixer.setBeatGrid(_beatGrid);
     await _mixer.setLiveMap(_liveMap);
     await _sections.setPlan(json, cuts, remap: remap);
-    _set('Ready · ${_clock(duration)} · $summary', phase: Phase.ready);
+    _readyStatus = 'Ready · ${_clock(duration)} · $summary';
+    // Still making a new set: keep its progress showing, not "Ready".
+    if (!_building && !_autoplayPending) _set(_readyStatus!, phase: Phase.ready);
     _startTicker();
     if (autoplay) {
       _autoplayPending = true;
@@ -903,6 +916,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       // Always pass the last known mix time so native resume can't start at 0 / empty.
       // At the end of a finished set, play starts it again.
       final from = _duration > 0 && _position >= _duration - 0.1 && !_heldAtEnd ? 0.0 : _position;
+      // Pressed Play before the set finished mixing: your call, so don't
+      // start it again from the top when the mixing finishes.
+      _autoplayPending = false;
       await _mixer.play(from: from);
       if (mounted) setState(() => _playing = true);
     }

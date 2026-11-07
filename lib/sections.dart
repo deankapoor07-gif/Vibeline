@@ -47,6 +47,9 @@ class SectionEngine {
   int get ready => sections.where((s) => s.path != null).length;
   bool get allReady => sections.isNotEmpty && ready == sections.length;
 
+  /// Nothing left to render: every section is ready or has given up.
+  bool get settled => sections.isNotEmpty && sections.every((s) => s.path != null || (_failures[s.hash] ?? 0) >= 3);
+
   /// Seconds of audio ready from the playhead onwards without a gap.
   double get readyAhead {
     final p = playhead();
