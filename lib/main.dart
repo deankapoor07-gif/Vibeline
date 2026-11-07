@@ -301,8 +301,13 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       } else {
         await _makeBlendMix(vibe, ranked.map((e) => e.$1).toList());
       }
-    } catch (e) {
+    } catch (e, stack) {
       _set('Something went wrong: $e', phase: Phase.error);
+      // Kept so the cause can be found afterwards (the newest error only).
+      try {
+        File('${MusicLibrary.supportDir}/last_error.txt')
+            .writeAsStringSync('${DateTime.now()} · mashups ${_mashupMode ? 'on' : 'off'}\n$e\n$stack');
+      } catch (_) {}
     }
   }
 
