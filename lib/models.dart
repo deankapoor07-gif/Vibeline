@@ -30,6 +30,22 @@ class LibraryTrack {
   String get songKey =>
       'song:${title.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'\s(feat|ft)\..*$'), '').replaceAll(RegExp(r'\s-\s.*$'), '').replaceAll(RegExp(r'[^a-z0-9]'), '')}';
 
+  /// How loud the singing is between two song times (dB, relative; only the
+  /// beats that are really sung), or null if there's next to no singing there.
+  /// With no times, over the whole song.
+  double? sungDb([double from = 0, double to = double.infinity]) {
+    final v = stems?.vocalBeats, beats = analysis?.beats;
+    if (v == null || beats == null) return null;
+    var n = 0;
+    var sum = 0.0;
+    for (var i = 0; i < beats.length && i < v.length; i++) {
+      if (beats[i] < from || beats[i] >= to || v[i] < 0.25) continue;
+      sum += v[i] * v[i];
+      n++;
+    }
+    return n < 2 ? null : 10 * math.log(sum / n) / math.ln10;
+  }
+
   /// How much of source time [from]–[to] is sung (0..1), from the stems'
   /// per-beat vocal levels; null until the song has been split.
   double? vocalsBetweenSrc(double from, double to) {

@@ -608,6 +608,102 @@ class MashupMaker {
     return (st.dropout('drums', t0, t1) + stop, st.dropout('bass', t0, t1));
   }
 
+  /// Evens out a part's level the way an engineer rides a fader: how far to
+  /// move each stretch ([levels], null = nothing to judge) toward [baseline].
+  /// Three quarters of the way, so a chorus can still lift, and smoothed so it
+  /// never pumps. Never more than [maxUp] up or 6 dB down.
+  static List<double> rideDb(List<double?> levels, double baseline, {double maxUp = 6}) {
+    final raw = List<double?>.of(levels);
+    double? last;
+    for (var i = 0; i < raw.length; i++) {
+      raw[i] ??= last;
+      last = raw[i];
+    }
+    last = null;
+    for (var i = raw.length - 1; i >= 0; i--) {
+      raw[i] ??= last;
+      last = raw[i];
+    }
+    final move = [for (final l in raw) l == null ? 0.0 : 0.75 * (baseline - l)];
+    return [
+      for (var i = 0; i < move.length; i++)
+        (0.25 * move[math.max(0, i - 1)] + 0.5 * move[i] + 0.25 * move[math.min(move.length - 1, i + 1)]).clamp(-6.0, maxUp)
+    ];
+  }
+
+  /// [keys] with a fader move [ride] (dB at [times]) added. Keyframe gain can't
+  /// go above 1, so everything sits [head] dB lower and the clip [head] dB up.
+  static List<Keyframe> rideKeys(List<Keyframe> keys, List<double> times, List<double> ride, double head) {
+    double rideAt(double t) {
+      if (times.isEmpty) return 0;
+      if (t <= times.first) return ride.first;
+      if (t >= times.last) return ride.last;
+      var i = 0;
+      while (times[i + 1] < t) {
+        i++;
+      }
+      return ride[i] + (ride[i + 1] - ride[i]) * (t - times[i]) / (times[i + 1] - times[i]);
+    }
+
+    Keyframe between(Keyframe a, Keyframe b, double t) {
+      final x = b.t > a.t ? (t - a.t) / (b.t - a.t) : 0.0;
+      double l(double p, double q) => p + (q - p) * x;
+      // The engine sweeps filters on a log scale, so this adds no bend.
+      double lf(double p, double q) => math.exp(l(math.log(p), math.log(q)));
+      return Keyframe(t,
+          gain: l(a.gain, b.gain), low: l(a.low, b.low), mid: l(a.mid, b.mid), high: l(a.high, b.high),
+          hpf: lf(a.hpf, b.hpf), lpf: lf(a.lpf, b.lpf), echo: l(a.echo, b.echo), verb: l(a.verb, b.verb));
+    }
+
+    final out = <Keyframe>[...keys];
+    for (var i = 0; i + 1 < keys.length; i++) {
+      for (final t in times) {
+        if (t - keys[i].t > 0.03 && keys[i + 1].t - t > 0.03) out.add(between(keys[i], keys[i + 1], t));
+      }
+    }
+    out.sort((a, b) => a.t.compareTo(b.t));
+    return [
+      for (final k in out)
+        Keyframe(k.t,
+            gain: k.gain * math.pow(10, (rideAt(k.t) - head) / 20).toDouble(),
+            low: k.low, mid: k.mid, high: k.high, hpf: k.hpf, lpf: k.lpf, echo: k.echo, verb: k.verb)
+    ];
+  }
+
+  /// Rides a clip every 2 bars along [warp] (one [out time, song time] per
+  /// beat), by what [level] says of each stretch of the song. Returns the keys
+  /// and the clip's new gain, kept to at most [maxGain] dB.
+  static (List<Keyframe>, double) rideLevel(List<List<double>> warp, List<Keyframe> keys, double gainDb,
+      double? Function(double from, double to) level, double baseline, {double maxGain = 24}) {
+    final times = <double>[];
+    final levels = <double?>[];
+    for (var i = 0; i + 8 < warp.length; i += 8) {
+      times.add(warp[i + 4][0]);
+      levels.add(level(math.max(0, warp[i][1]), warp[i + 8][1]));
+    }
+    if (!levels.any((l) => l != null)) return (keys, gainDb);
+    final head = (maxGain - gainDb).clamp(0.0, 6.0);
+    return (rideKeys(keys, times, rideDb(levels, baseline, maxUp: head), head), gainDb + head);
+  }
+
+  static (List<Keyframe>, double) _rideVocal(LibraryTrack v, List<List<double>> warp, List<Keyframe> keys, double gainDb) {
+    final whole = v.sungDb();
+    return whole == null ? (keys, gainDb) : rideLevel(warp, keys, gainDb, v.sungDb, whole);
+  }
+
+  /// A beat's own breaks stay breaks: only its playing stretches are evened.
+  static (List<Keyframe>, double) _rideBeat(LibraryTrack b, List<List<double>> warp, List<Keyframe> keys, double gainDb) {
+    final st = b.stems;
+    if (st == null || !st.hasCurves) return (keys, gainDb);
+    final whole = st.levelDb('inst', warp.first[1], warp.last[1]);
+    double? level(double from, double to) {
+      final l = st.levelDb('inst', from, to);
+      return l < whole - 15 ? null : l;
+    }
+    // Pre-rendered beats get another 6 dB back later, within the same 24 dB limit.
+    return rideLevel(warp, keys, gainDb, level, whole, maxGain: 18);
+  }
+
   /// Gain that brings bars [from, to) of a song to a common loudness, as the
   /// ear hears it, measured on the part that actually plays (null when the
   /// stems haven't been measured).
@@ -1101,9 +1197,10 @@ class MashupMaker {
                 if (k.t > d) Keyframe(k.t, gain: k.gain * 0.708, echo: k.echo, verb: k.verb),
             ];
           }
+          var gain = m.beatGainDb + lift + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5);
+          if (lane.stem == 'vocals') (keys, gain) = _rideVocal(m.vocal, warp, keys, gain);
           clips.add(_clip(path, srcStartV, srcEndV, outStartV, m.vocalRate, m.vocalCents, group + li, vBeat * 0.75,
-              keys, gainDb: m.beatGainDb + lift + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5),
-              warp: warp, bus: 1));
+              keys, gainDb: gain, warp: warp, bus: 1));
           continue;
         }
         if (lane.fromVocalSong) continue; // beat break: no vocal-song lanes
@@ -1599,7 +1696,8 @@ class MashupMaker {
         keys = _withPockets(keys, spans, p);
         // Levelled on the bars that actually play, the same way as the
         // anchor, so no section jumps out or drops away.
-        final gain = sectionGainDb(m.beat, bg, m.beatStart, m.beatStart + b1 - b0) ?? m.beatGainDb;
+        var gain = sectionGainDb(m.beat, bg, m.beatStart, m.beatStart + b1 - b0) ?? m.beatGainDb;
+        (keys, gain) = _rideBeat(m.beat, warp, keys, gain);
         clips.add(_clip(beatStems.first, math.max(0, warp.first[1]), warp.last[1] + 0.05, bt(b0), 1.0, m.beatCents, group,
             p * 0.5, keys, gainDb: gain, warp: warp, mix: beatStems.skip(1).toList()));
       }
@@ -1630,10 +1728,12 @@ class MashupMaker {
               ...keys.skip(2).where((k) => k.t > full),
             ];
           }
+          var gain = m.beatGainDb + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5);
+          if (lane.stem == 'vocals') (keys, gain) = _rideVocal(m.vocal, warp, keys, gain);
           clips.add(_clip(path, math.max(0.0, warp.first[1]), warp.last[1] + 0.05, outStartV,
               (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]), m.vocalCents, group + li, p * 0.75,
               keys,
-              gainDb: m.beatGainDb + (lane.stem == 'vocals' ? m.autoVocalDb : m.autoVocalDb - 1.5), warp: warp, bus: 1));
+              gainDb: gain, warp: warp, bus: 1));
         }
         m.vocalRate = (warp.last[1] - warp.first[1]) / (warp.last[0] - warp.first[0]);
       }
