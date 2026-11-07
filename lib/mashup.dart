@@ -476,6 +476,15 @@ class MashupMaker {
   /// Best pairing to follow [prev] at set position [p]: its beat must be
   /// within 6% of the tempo the set is at, so the blend can match it, and feel
   /// connected to the beat before it ([after], or [prev]'s).
+  /// Whether [t] can be mixed by bar: everything here is built in bars of 4,
+  /// so a song in 3 drifts against the beat at any tempo. A song whose bars
+  /// read unclearly is only a last choice ([loose]); one not measured yet gets
+  /// checked before it's split.
+  static bool meterOk(LibraryTrack t, {bool loose = false}) {
+    final b = t.barBeats;
+    return b == null || b == 4 || (b == 0 && loose);
+  }
+
   _Pair? pickNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected,
       {LibraryTrack? after, bool looseFeel = false, double minFit = vocalFitMin}) {
     final before = after ?? prev?.beat;
@@ -485,6 +494,7 @@ class MashupMaker {
     var looked = 0;
     for (final x in ranked) {
       if (isUsed(used, x.vocal) || isUsed(used, x.beat) || rejected.contains(x.key)) continue;
+      if (!meterOk(x.vocal, loose: looseFeel) || !meterOk(x.beat, loose: looseFeel)) continue;
       if (prev != null && (math.log(x.tempo / prev.tempo)).abs() > math.log(1.06)) continue;
       final move = moveCost(before, x.beat, loose: looseFeel);
       if (move == null) continue;
@@ -1906,8 +1916,10 @@ class MashupSession {
   /// …and beats whose grooves have gaps, skipped until the set runs short.
   final Set<String> _gappy = {};
   bool _relaxed = false;
-  bool _looseFeel = false; // nothing better left: allow weaker matches rather than end the set
-  double get _minFit => _looseFeel ? MashupMaker.vocalFitLoose : MashupMaker.vocalFitMin;
+  bool _looseFeel = false; // nothing better left: allow bigger moves rather than end the set
+  /// Stays strict even when a set runs short: a shorter set beats a clash.
+  double get _minFit => MashupMaker.vocalFitMin;
+  bool _meterFits(_Pair p) => MashupMaker.meterOk(p.vocal, loose: _looseFeel) && MashupMaker.meterOk(p.beat, loose: _looseFeel);
 
   void _loosen() {
     _looseFeel = true;
@@ -1946,6 +1958,7 @@ class MashupSession {
     for (final x in _ranked) {
       if (MashupMaker.isUsed(used, x.vocal) || MashupMaker.isUsed(used, x.beat) || _rejected.contains(x.key)) continue;
       if (_badBeats.contains(x.beat.path) || _gappy.contains(x.beat.path)) continue;
+      if (!_meterFits(x)) continue;
       if (anchor != null && (_sameSong(x.beat, anchor!.track) || _sameSong(x.vocal, anchor!.track))) continue;
       final move = MashupMaker.moveCost(after, x.beat, loose: _looseFeel);
       if (move == null) continue;
@@ -1975,6 +1988,8 @@ class MashupSession {
     onStatus('Listening to "${song.title}"…');
     await lib.analyze([song], (d, t) {});
     if (song.analysis == null) return 'Couldn\'t find a steady beat in "${song.title}".';
+    await lib.meter([song]);
+    if (song.barBeats == 3) return _inThree(song);
     await lib.separate([song], (d, t, c) => onStatus('Splitting "${song.title}" into vocals and beat…'));
     if (song.stems == null) return 'Couldn\'t split "${song.title}".';
     final asVocal = song.stems!.vocalShare >= 0.08;
@@ -1995,6 +2010,9 @@ class MashupSession {
     for (var from = 0; from < math.min(pairs.length, 15); from += 3) {
       final batch = pairs.skip(from).take(3).toList();
       LibraryTrack partner(_Pair p) => asVocal ? p.beat : p.vocal;
+      await lib.meter([for (final p in batch) partner(p)]);
+      if (cancelled) return null;
+      batch.removeWhere((p) => !MashupMaker.meterOk(partner(p)));
       await lib.separate([for (final p in batch) partner(p)],
           (d, t, c) => onStatus('Finding the best ${asVocal ? 'beat' : 'vocal'} for "${song.title}"${c == null ? '' : ' · trying ${c.title}'}'));
       if (cancelled) return null;
@@ -2009,6 +2027,8 @@ class MashupSession {
     }
     return 'None of the best matches for "${song.title}" held up once split — try another song.';
   }
+
+  static String _inThree(LibraryTrack t) => '"${t.title}" has 3 beats to a bar, so it would drift against these beats. Try another song.';
 
   /// Picks and prepares the anchor (splits its stems). With [suits], only an
   /// anchor that at least one of those pairings fits.
@@ -2033,6 +2053,8 @@ class MashupSession {
         if (!suits.any((p) => !_sameSong(p.beat, t) && !_sameSong(p.vocal, t) && maker.anchored(p, trial) != null)) continue;
       }
       onStatus('Choosing the anchor beat · ${t.title}');
+      await lib.meter([t]);
+      if (!MashupMaker.meterOk(t)) continue;
       await lib.separate([t], (d, n, c) {});
       if (!MashupMaker.solidAnchor(t)) continue; // thin bass / drums, now we can hear it
       final a = maker.anchorFor(t);
@@ -2050,6 +2072,8 @@ class MashupSession {
     onStatus('Making "${t.title}" the anchor beat…');
     await lib.analyze([t], (d, n) {});
     if (t.analysis == null) return 'Couldn\'t find a steady beat in "${t.title}".';
+    await lib.meter([t]);
+    if (t.barBeats == 3) return _inThree(t);
     await lib.separate([t], (d, n, c) => onStatus(splitting(c ?? t)));
     final a = maker.anchorFor(t);
     if (a == null) return 'Couldn\'t use "${t.title}" as the anchor.';
@@ -2127,6 +2151,13 @@ class MashupSession {
         }
         break;
       }
+      onStatus('Checking the rhythm for mashup ${mashups.length + 1} of $target');
+      await lib.meter({for (final p in picks) ...[p.vocal, p.beat]}.toList());
+      if (cancelled) return;
+      // Later picks follow on from earlier ones, so stop at the first that fails.
+      final misfit = picks.indexWhere((p) => !_meterFits(p));
+      if (misfit >= 0) picks.removeRange(misfit, picks.length);
+      if (picks.isEmpty) continue; // those songs now can't be picked again
       final songs = {for (final p in picks) ...[p.vocal, p.beat]}.toList();
       await lib.separate(songs, (d, t, c) {
         onStatus('Splitting stems for mashup ${mashups.length + 1}–${mashups.length + picks.length} of $target'
@@ -2162,6 +2193,8 @@ class MashupSession {
           ? _pickAnchored(p, {..._used, ...avoid}, prev?.beat ?? anchor?.track)
           : maker.pickNext(_ranked, prev, p, {..._used, ...avoid}, _rejected, looseFeel: true, minFit: _minFit);
       if (pick == null) return null;
+      await lib.meter([pick.vocal, pick.beat]);
+      if (!MashupMaker.meterOk(pick.vocal, loose: true) || !MashupMaker.meterOk(pick.beat, loose: true)) continue;
       await lib.separate([pick.vocal, pick.beat], (d, t, c) => onStatus('Splitting stems${c == null ? '' : ' · ${c.title}'}'));
       final m = anchorMode && MashupMaker.weakBeat(pick.beat) ? null : _build(pick);
       if (anchorMode && m == null && MashupMaker.weakBeat(pick.beat)) {

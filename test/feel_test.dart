@@ -6,6 +6,16 @@ import 'package:vibeline/vibe.dart';
 void main() {
   LibraryTrack song(String genre) => LibraryTrack(path: '/\$genre.mp3', title: genre, artist: '', genre: genre, year: 0, duration: 200);
 
+  test('a song in 3 is never mixed; an unclear one only as a last choice', () {
+    LibraryTrack beats(int? n) => song('Pop')..barBeats = n;
+    expect(MashupMaker.meterOk(beats(4)), isTrue);
+    expect(MashupMaker.meterOk(beats(null)), isTrue, reason: 'not measured yet: checked before splitting');
+    expect(MashupMaker.meterOk(beats(3)), isFalse);
+    expect(MashupMaker.meterOk(beats(3), loose: true), isFalse, reason: 'running short never lets a waltz in');
+    expect(MashupMaker.meterOk(beats(0)), isFalse);
+    expect(MashupMaker.meterOk(beats(0), loose: true), isTrue);
+  });
+
   test('styles a set can move between', () {
     expect(feelGap('Reggae', 'Reggae'), 0);
     expect(feelGap('Reggae', 'R&B/Soul'), 1, reason: 'reggae can move to soul');

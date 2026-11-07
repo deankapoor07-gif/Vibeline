@@ -14,6 +14,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".aiff", ".aif", ".flac"}
 CACHE_DIR = os.path.expanduser("~/Library/Caches/Vibeline/analysis")
+METER_DIR = os.path.expanduser("~/Library/Caches/Vibeline/meter")
 STEM_DIR = os.path.expanduser("~/Library/Caches/Vibeline/stems")
 STEMS = ("vocals", "drums", "bass", "other")
 STEM_VERSION = 1
@@ -184,6 +185,38 @@ def _cache_path(path):
     st = os.stat(path)
     h = hashlib.sha1(f"{path}|{st.st_size}|{int(st.st_mtime)}|{CACHE_VERSION}".encode()).hexdigest()
     return os.path.join(CACHE_DIR, h + ".json")
+
+
+def _bar_beats(beats, downs):
+    """Beats to a bar: 4 (also 2/2, which lines up with 4/4), 3 (3/4 and 6/8,
+    which can't sit on a 4/4 beat), or 0 if the bars don't read clearly."""
+    gaps = {}
+    n = 0
+    for a, b in zip(downs, downs[1:]):
+        c = sum(1 for t in beats if a - 0.03 <= t < b - 0.03)
+        gaps[c] = gaps.get(c, 0) + 1
+        n += 1
+    if n < 8:
+        return 0
+    share = lambda c: gaps.get(c, 0) / n
+    if share(3) + share(6) >= 0.7:
+        return 3
+    if share(4) >= 0.7 or (share(4) >= 0.5 and share(4) + share(2) >= 0.8):
+        return 4
+    return 0
+
+
+def _meter_path(path):
+    return os.path.join(METER_DIR, os.path.basename(_cache_path(path)))
+
+
+def _save_meter(path, beats):
+    try:
+        os.makedirs(METER_DIR, exist_ok=True)
+        with open(_meter_path(path), "w") as fh:
+            json.dump({"beats": beats}, fh)
+    except OSError:
+        pass
 
 
 def _clean_beats(ticks):
@@ -394,6 +427,7 @@ def analyze_file(path, bt=None):
     if bt and len(bt[0]) >= 16:
         ticks, downbeats = bt
         confidence = 3.0
+        _save_meter(path, _bar_beats(ticks, downbeats))
     else:
         _, ticks, confidence, _, _ = es.RhythmExtractor2013(method="multifeature")(audio)
     beats = _clean_beats(list(ticks))
@@ -515,6 +549,36 @@ def cmd_known(paths):
                 emit(json.load(fh))
         except (OSError, ValueError):
             pass
+    emit({"type": "done"})
+
+
+def cmd_meter(paths):
+    """Says how many beats each song has to a bar, remembering the answer. Songs
+    it can't open get no answer, so they're not judged on a failed read."""
+    tracker = None
+    decoder = None
+    try:
+        for p in paths:
+            if not _on_this_mac(p):
+                continue
+            try:
+                with open(_meter_path(p)) as fh:
+                    emit({"type": "meter", "path": p, "beats": json.load(fh)["beats"]})
+                continue
+            except (OSError, ValueError, KeyError):
+                pass
+            if tracker is None:
+                tracker = _beat_tracker()
+                decoder = _Decoder()
+            bt = _track_beats(tracker, decoder, p)
+            if bt is None:
+                continue
+            beats = _bar_beats(*bt)
+            _save_meter(p, beats)
+            emit({"type": "meter", "path": p, "beats": beats})
+    finally:
+        if decoder is not None:
+            decoder.close()
     emit({"type": "done"})
 
 
@@ -1180,6 +1244,8 @@ if __name__ == "__main__":
         cmd_known(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "analyze":
         cmd_analyze(_expand_args(sys.argv[2:]))
+    elif len(sys.argv) >= 3 and sys.argv[1] == "meter":
+        cmd_meter(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "separate":
         cmd_separate(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "prestretch":

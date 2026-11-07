@@ -277,6 +277,16 @@ class MusicLibrary {
     }
   }
 
+  /// Measures beats to a bar for any of [wanted] not yet known (a few seconds a
+  /// song the first time; remembered on disk after).
+  Future<void> meter(List<LibraryTrack> wanted) async {
+    final byPath = {for (final t in wanted) if (t.barBeats == null) t.path: t};
+    if (byPath.isEmpty) return;
+    await for (final row in _run(['meter', ...byPath.keys])) {
+      if (row['type'] == 'meter') byPath[row['path']]?.barBeats = (row['beats'] as num?)?.toInt();
+    }
+  }
+
   /// Splits songs into stems (about 25 s a song the first time; cached after).
   Future<void> separate(List<LibraryTrack> wanted, void Function(int done, int total, LibraryTrack? current) onProgress) async {
     final todo = wanted.where((t) => t.stems == null).toList();
