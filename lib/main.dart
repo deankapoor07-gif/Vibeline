@@ -315,25 +315,40 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // A theme night: its songs play, and other songs' beats can bridge
     // between two that don't blend well.
     final ranked = vibe.themed ? all.where(vibe.fits).toList() : all;
-    final bridges = vibe.themed ? all.where((t) => !vibe.fits(t)).take(60).toList() : <LibraryTrack>[];
+    const rounds = 5;
+    final batch = math.max(48, vibe.trackCount * 5);
+    // Without a theme, songs further down the list can bridge too.
+    final bridges = (vibe.themed ? all.where((t) => !vibe.fits(t)) : all.skip(batch * rounds)).take(60).toList();
     final bridgeClock = ProgressClock();
     await _library.analyze(bridges, (done, total) {
       _set('Finding beats to bridge with… $done / $total${bridgeClock.tick(done, total)}', progress: total == 0 ? null : done / total);
     });
-    final batch = math.max(48, vibe.trackCount * 5);
     final seed = DateTime.now().millisecondsSinceEpoch; // same seed: same songs when planned again below
     MixPlan? plan;
     var wanted = <LibraryTrack>[];
-    for (var round = 0; round < 3; round++) {
-      wanted = ranked.take(batch * (round + 1)).toList();
+    // A few dozen songs can hold too few near one tempo, leaving a jump no
+    // blend hides (Poison 112 into Ride It 118): look at more songs until
+    // every step is small, keeping the smoothest set found.
+    for (var round = 0; round < rounds; round++) {
+      final more = ranked.take(batch * (round + 1)).toList();
       final clock = ProgressClock();
-      await _library.analyze(wanted, (done, total) {
+      await _library.analyze(more, (done, total) {
         _set('Listening to songs for "${vibe.summary}"… $done / $total${clock.tick(done, total)}', progress: total == 0 ? null : done / total);
       });
       _set('Planning the set…');
-      fitThemeTempo(vibe, wanted);
-      plan = MixPlanner(vibe, seed: seed).plan(wanted, bridges: bridges);
-      if (plan != null && plan.tracks.length >= math.min(vibe.trackCount, 4)) break;
+      fitThemeTempo(vibe, more);
+      final p = MixPlanner(vibe, seed: seed).plan(more, bridges: bridges);
+      final full = math.min(vibe.trackCount, 4);
+      bool better(MixPlan a, MixPlan? b) =>
+          b == null ||
+          (a.tracks.length >= full) != (b.tracks.length >= full) && a.tracks.length >= full ||
+          (a.tracks.length >= full) == (b.tracks.length >= full) && a.roughSteps < b.roughSteps;
+      if (p != null && better(p, plan)) {
+        plan = p;
+        wanted = more;
+      }
+      if (plan != null && plan.tracks.length >= full && plan.roughSteps == 0) break;
+      if (more.length >= ranked.length) break;
     }
     if (plan == null) {
       _set('Couldn\'t find enough songs that mix together for that vibe. Try a broader vibe.', phase: Phase.error);
@@ -347,7 +362,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         _set('Finding where the singing is · ${c?.title ?? ''} · $done / $total (first time only, about 20 s a song)',
             progress: total == 0 ? null : done / total);
       });
-      plan = MixPlanner(vibe, seed: seed).plan(wanted, bridges: bridges) ?? plan;
+      fitThemeTempo(vibe, wanted); // as when the chosen plan was made
+      final again = MixPlanner(vibe, seed: seed).plan(wanted, bridges: bridges);
+      // Knowing the vocals can change the order; never trade for a rougher one.
+      if (again != null && again.roughSteps <= plan.roughSteps) plan = again;
     }
     // Prepared intros (scratches, drops) ride on their songs, on the beat.
     plan.introClips = introClips(plan, await Intro.loadAll());

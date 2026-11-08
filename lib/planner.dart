@@ -120,13 +120,28 @@ class MixPlanner {
         tempo = t;
       }
     }
-    var cands = _candidates(pool, tempo, 0.06);
+    // Songs close to the set's tempo first: within 6% either side, a set
+    // could still split into a slower and a faster group and have to jump
+    // between them (111 to 118 BPM). Wider only when there aren't enough.
+    var cands = _candidates(pool, tempo, 0.03);
+    if (cands.length < vibe.trackCount * 2) cands = _candidates(pool, tempo, 0.06);
     if (cands.length < vibe.trackCount) cands = _candidates(pool, tempo, 0.09);
     if (cands.length < 2) return null;
 
     final order = _sequence(cands, math.min(vibe.trackCount, cands.length)).map((i) => cands[i]).toList();
-    return _build(_withBridges(order, _candidates(bridges, tempo, 0.12)), tempo);
+    final withBridges = _withBridges(order, _candidates(bridges, tempo, 0.12));
+    final plan = _build(withBridges, tempo);
+    // Song-to-song steps too far apart in tempo for a smooth blend (a beat
+    // bridge between them is fine): the app tries again with more songs.
+    for (var i = 1; i < withBridges.length; i++) {
+      final a = withBridges[i - 1], b = withBridges[i];
+      if (!a.bridge && !b.bridge && (a.bpm / b.bpm - 1).abs() > roughStep) plan.roughSteps++;
+    }
+    return plan;
   }
+
+  /// A tempo step bigger than this between two songs sounds rough.
+  static const roughStep = 0.045;
 
   /// Where two neighbours don't blend well (tempos more than 4% apart, or
   /// keys that would force an echo-out), a 16-bar snippet of another song's
@@ -201,8 +216,11 @@ class MixPlanner {
           s -= 2.5 * (c.grid.energy - vibe.energyAt(p)).abs();
           // Each song is matched to the last one's own tempo, then ridden home
           // to its own: neighbours more than 8% apart can't be matched cleanly.
+          // Beyond about 4% the incoming song is audibly slowed or sped up to
+          // match, then glides back (Poison into Ride It, 111 to 120 BPM, was
+          // rough), so those steps cost a lot and big ones are all but ruled out.
           final gap = (prev.bpm / c.bpm - 1).abs();
-          s -= 6 * gap + (gap > 0.08 ? 20 : 0);
+          s -= 6 * gap + (gap > 0.03 ? 2 + 100 * (gap - 0.03) : 0) + (gap > 0.045 ? 20 : 0);
           if (usedArtists.contains(c.track.artist.toLowerCase())) s -= 2.5;
           // Same BPM isn't the same feel: a jump in style or energy from one
           // song to the next sounds rough, so a set moves through related

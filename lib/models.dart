@@ -647,6 +647,8 @@ class MixPlan {
   final String summary;
   /// Prepared intro overlays riding on their songs (see intros.dart).
   List<Map<String, dynamic>> introClips = const [];
+  /// Song-to-song tempo steps too big to blend smoothly (see MixPlanner).
+  int roughSteps = 0;
   MixPlan(this.tracks, this.transitions, this.duration, this.summary);
 
   Map<String, dynamic> toRenderJson() => {
