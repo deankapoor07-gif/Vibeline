@@ -339,7 +339,7 @@ class MixPlanner {
           if (inB + blend + solo + 8 > gb.lastBar) continue;
           final clash = _vocalClash(sungA, m, sungB, inB, blend);
           if (clash > 1.0) continue; // about a bar of both singing loud, at most
-          final s = base - (ideal - inB) / 16 - 2 * clash;
+          final s = base - (ideal - inB) / 16 - 2 * clash - (_onPhrase(gb, drop, inB + blend) ? 0 : 0.6);
           if (s > bestScore) {
             bestScore = s;
             best = (m, inB);
@@ -367,6 +367,11 @@ class MixPlanner {
     }
     return (TransitionType.echoOut, blend, m, gb.firstBar);
   }
+
+  /// Whether B taking the floor at [bar] lands on one of its 8-bar phrases
+  /// (counted from its main section or from its first bar), so it starts
+  /// a phrase rather than halfway through one.
+  bool _onPhrase(Analysis g, int drop, int bar) => (bar - drop) % 8 == 0 || (bar - g.firstBar) % 8 == 0;
 
   /// A stem blend into B: B's drums alone under A for the blend, everything
   /// of B from the bar A leaves. B comes in where its drums are playing all
@@ -419,7 +424,7 @@ class MixPlanner {
       if (share < 0.7 || drumsShare(b, b + 2) < 0.5) continue;
       final land = b + blend;
       final midLine = sungB != null && land > 0 && land < sungB.length && sungB[land - 1] && sungB[land];
-      final s = 3 * share - (b - ideal).abs() / 8 - (midLine ? 1.0 : 0);
+      final s = 3 * share - (b - ideal).abs() / 8 - (midLine ? 1.0 : 0) - (_onPhrase(gb, drop, land) ? 0 : 0.6);
       if (s > best) {
         best = s;
         inB = b;
@@ -573,9 +578,13 @@ class MixPlanner {
         final half = x(blend ~/ 2), land = x(blend);
         final stems = b.track.stems!.paths;
         final until = b.srcAt(land) + 1;
+        // B's kick stays out until halfway, so two kicks never stack up in
+        // the low end; at halfway the kicks swap and A loses its lows.
         b.layers.add(StemLayer(stems['drums']!, until, [
-          Keyframe(x(0), gain: 0, high: -6),
-          Keyframe(x(4), gain: 0.9),
+          Keyframe(x(0), gain: 0, low: kill, high: -6),
+          Keyframe(x(4), gain: 0.8, low: kill),
+          Keyframe(half - beat * 0.25, gain: 0.85, low: kill),
+          Keyframe(half, gain: 0.9),
           Keyframe(land - beat),
           Keyframe(land, gain: 0),
         ]));
@@ -591,24 +600,28 @@ class MixPlanner {
         a.echoTime = beat * 0.75;
         a.keys.addAll([
           Keyframe(x(0)),
-          if (bassFits) ...[Keyframe(half - beat * 0.25), Keyframe(half, low: kill)],
-          Keyframe(x(blend - 2), low: bassFits ? kill : 0),
-          Keyframe(land - beat, gain: 0.85, low: kill, hpf: 300, echo: 0.4),
+          Keyframe(half - beat * 0.25, gain: 0.95),
+          Keyframe(half, gain: 0.85, low: kill),
+          Keyframe(x(blend - 2), gain: 0.8, low: kill),
+          Keyframe(land - beat, gain: 0.75, low: kill, hpf: 300, echo: 0.4),
           Keyframe(land, gain: 0, low: kill, hpf: 600, echo: 0.5),
         ]);
       case TransitionType.bassSwap:
         // B creeps in with no bass; on bar 8 the basslines swap; A filters away.
+        // A eases down as B comes up, so the two together stay about as loud
+        // as one song (both at full was a 3 dB bump the limiter squashed).
         a.keys.addAll([
           Keyframe(x(0)),
-          Keyframe(x(8) - beat * 0.25),
-          Keyframe(x(8), low: kill),
-          Keyframe(x(12), low: kill),
+          Keyframe(x(4)),
+          Keyframe(x(8) - beat * 0.25, gain: 0.75),
+          Keyframe(x(8), gain: 0.65, low: kill),
+          Keyframe(x(12), gain: 0.45, low: kill),
           Keyframe(x(16), gain: 0, low: kill, hpf: 450),
         ]);
         b.keys.addAll([
           Keyframe(x(0), gain: 0, low: kill, high: -6),
-          Keyframe(x(4), gain: 0.75, low: kill, high: -3),
-          Keyframe(x(8) - beat * 0.25, gain: 0.95, low: kill),
+          Keyframe(x(4), gain: 0.6, low: kill, high: -3),
+          Keyframe(x(8) - beat * 0.25, gain: 0.85, low: kill),
           Keyframe(x(8)),
         ]);
       case TransitionType.filterSweep:
