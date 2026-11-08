@@ -388,7 +388,8 @@ class MashupMaker {
     final beats = onlyBeat != null ? [onlyBeat] : songs;
     // A theme night is about the singing: the vocals fit the theme, the beats
     // can come from anywhere.
-    final vocals = onlyVocal != null ? [onlyVocal] : songs.where(vibe.fits).toList();
+    // "Country vocals over hip hop": only country songs sing.
+    final vocals = onlyVocal != null ? [onlyVocal] : songs.where(vibe.sings).toList();
     for (final b in beats) {
       if (b.analysis == null) continue;
       final bg = _natural(b.analysis!);
@@ -1295,6 +1296,8 @@ class MashupMaker {
       var s = 1.2 * (a.danceability - 1.0) + 0.5 * tagScore(t, vibe, rng);
       s -= 3 * (math.log(g.steadyBpm / vibe.targetBpm)).abs();
       s += 0.6 * g.energy;
+      // "…over hip hop": the beat carrying the set is a hip hop one.
+      if (vibe.beatFamily != null) s += genreFamily(t.genre) == vibe.beatFamily ? 2.0 : -2.0;
       // Full marks from about 20 followers; under 10 strands most of the set.
       final f = followers(t, g);
       s += 4.0 * math.min(f, 20) / 20 - (f < 10 ? 3.0 : 0.0);

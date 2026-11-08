@@ -385,17 +385,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // left 2–3 mashups for a 5-mashup set).
     // A theme night: every song that fits the theme (they sing), plus the
     // best of the rest of the library as beats.
-    final singers = ranked.where(vibe.fits).toList();
+    // ("Country vocals over hip hop": the country songs sing, hip hop songs
+    // are beats.)
+    final singers = ranked.where(vibe.sings).toList();
     final wanted = anchorOn ? math.max(240, count * 6) : math.max(80, count * 4);
     final candidates = MusicLibrary.limitPool({
       ...singers,
-      ...ranked.where((t) => !vibe.themed || !vibe.fits(t)).take(wanted),
+      ...ranked.where((t) => !vibe.themed || !vibe.sings(t)).take(wanted),
     }.toList());
     // Start from songs already known; only wait for new ones if there aren't
     // enough, or not enough that suit what was asked for. The rest are learned
     // in the background once the set is made.
     final bool Function(LibraryTrack)? suits = vibe.themed
-        ? vibe.fits
+        ? vibe.sings
         : vibe.genres.isNotEmpty
             ? (t) => vibe.genres.contains(genreFamily(t.genre))
             : null;

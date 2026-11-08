@@ -66,11 +66,16 @@ class VibeProfile {
     return true;
   }
 
+  /// Whether a song can give a mashup its singing: it fits the night and,
+  /// when the vocals were asked for by style ("country vocals over hip hop"),
+  /// it is that style. The beats can still be anything that fits.
+  bool sings(LibraryTrack t) => fits(t) && (vocalFamily == null || genreFamily(t.genre) == vocalFamily);
+
   /// Roughly how many minutes of mix the songs that fit can make: a mashup
   /// (~2.1 min) sings one song that fits over any beat; a blend mix plays
   /// ~2.3 min of each.
   double minutesAvailable(List<LibraryTrack> tracks, {required bool mashups}) {
-    final n = tracks.where((t) => fits(t) && t.duration >= 100).length;
+    final n = tracks.where((t) => (mashups ? sings(t) : fits(t)) && t.duration >= 100).length;
     return mashups ? n * 2.1 : n * 2.3;
   }
 }
