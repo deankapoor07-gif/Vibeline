@@ -373,8 +373,9 @@ class _Pad extends StatelessWidget {
 }
 
 /// A rotary knob. Bipolar: -1…1 with off in the middle; otherwise 0…1.
-/// Drag up/down or scroll to turn; double-click to reset.
-class Knob extends StatelessWidget {
+/// Drag in any direction (up or right turns it up, down or left turns it
+/// down), or scroll; double-click to reset.
+class Knob extends StatefulWidget {
   final String label;
   final double value;
   final bool bipolar;
@@ -384,32 +385,57 @@ class Knob extends StatelessWidget {
 
   const Knob({super.key, required this.label, required this.value, required this.bipolar, required this.accent, this.onChanged, this.size = 54});
 
-  double get _min => bipolar ? -1 : 0;
+  @override
+  State<Knob> createState() => _KnobState();
+}
+
+class _KnobState extends State<Knob> {
+  // Where the knob is while dragging: mouse moves can come faster than the
+  // screen redraws, and adding each one to the last drawn value lost some.
+  double? _dragging;
+
+  double get _min => widget.bipolar ? -1 : 0;
 
   void _nudge(double d) {
-    final v = (value + d * (bipolar ? 2 : 1)).clamp(_min, 1.0);
+    final from = _dragging ?? widget.value;
+    final v = (from + d * (widget.bipolar ? 2 : 1)).clamp(_min, 1.0);
+    if (_dragging != null) _dragging = v;
     // A little detent at the centre so "off" is easy to find.
-    onChanged?.call(bipolar && v.abs() < 0.03 ? 0 : v);
+    widget.onChanged?.call(widget.bipolar && v.abs() < 0.03 ? 0 : v);
   }
 
   @override
-  Widget build(BuildContext context) => Listener(
+  Widget build(BuildContext context) {
+    final on = widget.onChanged != null;
+    final size = widget.size;
+    return MouseRegion(
+      cursor: on ? SystemMouseCursors.resizeUpDown : MouseCursor.defer,
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
         onPointerSignal: (e) {
-          if (e is PointerScrollEvent) _nudge(-e.scrollDelta.dy / 600);
+          if (on && e is PointerScrollEvent) _nudge(-e.scrollDelta.dy / 600);
         },
+        onPointerDown: on ? (e) => _dragging = widget.value : null,
+        onPointerMove: on ? (e) => _nudge((e.delta.dx - e.delta.dy) / 140) : null,
+        onPointerUp: (_) => _dragging = null,
+        onPointerCancel: (_) => _dragging = null,
         child: GestureDetector(
-          onVerticalDragUpdate: onChanged == null ? null : (d) => _nudge(-d.delta.dy / 160),
-          onDoubleTap: onChanged == null ? null : () => onChanged!(bipolar ? 0 : 0.6),
+          behavior: HitTestBehavior.opaque,
+          onDoubleTap: on ? () => widget.onChanged!(widget.bipolar ? 0 : 0.6) : null,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(width: size, height: size, child: CustomPaint(painter: _KnobPainter(value, bipolar, accent))),
+              SizedBox(width: size, height: size, child: CustomPaint(painter: _KnobPainter(widget.value, widget.bipolar, widget.accent))),
               SizedBox(height: size < 40 ? 1 : 4),
-              Text(label, textAlign: TextAlign.center, style: TextStyle(fontSize: size < 40 ? 8 : 10, fontWeight: FontWeight.bold, color: Colors.white60)),
+              Text(widget.label,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: size < 40 ? 8 : 10, fontWeight: FontWeight.bold, color: Colors.white60)),
             ],
           ),
         ),
-      );
+      ),
+    );
+  }
 }
 
 class _KnobPainter extends CustomPainter {
