@@ -87,6 +87,7 @@ class MixPlanner {
     for (final t in pool) {
       final a = t.analysis;
       if (a == null || a.barCount < 40 || a.beats.length < 64) continue;
+      if (t.barBeats == 3) continue; // 3 beats to a bar drifts against bars of 4
       final steady = a.steadyBpm;
       var best = 1.0;
       for (final f in const [0.5, 1.0, 2.0]) {
@@ -149,9 +150,12 @@ class MixPlanner {
           final hA = _bestHarmony(a.grid.camelot, x.grid.camelot).score;
           final hB = _bestHarmony(x.grid.camelot, b.grid.camelot).score;
           if (gA > 0.05 || gB > 0.05 || hA < 0.4 || hB < 0.4) continue;
+          // A bridge in a different mood from either side makes the move rougher, not easier.
+          final fA = feelGap(a.track.genre, x.track.genre), fB = feelGap(x.track.genre, b.track.genre);
+          if (fA >= 2 || fB >= 2) continue;
           // It has to make the move easier than going straight across.
           if (math.max(gA, gB) >= gap && math.min(hA, hB) <= h) continue;
-          final s = hA + hB - 6 * (gA + gB) + 0.3 * x.tagScore - 1.5 * (x.grid.energy - b.grid.energy).abs();
+          final s = hA + hB - 6 * (gA + gB) + 0.3 * x.tagScore - 1.5 * (x.grid.energy - b.grid.energy).abs() - 0.5 * (fA + fB);
           if (s > bestScore) {
             bestScore = s;
             best = x;
@@ -200,18 +204,25 @@ class MixPlanner {
           final gap = (prev.bpm / c.bpm - 1).abs();
           s -= 6 * gap + (gap > 0.08 ? 20 : 0);
           if (usedArtists.contains(c.track.artist.toLowerCase())) s -= 2.5;
+          // Same BPM isn't the same feel: a jump in style or energy from one
+          // song to the next sounds rough, so a set moves through related
+          // styles (as mashup beats do). "Mix genres" still wanders, one
+          // related step at a time, rather than being rewarded for any change.
+          final feel = feelGap(prev.track.genre, c.track.genre);
+          s -= (feel >= 2 ? 3.0 : feel * 0.5) + 1.5 * (c.grid.energy - prev.grid.energy).abs();
           if (vibe.mixGenres) {
-            if (c.family != prev.family) s += 0.6;
-            if (c.track.year > 0 && prev.track.year > 0 && (c.track.year - prev.track.year).abs() >= 10) s += 0.3;
+            if (feel == 1 && c.family != prev.family) s += 0.3;
           } else if (c.family == prev.family) {
             s += 0.25;
           }
           next.add(_Beam([...b.order, j], b.score + s, [...b.playedKeys, shiftCamelot(c.grid.camelot, h.shift)]));
         }
       }
+      // Out of different songs (several files of one song count once): the
+      // set is as long as it can be. Keep it, rather than losing it all.
+      if (next.isEmpty) break;
       next.sort((a, b) => b.score.compareTo(a.score));
       beams = next.take(width).toList();
-      if (beams.isEmpty) break;
     }
     return beams.first.order;
   }

@@ -33,7 +33,19 @@ class DeckInfo {
   final String keyCode; // e.g. 8A
   final String speed; // e.g. 102%
   final bool loaded; // false: nothing on this deck
-  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags, {this.action, this.bpm = '', this.keyCode = '', this.speed = '', this.loaded = true});
+  /// The song on this deck, so its own wave can scroll above it (blend sets).
+  final DeckSong? song;
+  const DeckInfo(this.role, this.title, this.artist, this.color, this.tags,
+      {this.action, this.bpm = '', this.keyCode = '', this.speed = '', this.loaded = true, this.song});
+}
+
+/// A whole song on a deck: its file(s), and where each moment of the mix
+/// falls in the song, so its wave scrolls in step with the music.
+class DeckSong {
+  final List<String> paths; // the song, or its stems without the vocal (a beat bridge)
+  final double Function(double mixTime) srcAt;
+  final double from, to; // mix time it plays between
+  const DeckSong(this.paths, this.srcAt, this.from, this.to);
 }
 
 /// The bass / mid / high loudness and peak of each rendered section, every
@@ -89,6 +101,23 @@ class WaveCache {
       _miniBusy = false;
       _nextMini();
     });
+  }
+
+  // Whole songs on the decks (blend sets): a few kept, fetched once each.
+  final _songs = <String, Float32List>{};
+
+  Float32List? song(List<String> paths) {
+    if (paths.isEmpty) return null;
+    final key = 'song|${paths.join('|')}';
+    final d = _songs[key];
+    if (d != null || !_pending.add(key)) return d;
+    mixer.waveform(paths).then((v) {
+      _pending.remove(key);
+      if (_songs.length > 8) _songs.remove(_songs.keys.first);
+      _songs[key] = v;
+      onLoaded?.call();
+    }, onError: (_) => _pending.remove(key));
+    return null;
   }
 
   Float32List? of(Section s, {bool vocal = true, bool beat = true}) {
@@ -281,7 +310,21 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
     }
   }
 
-  /// The wave above a deck: only that deck's layer, in its colour.
+  /// A song's own wave at mix time [t] ([low, mid, high, peak]), or null
+  /// where it isn't playing.
+  List<double>? Function(double t)? _songSampler(DeckSong? s) {
+    if (s == null) return null;
+    final d = widget.waves.song(s.paths);
+    if (d == null) return (_) => null;
+    return (t) {
+      if (t < s.from || t > s.to) return null;
+      final i = (s.srcAt(t) * WaveCache.binsPerSecond).floor() * 4;
+      if (i < 0 || i + 3 >= d.length) return null;
+      return [d[i], d[i + 1], d[i + 2], d[i + 3]];
+    };
+  }
+
+  /// The wave above a deck: only that deck's layer (or its song), in its colour.
   Widget _deckWave(double pos, DeckInfo d, {required bool vocal}) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
         decoration: BoxDecoration(color: const Color(0xFF0C0C11), border: Border.all(color: kLine)),
@@ -293,7 +336,7 @@ class _NowPlayingViewState extends State<NowPlayingView> with SingleTickerProvid
             child: SizedBox.expand(
               child: CustomPaint(
                 painter: _WavePainter(widget.sections, widget.waves, pos, _window, widget.beats, widget.downbeats,
-                    vocal: vocal && !widget.vocalMuted, beat: !vocal && !widget.beatMuted, tint: d.color),
+                    vocal: vocal && !widget.vocalMuted, beat: !vocal && !widget.beatMuted, tint: d.color, sample: _songSampler(d.song)),
               ),
             ),
           ),
@@ -594,8 +637,10 @@ class _WavePainter extends CustomPainter {
   final Set<double> downbeats;
   final bool vocal, beat;
   final Color? tint; // one colour in shades, rather than bass/mid/high colours
+  /// Where the wave comes from instead of the rendered sections (a deck's song).
+  final List<double>? Function(double t)? sample;
   _WavePainter(this.sections, this.waves, this.pos, this.window, this.beats, this.downbeats,
-      {required this.vocal, required this.beat, this.tint});
+      {required this.vocal, required this.beat, this.tint, this.sample});
 
   static const _layers = [
     (Color(0xFF8A8A99), 0.95), // peak
@@ -624,6 +669,11 @@ class _WavePainter extends CustomPainter {
     final vals = List<List<double>?>.filled(cols, null);
     for (var x = 0; x < cols; x++) {
       final t = t0 + x / size.width * span;
+      final own = sample;
+      if (own != null) {
+        vals[x] = own(t);
+        continue;
+      }
       Section? s;
       for (final q in sections) {
         if (t >= q.start && t < q.end) s = q;

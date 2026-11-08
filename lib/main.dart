@@ -1168,15 +1168,35 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     }
     final ts = _plan?.tracks ?? const <PlannedTrack>[];
     if (ts.isEmpty) return _emptyDecks;
-    DeckInfo deck(String role, PlannedTrack p, Color c) => DeckInfo(role, p.track.title, p.track.artist, c, [
-          if (p.bridge) ('Beat bridge', kYellow),
-        ], bpm: p.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(p.grid.camelot, p.pitchSemitones));
-    final cur = i.clamp(0, ts.length - 1);
+    // As on real decks: songs take turns on deck A and deck B, so the next
+    // one waits on the other deck, its wave scrolling in towards the playhead.
+    DeckInfo deck(PlannedTrack p, Color c) {
+      final stems = p.track.stems?.paths;
+      // A beat bridge plays without its vocal, so its wave leaves it out too.
+      final paths = p.bridge && stems != null
+          ? [for (final e in stems.entries) if (e.key != 'vocals') e.value]
+          : [p.track.path];
+      final now = ts[_cur(ts)];
+      final role = identical(p, now)
+          ? 'NOW'
+          : _position >= p.outStart && _position < p.outEnd
+              ? (p.outStart > now.outStart ? 'MIXING IN' : 'MIXING OUT')
+              : 'NEXT';
+      return DeckInfo(role, p.track.title, p.track.artist, c, [
+        if (p.bridge) ('Beat bridge', kYellow),
+      ], bpm: p.playedBpm.toStringAsFixed(1), keyCode: shiftCamelot(p.grid.camelot, p.pitchSemitones),
+          song: DeckSong(paths, p.srcAt, p.outStart, p.outEnd));
+    }
+    final c = _cur(ts);
+    final a = c.isEven ? c : c + 1, b = c.isOdd ? c : c + 1;
+    const last = DeckInfo('NEXT', 'Last song in the set', '', kTeal, [], loaded: false);
     return [
-      deck('NOW', ts[cur], kPink),
-      if (cur + 1 < ts.length) deck('NEXT', ts[cur + 1], kTeal) else const DeckInfo('NEXT', 'Last song in the set', '', kTeal, [], loaded: false),
+      a < ts.length ? deck(ts[a], kPink) : const DeckInfo('NEXT', 'Last song in the set', '', kPink, [], loaded: false),
+      b < ts.length ? deck(ts[b], kTeal) : last,
     ];
   }
+
+  int _cur(List<PlannedTrack> ts) => math.max(0, _currentIndex).clamp(0, ts.length - 1);
 
   static const _emptyDecks = [
     DeckInfo('DECK A', 'No song loaded', '', kPink, [], loaded: false),
@@ -1258,8 +1278,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                 beatMuted: _muteBeat,
                 trailing: _scratchButton(),
                 top: _playable ? null : _emptyTop(),
-                splitWaves: _mashupMode,
-                overviewHeight: _mashupMode ? 86 : 56,
+                // The same layout for mashups and blends: a wave above each deck.
+                splitWaves: true,
+                overviewHeight: 86,
                 overview: _playable && _duration > 0
                     ? SetOverview(
                         items: _overviewItems,
@@ -1267,10 +1288,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
                         position: _position,
                         duration: _duration,
                         onSeek: _seekTo,
-                        header: _mashupMode ? _nowPlayingRow() : null,
-                        sections: _mashupMode ? _sections.sections : null,
-                        waves: _mashupMode ? _waves : null,
-                        blockHeight: _mashupMode ? 46 : 28,
+                        header: _nowPlayingRow(),
+                        sections: _sections.sections,
+                        waves: _waves,
+                        blockHeight: 46,
                       )
                     : null,
                 mixer: _mixerPanel,
