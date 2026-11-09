@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -19,6 +20,8 @@ import 'planner.dart';
 import 'prestretch.dart';
 import 'empty_screen.dart';
 import 'mixer_panel.dart';
+import 'phone_app.dart';
+import 'phone_set.dart';
 import 'prompt_song.dart';
 import 'rig.dart';
 import 'theme_picker.dart';
@@ -28,7 +31,8 @@ import 'tuning.dart';
 import 'vibe.dart';
 
 void main() {
-  runApp(const VibelineApp());
+  // The iPhone app plays sets made on the Mac (phone_app.dart).
+  runApp(Platform.isIOS ? const PhoneApp() : const VibelineApp());
 }
 
 class VibelineApp extends StatelessWidget {
@@ -1091,6 +1095,127 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _set('Saved to Music › D-Jay Noodles', phase: Phase.ready);
   }
 
+  // ------------------------------------------------------------- iPhone
+
+  bool _sending = false;
+
+  /// iCloud Drive on this Mac (null when it's switched off).
+  static String? get _iCloudDrive {
+    final d = Directory('${MusicLibrary.home}/Library/Mobile Documents/com~apple~CloudDocs');
+    return d.existsSync() ? d.path : null;
+  }
+
+  /// Puts a phone-sized copy of this set in iCloud Drive › D-Jay Noodles ›
+  /// Sets, where the iPhone app finds it.
+  Future<void> _sendToPhone() async {
+    if (_sending || _saving) return;
+    if (!_sections.allReady) {
+      _set('Not sent yet: ${_sections.sections.length - _sections.ready} parts of this set are still being mixed. Press iPhone again once they\'re done.', phase: Phase.ready);
+      return;
+    }
+    if (_mashupMode && _pre.busy) {
+      _set('Not sent yet: ${_pre.left} vocals and beats are still being cleaned up. Press iPhone again once they\'re done.', phase: Phase.ready);
+      return;
+    }
+    final drive = _iCloudDrive;
+    if (drive == null) {
+      _set('iCloud Drive is off on this Mac. Turn it on in System Settings › Apple Account › iCloud › iCloud Drive, then press iPhone again.',
+          phase: Phase.error);
+      return;
+    }
+    setState(() => _sending = true);
+    final oldProgress = _mixer.onProgress;
+    try {
+      final now = DateTime.now();
+      final theme = _themeController.text.trim();
+      final name = [_currentVibePrompt, if (theme.isNotEmpty) theme].join(' ').replaceAll(RegExp(r'[^A-Za-z0-9 ,&-]'), '').trim();
+      final title = name.isEmpty ? (_mashupMode ? 'Mashups' : 'Mix') : name;
+      final stamp = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
+          '${now.hour.toString().padLeft(2, '0')}.${now.minute.toString().padLeft(2, '0')}';
+      final base = '$drive/D-Jay Noodles/Sets/${title.length > 50 ? title.substring(0, 50) : title} – $stamp';
+      var folder = base;
+      for (var n = 2; Directory(folder).existsSync(); n++) {
+        folder = '$base ($n)';
+      }
+      await Directory(folder).create(recursive: true);
+
+      final sections = <PhoneSection>[];
+      final items = <Map<String, String>>[];
+      for (var i = 0; i < _sections.sections.length; i++) {
+        final s = _sections.sections[i];
+        final file = 's${i.toString().padLeft(3, '0')}.m4a';
+        final vox = s.voxPath == null ? null : 's${i.toString().padLeft(3, '0')}.vox.m4a';
+        items.add({'from': s.path!, 'to': '$folder/$file'});
+        if (vox != null) items.add({'from': s.voxPath!, 'to': '$folder/$vox'});
+        sections.add(PhoneSection(file, vox, s.start, s.end));
+      }
+      _mixer.onProgress = (p) => _set('Sending to your iPhone… ${(p * 100).round()}%', phase: Phase.ready, progress: p);
+      await _mixer.phoneCopy(items);
+
+      final set = PhoneSet(
+        title: title,
+        kind: _mashupMode ? 'Mashups' : 'Mix',
+        created: now,
+        duration: _duration,
+        sections: sections,
+        live: {..._withExtras(_planLive), 'grid': _beatGrid, 'muteVocal': false, 'muteBeat': false},
+        grid: _beatGrid,
+        parts: _phoneParts(),
+        beatSpans: [
+          for (final b in _mashPlan?.beatSpans ?? const <BeatSpan>[])
+            if (_mashupMode) PhoneBeatSpan(b.start, PhoneDeck(b.track.title, b.track.artist, key: b.keyCode), home: b.home),
+        ],
+      );
+      // Written last: the iPhone only lists a set once this is there.
+      await File('$folder/${PhoneSet.file}').writeAsString(jsonEncode(set.toJson()));
+      _set('Sent to iCloud Drive › D-Jay Noodles. It shows on your iPhone once iCloud has uploaded it, usually within a few minutes.',
+          phase: Phase.ready);
+    } catch (e) {
+      _set('Couldn\'t send this set to your iPhone: $e', phase: Phase.error);
+    } finally {
+      _mixer.onProgress = oldProgress;
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  /// Each mashup or song, with what's on its decks, for the iPhone.
+  List<PhonePart> _phoneParts() {
+    final starts = _itemStarts;
+    if (_mashupMode) {
+      final ms = _mashPlan?.mashups ?? const <Mashup>[];
+      return [
+        for (var i = 0; i < ms.length; i++)
+          PhonePart(
+            starts[i],
+            i + 1 < starts.length ? starts[i + 1] : _duration,
+            vocal: ms[i].beatOnly
+                ? null
+                : PhoneDeck(ms[i].vocal.title, ms[i].vocal.artist,
+                    bpm: ms[i].playedBpm.toStringAsFixed(1),
+                    key: shiftCamelot(ms[i].vocalGrid.camelot, ms[i].vocalShift),
+                    speed: '${(ms[i].vocalSpeed * 100).round()}%',
+                    tag: ms[i].acapellaBars > 0 ? 'Acapella drop' : ''),
+            beat: PhoneDeck(ms[i].beat.title, ms[i].beat.artist,
+                bpm: ms[i].playedBpm.toStringAsFixed(1),
+                key: shiftCamelot(ms[i].beatGrid.camelot, ms[i].beatShift),
+                tag: ms[i].beatOnly ? '' : _keyLabel(ms[i].keyMatch)),
+          ),
+      ];
+    }
+    final ts = _plan?.tracks ?? const <PlannedTrack>[];
+    return [
+      for (var i = 0; i < ts.length; i++)
+        PhonePart(
+          ts[i].outStart,
+          ts[i].outEnd,
+          song: PhoneDeck(ts[i].track.title, ts[i].track.artist,
+              bpm: ts[i].playedBpm.toStringAsFixed(1),
+              key: shiftCamelot(ts[i].grid.camelot, ts[i].pitchSemitones),
+              tag: ts[i].bridge ? 'Beat bridge' : ''),
+        ),
+    ];
+  }
+
   // ------------------------------------------------------------- UI
 
   Color get _accent => _mashupMode ? kPink : kYellow;
@@ -1615,6 +1740,12 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             label: _saving ? 'Saving…' : 'Save',
             tooltip: 'Save the whole set to your Music folder',
             onPressed: !_playable || _busy || _saving ? null : _export,
+          ),
+          _barButton(
+            icon: Icons.phone_iphone,
+            label: _sending ? 'Sending…' : 'iPhone',
+            tooltip: 'Send this set to the D-Jay Noodles app on your iPhone (through iCloud Drive)',
+            onPressed: !_playable || _busy || _sending || _saving ? null : _sendToPhone,
           ),
           const SizedBox(width: 8),
         ],

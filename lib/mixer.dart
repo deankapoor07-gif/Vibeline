@@ -74,6 +74,9 @@ class Mixer {
   /// Mix time of every beat, so the Beat FX keep time with the music.
   Future<void> setBeatGrid(List<double> beats) => _channel.invokeMethod('beatGrid', {'beats': beats});
 
+  /// Re-saves rendered audio ([{from, to}]) as compressed copies for the iPhone.
+  Future<void> phoneCopy(List<Map<String, String>> items) => _channel.invokeMethod('phoneCopy', {'items': items});
+
   Future<void> exportTimeline(List<Map<String, dynamic>> segments, Map<String, dynamic> live, String out) =>
       _channel.invokeMethod('export', {'segments': segments, 'live': live, 'out': out});
 
