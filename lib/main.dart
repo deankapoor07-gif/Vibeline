@@ -220,6 +220,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _set(problem, phase: Phase.error);
       return;
     }
+    final models = await _library.ensureModels((status, fraction) => _set(status, progress: fraction));
+    if (models != null) {
+      _set(models, phase: Phase.error);
+      return;
+    }
     _set('Reading your music folder…');
     await _library.scan();
     await _library.loadKnown(); // so the Songs panel can show BPM and key

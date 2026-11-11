@@ -4,6 +4,7 @@ Commands (results are printed as one JSON object per line):
   tags <folder> ...    fast scan: title / artist / genre / year / duration for every audio file
   analyze <file> ...   tempo, beat grid, bar phase, key, energy and waveform (cached)
   separate <file> ...  split into vocals / drums / bass / other stems with Demucs (cached)
+  models / getmodels   which AI models are missing / download them (first run)
 """
 import json
 import os
@@ -1227,6 +1228,52 @@ def cmd_prestretch(job_files):
     emit({"type": "done"})
 
 
+def _model_status():
+    """Which AI models are on this Mac yet: [(name, size_mb, have)]."""
+    import torch.hub
+    hub = os.path.join(torch.hub.get_dir(), "checkpoints")
+    from huggingface_hub import try_to_load_from_cache
+    rof = try_to_load_from_cache("KimberleyJSN/melbandroformer", "MelBandRoformer.ckpt")
+    return [
+        ("beats", 81, os.path.exists(os.path.join(hub, "beat_this-final0.ckpt"))),
+        ("stems", 84, all(isinstance(f, str) and os.path.exists(f) for f in (
+            try_to_load_from_cache("adefossez/HTDemucs", "htdemucs.yaml"),
+            try_to_load_from_cache("adefossez/HTDemucs", "955717e8.safetensors")))),
+        ("vocals", 913, isinstance(rof, str) and os.path.exists(rof)),
+    ]
+
+
+def cmd_models(fetch):
+    """Reports the AI models this Mac has, and with fetch downloads the missing
+    ones (about 1 GB the first time; they're kept in the usual model caches)."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    status = _model_status()
+    missing = [(n, mb) for n, mb, have in status if not have]
+    emit({"type": "models", "missing": [n for n, _ in missing], "mb": sum(mb for _, mb in missing)})
+    if not fetch:
+        emit({"type": "done"})
+        return
+    for name, mb in missing:
+        emit({"type": "model", "name": name, "mb": mb, "state": "start"})
+        try:
+            if name == "beats":
+                import torch
+                from beat_this.inference import Audio2Beats
+                Audio2Beats(checkpoint_path="final0", device="cpu", dbn=False)
+            elif name == "stems":
+                from demucs.pretrained import get_model
+                get_model("htdemucs")
+            else:
+                from huggingface_hub import hf_hub_download
+                hf_hub_download("KimberleyJSN/melbandroformer", "MelBandRoformer.ckpt")
+        except Exception as e:
+            emit({"type": "error", "name": name, "message": str(e)})
+            sys.exit(1)
+        emit({"type": "model", "name": name, "mb": mb, "state": "done"})
+    emit({"type": "done"})
+
+
 def _expand_args(args):
     """The app hands over very long song lists as one "@file" (a JSON list),
     because macOS limits how much can go on a command line."""
@@ -1250,6 +1297,8 @@ if __name__ == "__main__":
         cmd_separate(_expand_args(sys.argv[2:]))
     elif len(sys.argv) >= 3 and sys.argv[1] == "prestretch":
         cmd_prestretch(_expand_args(sys.argv[2:]))
+    elif len(sys.argv) >= 2 and sys.argv[1] in ("models", "getmodels"):
+        cmd_models(sys.argv[1] == "getmodels")
     else:
         print(__doc__)
         sys.exit(1)

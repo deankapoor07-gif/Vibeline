@@ -47,7 +47,14 @@ class ProgressClock {
 class MusicLibrary {
   static final String home = Platform.environment['HOME'] ?? '';
   static final String supportDir = '$home/Library/Application Support/Vibeline';
-  static final String python = '$supportDir/venv/bin/python';
+  /// The analyser's Python: the copy inside the app (Contents/Resources/helper,
+  /// added by tool/bundle_helper.sh), or, in a development build, the venv
+  /// set up by hand on Dean's Mac.
+  static final String python = () {
+    final contents = File(Platform.resolvedExecutable).parent.parent.path;
+    final bundled = '$contents/Resources/helper/python/bin/python3';
+    return File(bundled).existsSync() ? bundled : '$supportDir/venv/bin/python';
+  }();
   static final String defaultFolder = '$home/Desktop/Test Music';
 
   /// Your own files in the Music app (bought or added songs and sounds;
@@ -89,6 +96,31 @@ class MusicLibrary {
       return 'Can\'t find your music folder: $folder';
     }
     return null;
+  }
+
+  /// Downloads the AI models the analyser needs if this Mac doesn't have them
+  /// yet (about 1 GB, first run only). [progress] gets a status line and a
+  /// 0–1 fraction. Returns a problem in plain words, or null when ready.
+  Future<String?> ensureModels(void Function(String status, double? fraction) progress) async {
+    var missing = 0;
+    await for (final row in _run(['models'])) {
+      if (row['type'] == 'models') missing = (row['mb'] as num?)?.toInt() ?? 0;
+    }
+    if (missing == 0) return null;
+    var done = 0;
+    String? problem = 'The AI models didn\'t finish downloading. Check the internet connection and try again.';
+    progress('Getting the AI ready, first time only · downloading about $missing MB…', 0);
+    await for (final row in _run(['getmodels'])) {
+      if (row['type'] == 'model' && row['state'] == 'done') {
+        done += (row['mb'] as num?)?.toInt() ?? 0;
+        progress('Getting the AI ready, first time only · $done of $missing MB downloaded…', done / missing);
+      } else if (row['type'] == 'error') {
+        problem = 'Couldn\'t download the AI models (${row['message']}). Check the internet connection and try again.';
+      } else if (row['type'] == 'done') {
+        problem = null;
+      }
+    }
+    return problem;
   }
 
   Future<String> _scriptPath() async {
@@ -159,7 +191,7 @@ class MusicLibrary {
       // The helper watches this app's process id and quits if the app closes.
       // At lower priority, so playback and the screen stay smooth while it
       // works flat out (splitting stems takes ~20 s a song).
-      final proc = await Process.start('/usr/bin/nice', ['-n', '10', python, '-I', script, ...sent],
+      final proc = await Process.start('/usr/bin/nice', ['-n', '10', python, '-I', '-B', script, ...sent],
           environment: {'VIBELINE_APP_PID': '$pid', if (gentle) 'VIBELINE_WORKERS': '2'});
       running = proc;
       proc.stderr.drain<void>();
