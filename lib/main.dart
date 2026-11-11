@@ -139,6 +139,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   late final Prestretcher _pre = Prestretcher(_library)
     ..onReady = () {
       if (mounted && _mashupMode && _mashPlan != null) _scheduleRelayout();
+      _maybeSaveNow();
     };
 
   // Simple: the Now Playing decks. Pro: every card, knob and slider.
@@ -194,6 +195,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   void _sectionsChanged() {
     if (!mounted) return;
     setState(() {});
+    _maybeSaveNow();
     if (!_autoplayPending) return;
     if (_sections.settled) {
       _autoplayPending = false;
@@ -265,6 +267,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   /// or a song's mix button in the Songs panel).
   Future<void> _remix({LibraryTrack? seed}) async {
     if (_busy) return;
+    _saveWhenReady = false; // that was for the old set
     _currentVibePrompt = _vibeController.text.trim().isEmpty ? _currentVibePrompt : _vibeController.text.trim();
     try {
       if (!_scanned) await _scan();
@@ -1058,15 +1061,29 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   bool _saving = false;
+  /// Save was pressed before the set was finished: it saves by itself once
+  /// the last parts are mixed and cleaned up.
+  bool _saveWhenReady = false;
+
+  bool get _readyToSave => _sections.allReady && !(_mashupMode && _pre.busy);
+
+  void _maybeSaveNow() {
+    if (!_saveWhenReady || _saving || !mounted) return;
+    if (_readyToSave) {
+      _saveWhenReady = false;
+      _export();
+    } else {
+      final parts = _sections.sections.length - _sections.ready;
+      final what = parts > 0 ? '$parts parts still being mixed' : '${_pre.left} vocals and beats still being cleaned up';
+      _set('Will save by itself when the set is finished ($what). Keep listening.', phase: Phase.ready);
+    }
+  }
 
   Future<void> _export() async {
     if (_saving) return;
-    if (!_sections.allReady) {
-      _set('Not saved yet: ${_sections.sections.length - _sections.ready} parts of this set are still being mixed. Press Save again once they\'re done.', phase: Phase.ready);
-      return;
-    }
-    if (_mashupMode && _pre.busy) {
-      _set('Not saved yet: ${_pre.left} vocals and beats are still being cleaned up. Press Save again once they\'re done.', phase: Phase.ready);
+    if (!_readyToSave) {
+      _saveWhenReady = true;
+      _maybeSaveNow();
       return;
     }
     setState(() => _saving = true);
@@ -1742,7 +1759,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
           ),
           _barButton(
             icon: Icons.file_download,
-            label: _saving ? 'Saving…' : 'Save',
+            label: _saving ? 'Saving…' : _saveWhenReady ? 'Will save' : 'Save',
             tooltip: 'Save the whole set to your Music folder',
             onPressed: !_playable || _busy || _saving ? null : _export,
           ),
