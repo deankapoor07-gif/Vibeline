@@ -120,6 +120,9 @@ class _LibraryPanelState extends State<LibraryPanel> {
   Object? _fitKey;
   Map<String, _Fit?> _fits = {};
 
+  int _unreadable = 0;
+  String _unreadableNote() => _unreadable == 0 ? '' : ' ($_unreadable couldn\'t be read)';
+
   Mashup? get _m => widget.target >= 0 && widget.target < widget.mashups.length ? widget.mashups[widget.target] : null;
 
   Map<String, _Fit?> _computeFits() {
@@ -171,9 +174,13 @@ class _LibraryPanelState extends State<LibraryPanel> {
       sortSongs(_rows, _sort, fit: rank);
     }
     final rows = _rows;
-    final analysed = widget.tracks.where((t) => t.analysis != null).length;
+    // Songs that couldn't be read (damaged or odd files) count as done: the
+    // analyser has tried them and there's nothing more Analyse all can do.
+    final unreadable = widget.tracks.where((t) => t.analysis == null && t.analysisTried && !t.inCloud).length;
+    final analysed = widget.tracks.where((t) => t.analysis != null).length + unreadable;
     final inCloud = widget.tracks.where((t) => t.inCloud).length;
     final usable = widget.tracks.length - inCloud;
+    _unreadable = unreadable;
     if (widget.wide) return _table(rows, fits, analysed, inCloud, usable);
 
     return Container(
@@ -293,7 +300,7 @@ class _LibraryPanelState extends State<LibraryPanel> {
                     widget.analyseStatus ??
                         (analysed < usable
                             ? '$analysed of $usable songs analysed — fit is shown for those.'
-                            : 'All songs analysed.'),
+                            : 'All songs analysed.${_unreadableNote()}'),
                     style: const TextStyle(fontSize: 9, color: Colors.white38),
                   ),
                 ),
@@ -438,7 +445,7 @@ class _LibraryPanelState extends State<LibraryPanel> {
   }
 
   Widget _table(List<LibraryTrack> rows, Map<String, _Fit?> fits, int analysed, int inCloud, int usable) {
-    final status = widget.analyseStatus ?? (analysed < usable ? '$analysed of $usable songs analysed' : 'All songs analysed');
+    final status = widget.analyseStatus ?? (analysed < usable ? '$analysed of $usable songs analysed' : 'All songs analysed${_unreadableNote()}');
     return Container(
       decoration: const BoxDecoration(color: Color(0xFF0E0E13), border: Border(top: BorderSide(color: Colors.white12))),
       child: Row(

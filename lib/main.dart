@@ -802,8 +802,15 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   Future<void> _analyseAll() async {
-    final todo = _library.tracks.where((t) => t.analysis == null && !t.inCloud).toList();
-    if (todo.isEmpty) return;
+    final todo = _library.tracks.where((t) => t.analysis == null && !t.analysisTried && !t.inCloud).toList();
+    if (todo.isEmpty) {
+      // Nothing left: say so briefly rather than doing nothing visible.
+      setState(() => _analyseStatus = 'All songs analysed');
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted && _analyseStatus == 'All songs analysed') setState(() => _analyseStatus = null);
+      });
+      return;
+    }
     _stopLearning();
     setState(() => _analyseStatus = 'Analysing ${todo.length} songs…');
     final clock = ProgressClock();

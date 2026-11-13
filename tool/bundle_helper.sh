@@ -21,5 +21,10 @@ while IFS= read -r -d '' f; do
   if file -b "$f" | grep -q "Mach-O"; then codesign "${OPTS[@]}" "$f" 2>/dev/null; n=$((n+1)); fi
 done < <(find "$DEST" -type f \( -name "*.so" -o -name "*.dylib" -o -perm -u+x \) ! -name "*.py" -print0)
 echo "signed $n helper files"
-codesign "${OPTS[@]}" --deep --preserve-metadata=entitlements,flags,runtime "$APP"
+# For selling, the app gets exactly the release entitlements (Xcode's debug
+# signing adds get-task-allow, which Apple's notarisation rejects).
+case "$ID" in
+  "Developer ID"*) codesign "${OPTS[@]}" --entitlements "$(dirname "$0")/../macos/Runner/Release.entitlements" "$APP";;
+  *) codesign "${OPTS[@]}" --deep --preserve-metadata=entitlements,flags,runtime "$APP";;
+esac
 codesign --verify --deep --strict "$APP" && echo "app signature OK"
