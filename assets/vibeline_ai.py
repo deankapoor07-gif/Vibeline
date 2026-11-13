@@ -32,6 +32,301 @@ _CAMELOT = {
     ("G#", "major"): "4B", ("D#", "major"): "5B", ("A#", "major"): "6B", ("F", "major"): "7B",
 }
 _ENHARMONIC = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+_NOTES = ("A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#")  # pitch-class profiles start on A
+
+
+# ---------------------------------------------------------------------------
+# Signal tools. Everything here is the app's own code (numpy), apart from
+# decoding (the bundled audio-only FFmpeg, LGPL) and stretching (Signalsmith
+# Stretch, MIT), so the app can be sold. These took over from Essentia (AGPL)
+# and Pedalboard/Rubber Band (GPL).
+
+def _helper_file(*parts):
+    """A file shipped in the app's helper folder (…/Resources/helper), or the
+    build copy in ~/NoodlesBuild when running from a development setup."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(sys.executable))))
+    p = os.path.join(root, *parts)
+    if os.path.exists(p):
+        return p
+    dev = {"bin/ffmpeg": "~/NoodlesBuild/ffmpeg-out/bin/ffmpeg",
+           "lib/libnoodles_stretch.dylib": "~/NoodlesBuild/stretch/libnoodles_stretch.dylib"}
+    return os.path.expanduser(dev.get("/".join(parts), p))
+
+
+def load_audio(path, sr=SR, mono=True):
+    """A song as float32 samples at `sr`: (n,) mono, or (n, 2) stereo.
+
+    FFmpeg decodes it: the same decoder as before, so beat times stay exactly
+    where earlier analyses and split stems put them (Apple's decoder puts most
+    MP3s about 12 ms earlier). Damaged frames are skipped; other sample rates
+    are converted with soxr."""
+    import re
+    import subprocess
+    import numpy as np
+    p = subprocess.run([_helper_file("bin", "ffmpeg"), "-nostdin", "-hide_banner", "-v", "info", "-i", path,
+                        "-map", "0:a:0", "-vn", "-ac", "2", "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"],
+                       capture_output=True)
+    m = re.search(rb"Audio: [^\n]*?(\d+) Hz", p.stderr)
+    if not p.stdout or m is None:
+        tail = p.stderr.decode(errors="replace").strip().splitlines()
+        raise RuntimeError("can't open this file" + (": " + tail[-1][:160] if tail else ""))
+    rate = int(m.group(1))
+    x = np.frombuffer(p.stdout, dtype="<f4").reshape(-1, 2)
+    if mono:
+        x = x.mean(1)
+    if rate != sr:
+        import soxr
+        x = soxr.resample(x, rate, sr, quality="VHQ")
+    return np.ascontiguousarray(x, dtype=np.float32)
+
+
+def _spectra(x, size=4096, hop=4096, window="hann"):
+    """Magnitude spectra of successive frames, and each frame's energy."""
+    import numpy as np
+    n = 1 + (len(x) - size) // hop if len(x) >= size else 0
+    if n <= 0:
+        return np.zeros((0, size // 2 + 1)), np.zeros(0)
+    fr = np.lib.stride_tricks.sliding_window_view(x, size)[::hop][:n]
+    if window == "hann":
+        w = np.hanning(size + 1)[:-1]
+    else:  # Blackman-Harris, 62 dB
+        t = 2 * np.pi * np.arange(size) / size
+        w = 0.44959 - 0.49364 * np.cos(t) + 0.05677 * np.cos(2 * t)
+    w = (w * (2.0 / w.sum())).astype(np.float32)
+    return np.abs(np.fft.rfft(fr * w, axis=1)), (fr.astype(np.float64) ** 2).sum(1)
+
+
+def _peaks(row, sr, size, fmin, fmax, thresh, maxn):
+    """(freqs, mags) of one spectrum's peaks within fmin..fmax, refined
+    between bins by a parabola; the loudest `maxn` of them."""
+    import numpy as np
+    binhz = sr / size
+    lo, hi = max(1, int(fmin / binhz)), min(len(row) - 2, int(fmax / binhz) + 1)
+    r = row[lo - 1:hi + 2]
+    c = r[1:-1]
+    k = np.nonzero((c > r[:-2]) & (c >= r[2:]) & (c > thresh))[0]
+    if len(k) == 0:
+        return np.zeros(0), np.zeros(0)
+    a, b, g = r[k], c[k], r[k + 2]
+    den = a - 2 * b + g
+    d = np.where(den != 0, 0.5 * (a - g) / np.where(den != 0, den, 1), 0.0)
+    f = (lo + k + d) * binhz
+    m = b - 0.25 * (a - g) * d
+    ok = (f >= fmin) & (f <= fmax)
+    f, m = f[ok], m[ok]
+    if len(f) > maxn:
+        top = np.argsort(m)[::-1][:maxn]
+        f, m = f[top], m[top]
+    return f, m
+
+
+def _pcp(f, m, ref=440.0, harmonics=4, band_split=500.0):
+    """12-bin harmonic pitch class profile of one frame (A first): each peak,
+    and each note it could be a harmonic of (weighted down 0.6 per harmonic),
+    adds its energy to the nearest pitch classes with a cosine-squared
+    weight half a semitone wide. Below and above `band_split` count equally."""
+    import numpy as np
+    bins = np.arange(12)
+
+    def acc(ff, mm):
+        h = np.zeros(12)
+        if len(ff) == 0:
+            return h
+        e = mm.astype(np.float64) ** 2
+        for k in range(harmonics + 1):
+            pc = (12 * np.log2(ff / ((k + 1) * ref))) % 12
+            d = (pc[:, None] - bins[None, :] + 6) % 12 - 6
+            w = np.where(np.abs(d) <= 0.5, np.cos(np.pi * d) ** 2, 0.0)
+            h += (w * e[:, None]).sum(0) * 0.36 ** k
+        return h
+    if band_split:
+        low = f < band_split
+        lo, hi = acc(f[low], m[low]), acc(f[~low], m[~low])
+        return lo / (lo.max() or 1) + hi / (hi.max() or 1)
+    return acc(f, m)
+
+
+def _pcp_frames(x, sr=SR, harmonics=4, fmin=25, fmax=3500, thresh=1e-4, maxn=60, window="hann", ref=440.0):
+    """Pitch class profile of every 4096-sample frame, and the frames' energy."""
+    import numpy as np
+    mags, energy = _spectra(x, 4096, 4096, window)
+    rows = [_pcp(*_peaks(row, sr, 4096, fmin, fmax, thresh, maxn), ref=ref, harmonics=harmonics) for row in mags]
+    return (np.nan_to_num(np.array(rows)) if rows else np.zeros((0, 12))), energy
+
+
+def _tuning(x, sr=SR):
+    """The concert pitch (Hz) a recording is tuned to: where its spectral
+    peaks sit between equal-tempered notes, from a loudness-weighted
+    1-cent histogram over the whole song. (Essentia's version came back as
+    exactly 434.19 Hz on about a quarter of songs, a quarter-semitone out.)"""
+    import numpy as np
+    mags, _ = _spectra(x, 4096, 4096, "hann")
+    hist = np.zeros(100)
+    for row in mags:
+        f, m = _peaks(row, sr, 4096, 80, 6000, 1e-4, 100)
+        if len(f):
+            dev = (1200 * np.log2(f / 440.0) + 50) % 100  # 50 = in tune with A440
+            np.add.at(hist, np.minimum(99, dev.astype(int)), m)
+    if not hist.any():
+        return 440.0
+    smooth = sum(np.roll(hist, k) * w for k, w in ((-2, .25), (-1, .5), (0, 1), (1, .5), (2, .25)))
+    cents = int(np.argmax(smooth)) + 0.5 - 50
+    return float(440.0 * 2 ** (cents / 1200))
+
+
+# Key profiles (tonic first), learned from 1,087 songs in Dean's library
+# against the key labels Essentia gave them. Tested 13 Nov 2026: the same key
+# as Essentia on 70% of songs (82% the same or a Camelot neighbour, where the
+# two often both have a case); on 24 well-known songs, 11 right to Essentia's
+# 13. Mashups match on the stems' real notes (_stem_chroma), not these labels.
+_MAJOR_PROFILE = (1.999, -0.905, 0.598, -0.991, 0.744, 0.218, -1.002, 1.452, -0.965, 0.191, -1.037, -0.303)
+_MINOR_PROFILE = (1.936, -0.995, 0.124, 0.513, -0.99, 0.6, -1.195, 1.547, -0.179, -0.862, 0.429, -0.926)
+
+
+def _key(x, tuning=440.0, sr=SR):
+    """(note, "major"/"minor", strength 0..1) from the song's average pitch
+    class profile, by correlation with the major and minor key profiles."""
+    import numpy as np
+    rows, _ = _pcp_frames(x, sr)
+    if not len(rows):
+        return "C", "major", 0.0
+    p = (rows / np.maximum(rows.max(1, keepdims=True), 1e-9)).mean(0)
+    best = (-2.0, "C", "major")
+    for t in range(12):
+        for scale, prof in (("major", _MAJOR_PROFILE), ("minor", _MINOR_PROFILE)):
+            c = float(np.corrcoef(p, np.roll(prof, t))[0, 1])
+            if c > best[0]:
+                best = (c, _NOTES[t], scale)
+    return best[1], best[2], max(0.0, best[0])
+
+
+def _danceability(x, sr=SR):
+    """How steadily the music pulses (about 0..3, higher = more danceable):
+    detrended fluctuation analysis of the loudness (Streich & Herrera, 2005),
+    as 1 / the mean scaling exponent over 0.3..8.8 s windows."""
+    import numpy as np
+    hop = int(round(0.01 * sr))
+    n = len(x) // hop
+    if n < 1000:
+        return 1.0
+    s = np.sqrt((x[:n * hop].reshape(n, hop).astype(np.float64) ** 2).mean(1))
+    y = np.cumsum(s - s.mean())
+    taus, t = [], 31.0
+    while t <= 880:
+        taus.append(int(t))
+        t *= 1.1
+    taus = sorted(set(taus))
+    F = []
+    for tau in taus:
+        k = n // tau
+        seg = y[:k * tau].reshape(k, tau)
+        xs = np.arange(tau) - (tau - 1) / 2
+        slope = (seg * xs).sum(1) / (xs * xs).sum()
+        res = seg - seg.mean(1, keepdims=True) - slope[:, None] * xs
+        F.append(np.sqrt((res ** 2).mean()) + 1e-12)
+    alpha = np.diff(np.log10(F)) / np.diff(np.log10(np.asarray(taus, float) + 3))
+    return float(1.0 / max(0.05, alpha.mean()))
+
+
+def _lowpass(x, fc, sr=SR):
+    """Second-order Butterworth low-pass."""
+    import numpy as np
+    import torch
+    import torchaudio.functional as AF
+    w0 = 2 * np.pi * fc / sr
+    alpha = np.sin(w0) / (2 * 0.7071067811865476)
+    c = np.cos(w0)
+    b = np.array([(1 - c) / 2, 1 - c, (1 - c) / 2]) / (1 + alpha)
+    a = np.array([1 + alpha, -2 * c, 1 - alpha]) / (1 + alpha)
+    t = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))[None]
+    y = AF.lfilter(t, torch.tensor(a, dtype=torch.float32), torch.tensor(b, dtype=torch.float32), clamp=False)
+    return y[0].numpy()
+
+
+def _onset_envelope(x, sr=SR, hop=512):
+    """Spectral flux (log magnitude), frames of `hop` samples."""
+    import numpy as np
+    mags, _ = _spectra(x, 2048, hop, "hann")
+    if len(mags) < 3:
+        return np.zeros(0)
+    lm = np.log1p(100 * mags)
+    flux = np.maximum(0, np.diff(lm, axis=0)).sum(1)
+    flux = np.concatenate([[0], flux])
+    flux = flux - np.convolve(flux, np.ones(31) / 31, "same")
+    return np.maximum(flux, 0) / (flux.std() + 1e-9)
+
+
+def _simple_beats(x, sr=SR):
+    """A plain beat tracker for when the AI one can't run: tempo from the
+    onset envelope's autocorrelation (favouring about 120 BPM), then the best
+    chain of beats by dynamic programming (Ellis, 2007). Returns (beats,
+    confidence 0..5)."""
+    import numpy as np
+    hop = 512
+    env = _onset_envelope(x, sr, hop)
+    fps = sr / hop
+    if len(env) < fps * 10:
+        return [], 0.0
+    ac = np.correlate(env, env, "full")[len(env) - 1:]
+    lags = np.arange(len(ac))
+    bpm = 60 * fps / np.maximum(lags, 1)
+    ok = (bpm >= 60) & (bpm <= 190)
+    prior = np.exp(-0.5 * (np.log2(np.maximum(bpm, 1) / 120) / 0.9) ** 2)
+    score = np.where(ok, ac * prior, -np.inf)
+    period = int(np.argmax(score))
+    conf = float(np.clip(5 * ac[period] / (ac[0] + 1e-9), 0, 5))
+    best = np.zeros(len(env))
+    back = np.full(len(env), -1)
+    lo, hi = int(period * 0.5), int(period * 2)
+    for i in range(len(env)):
+        a, b = max(0, i - hi), i - lo
+        if b > a:
+            prev = np.arange(a, b)
+            cost = -100 * np.log((i - prev) / period) ** 2
+            j = int(np.argmax(best[a:b] + cost))
+            if best[a + j] + cost[j] > 0:
+                best[i] = env[i] + best[a + j] + cost[j]
+                back[i] = a + j
+                continue
+        best[i] = env[i]
+    i = int(np.argmax(best[-period * 2:])) + len(env) - period * 2
+    out = []
+    while i >= 0:
+        out.append(i / fps)
+        i = back[i]
+    return out[::-1], conf
+
+
+_STRETCH = None
+
+
+def _stretch(x, sr, map_out, map_in, out_len, semitones=0.0, keep_formants=False):
+    """Signalsmith Stretch over (channels, n) audio, following a time map:
+    output sample map_out[k] plays input sample map_in[k], linear between."""
+    import ctypes
+    import numpy as np
+    global _STRETCH
+    if _STRETCH is None:
+        lib = ctypes.CDLL(_helper_file("lib", "libnoodles_stretch.dylib"))
+        P = ctypes.POINTER
+        lib.noodles_stretch.argtypes = [P(P(ctypes.c_float)), ctypes.c_int, ctypes.c_long, ctypes.c_double,
+                                        P(ctypes.c_double), P(ctypes.c_double), ctypes.c_int,
+                                        ctypes.c_double, ctypes.c_int, ctypes.c_double,
+                                        P(P(ctypes.c_float)), ctypes.c_long]
+        lib.noodles_stretch.restype = ctypes.c_int
+        _STRETCH = lib
+    x = np.ascontiguousarray(x, dtype=np.float32)
+    ch = x.shape[0]
+    y = np.zeros((ch, int(out_len)), np.float32)
+    FP, DP = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_double)
+    ins = (FP * ch)(*[x[c].ctypes.data_as(FP) for c in range(ch)])
+    outs = (FP * ch)(*[y[c].ctypes.data_as(FP) for c in range(ch)])
+    mo = np.ascontiguousarray(map_out, dtype=np.float64)
+    mi = np.ascontiguousarray(map_in, dtype=np.float64)
+    if _STRETCH.noodles_stretch(ins, ch, x.shape[1], float(sr), mo.ctypes.data_as(DP), mi.ctypes.data_as(DP),
+                                len(mo), float(semitones), int(bool(keep_formants)), 8000.0, outs, y.shape[1]):
+        raise RuntimeError("stretch failed")
+    return y
 
 
 def _quiet_crashes():
@@ -182,6 +477,15 @@ def _scan(folder, seen, old, new):
 
 # ---------------------------------------------------------------- analysis
 
+def _drop_bad_tuning(d):
+    """Analyses saved before 12 Nov 2026 say exactly 434.19 Hz for about a
+    quarter of songs, a fault in the tuning reader used then, not the song's
+    real tuning. Treated as unknown, so the song isn't retuned by mistake."""
+    if d.get("tuning") == 434.19:
+        d.pop("tuning")
+    return d
+
+
 def _cache_path(path):
     st = os.stat(path)
     h = hashlib.sha1(f"{path}|{st.st_size}|{int(st.st_mtime)}|{CACHE_VERSION}".encode()).hexdigest()
@@ -323,9 +627,8 @@ def _worker_start():
 
 def _decode_to_file(path, out):
     """Runs in its own process: a damaged file can crash the decoder outright."""
-    import essentia.standard as es
     import numpy as np
-    np.save(out, es.MonoLoader(filename=path, sampleRate=SR)())
+    np.save(out, load_audio(path))
 
 
 class _Decoder:
@@ -395,24 +698,20 @@ def analyze_file(path, bt=None):
     cache = _cache_path(path)
     if os.path.exists(cache):
         with open(cache) as fh:
-            return json.load(fh)
+            return _drop_bad_tuning(json.load(fh))
     if bt is None:
         bt = _beat_this([path]).get(path)
 
     import numpy as np
-    import essentia
-    import essentia.standard as es
-    essentia.log.warningActive = False
-    essentia.log.infoActive = False
 
-    audio = es.MonoLoader(filename=path, sampleRate=SR)()
+    audio = load_audio(path)
     duration = len(audio) / SR
     result = {"type": "analysis", "path": path, "duration": duration, "ok": False}
     # Level, tuning and waveform are useful even for sounds with no beat
     # (rain, fire, ambient pads) so they can be used as samples.
     result["loudnessDb"] = round(float(20 * np.log10(np.sqrt(np.mean(audio ** 2)) + 1e-9)), 2)
     try:
-        result["tuning"] = round(float(np.median(es.TuningFrequencyExtractor(frameSize=4096, hopSize=4096)(audio))), 2)
+        result["tuning"] = round(_tuning(audio), 2)
     except Exception:
         pass
     _hop = max(1, len(audio) // 160)
@@ -430,7 +729,7 @@ def analyze_file(path, bt=None):
         confidence = 3.0
         _save_meter(path, _bar_beats(ticks, downbeats))
     else:
-        _, ticks, confidence, _, _ = es.RhythmExtractor2013(method="multifeature")(audio)
+        ticks, confidence = _simple_beats(audio)
     beats = _clean_beats(list(ticks))
     beats, phase_shift = _refine_phase(audio, beats)
     grid = _fit_grid(beats)
@@ -443,7 +742,7 @@ def analyze_file(path, bt=None):
     n_beats = len(beats) - 1
 
     # Per-beat loudness, full band and low band (kick/bass).
-    lp = es.LowPass(cutoffFrequency=150, sampleRate=SR)(audio)
+    lp = _lowpass(audio, 150)
     beat_rms, beat_low = [], []
     for i in range(n_beats):
         a, b = int(beats[i] * SR), int(beats[i + 1] * SR)
@@ -479,11 +778,10 @@ def analyze_file(path, bt=None):
     first_bar = loud[0] if loud else 0
     last_bar = loud[-1] if loud else len(bar_energy) - 1
 
-    key, scale, key_strength = es.KeyExtractor(profileType="edma", sampleRate=SR)(audio)
-    key = _ENHARMONIC.get(key, key)
+    key, scale, key_strength = _key(audio, result.get("tuning", 440.0))
     camelot = _CAMELOT.get((key, scale), "")
 
-    danceability, _ = es.Danceability(sampleRate=SR)(audio)
+    danceability = _danceability(audio)
 
     result.update({
         "ok": True,
@@ -547,7 +845,7 @@ def cmd_known(paths):
             continue
         try:
             with open(_cache_path(p)) as fh:
-                emit(json.load(fh))
+                emit(_drop_bad_tuning(json.load(fh)))
         except (OSError, ValueError):
             pass
     emit({"type": "done"})
@@ -700,12 +998,8 @@ def separate_file(path):
     import numpy as np
     import torch
     import soundfile as sf
-    import essentia
-    import essentia.standard as es
     from demucs.pretrained import get_model
     from demucs.apply import apply_model
-    essentia.log.warningActive = False
-    essentia.log.infoActive = False
 
     global _MODEL
     device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -713,9 +1007,7 @@ def separate_file(path):
         _MODEL = get_model("htdemucs")
         _MODEL.to(device).eval()
 
-    audio, sr, channels, *_ = es.AudioLoader(filename=path)()
-    if sr != SR:
-        audio = np.stack([es.Resample(inputSampleRate=sr, outputSampleRate=SR)(audio[:, c].copy()) for c in range(2)], 1)
+    audio = load_audio(path, mono=False)
     wav = torch.tensor(np.ascontiguousarray(audio.T), dtype=torch.float32)
     ref = wav.mean(0)
     mean, std = ref.mean(), ref.std() + 1e-8
@@ -853,29 +1145,16 @@ def _stem_chroma(stems):
     whole song is wrong often enough (relative and related keys get mixed up)
     that about one in five label-approved pairs clashed."""
     import numpy as np
-    import essentia
-    import essentia.standard as es
-    essentia.log.warningActive = False
     sr = 22050
 
     def profile(paths, sung_only):
         tot = np.zeros(12)
-        w, spec = es.Windowing(type="blackmanharris62"), es.Spectrum()
-        peaks = es.SpectralPeaks(orderBy="magnitude", magnitudeThreshold=1e-5, minFrequency=60, maxFrequency=3500,
-                                 maxPeaks=60, sampleRate=sr)
-        hpcp = es.HPCP(size=12, referenceFrequency=440, harmonics=8, bandPreset=True, minFrequency=60,
-                       maxFrequency=3500, weightType="cosine", nonLinear=False, windowSize=1.0, sampleRate=sr,
-                       normalized="unitSum")
         for p in paths:
-            x = es.MonoLoader(filename=p, sampleRate=sr)()
-            rows, en = [], []
-            for fr in es.FrameGenerator(x, frameSize=4096, hopSize=4096):
-                f, m = peaks(spec(w(fr)))
-                rows.append(hpcp(f, m))
-                en.append(float((fr ** 2).sum()))
-            if not rows:
+            x = load_audio(p, sr=sr)
+            r, e = _pcp_frames(x, sr, harmonics=8, fmin=60, fmax=3500, thresh=1e-5, maxn=60, window="bh62")
+            if not len(r):
                 continue
-            r, e = np.nan_to_num(np.array(rows)), np.array(en)
+            r = r / np.maximum(r.sum(1, keepdims=True), 1e-12)  # each frame sums to 1
             if sung_only:
                 r = r[e > np.percentile(e, 50)]
             tot += r.sum(0)
@@ -957,9 +1236,6 @@ def _stem_tuning(stems):
     melody, so a vocal can be nudged by cents to sit in tune with a beat."""
     import numpy as np
     import soundfile as sf
-    import essentia
-    import essentia.standard as es
-    essentia.log.warningActive = False
     out = {}
     for name in ("vocals", "other"):
         try:
@@ -968,8 +1244,7 @@ def _stem_tuning(stems):
             loud = x[np.abs(x) > 0.02]  # skip silence
             if len(loud) < sr * 5:
                 continue
-            tf = es.TuningFrequencyExtractor(frameSize=4096, hopSize=4096)(np.ascontiguousarray(x))
-            out[name] = round(float(np.median(tf)), 2)
+            out[name] = round(_tuning(np.ascontiguousarray(x), sr), 2)
         except Exception:
             pass
     return out
@@ -1136,15 +1411,9 @@ def _clean_vocal(stem_path, a, b):
     with (and as loud as) its Demucs vocal stem, whose folder says which song it is."""
     import numpy as np
     import torch
-    import essentia
-    import essentia.standard as es
-    essentia.log.warningActive = False
-    essentia.log.infoActive = False
     with open(os.path.join(os.path.dirname(stem_path), "stems.json")) as fh:
         path = json.load(fh)["path"]
-    audio, sr, *_ = es.AudioLoader(filename=path)()
-    if sr != SR:  # as when the stems were split
-        audio = np.stack([es.Resample(inputSampleRate=sr, outputSampleRate=SR)(audio[:, c].copy()) for c in range(2)], 1)
+    audio = load_audio(path, mono=False)  # decoded as when the stems were split
     model, demix = _mel_roformer()
     pad = 2 * SR  # context either side, so the first and last notes are judged in full
     a0, b0 = max(0, a - pad), min(len(audio), b + pad)
@@ -1161,14 +1430,14 @@ def _clean_vocal(stem_path, a, b):
 
 
 def prestretch(job):
-    """One vocal (or beat: its stems summed), made studio-clean ahead of time with Rubber Band (via
-    pedalboard): stretched so each beat lands where the beat map says, and
-    tuned, keeping the singer's formants. Job: {input, warp: [[mixTime,
-    songTime], ...], cents, out}. The output starts at warp[0]'s mix time and
-    plays at normal speed with no further processing."""
+    """One vocal (or beat: its stems summed), made studio-clean ahead of time
+    with Signalsmith Stretch: stretched so each beat lands where the beat map
+    says (measured within about 1 ms), and tuned, keeping the singer's
+    formants. Job: {input, warp: [[mixTime, songTime], ...], cents, out}. The
+    output starts at warp[0]'s mix time and plays at normal speed with no
+    further processing."""
     import numpy as np
     import soundfile as sf
-    from pedalboard import time_stretch
     warp = job["warp"]
     x, sr = sf.read(job["input"], dtype="float32", always_2d=True)
     for extra in job.get("mix", []):  # a beat's other stems, summed into one
@@ -1181,28 +1450,26 @@ def prestretch(job):
     a, b = max(0, int(round(s0 * sr))), min(len(x), int(round(s1 * sr)))
     body = _clean_vocal(job["input"], a, b) if job.get("clean") else x[a:b]
     seg = np.concatenate([np.zeros((pad, x.shape[1]), np.float32), body])
-    # Speed (song seconds per mix second) for each input sample, beat by beat.
-    speed = np.empty(len(seg), np.float64)
-    pos = 0
-    for (m0, t0), (m1, t1) in zip(warp[:-1], warp[1:]):
-        n = min(len(speed), int(round((t1 - s0) * sr))) - pos
-        if n <= 0:
-            continue
-        speed[pos:pos + n] = max(0.5, min(2.0, (t1 - t0) / max(1e-6, m1 - m0)))
-        pos += n
-    if pos < len(speed):
-        speed[pos:] = speed[pos - 1] if pos else 1.0
+    # The time map, in samples: mix time from the first point -> song time
+    # from s0 (seg starts at s0). Points that don't move forward are dropped.
+    m0 = warp[0][0]
+    mo, mi = [], []
+    for m, t in warp:
+        o, i = (m - m0) * sr, (t - s0) * sr
+        if not mo or (o > mo[-1] and i > mi[-1]):
+            mo.append(o)
+            mi.append(i)
     # A beat (stems summed) skips the voice-only formant keeping, is saved
     # 6 dB down so the sum can't clip (the player adds it back), and in 16 bits
     # like its stems (half the disk space).
     beat = bool(job.get("beat"))
-    # The standard engine, not "high quality": that one drifts off the beat
-    # map (about 30 ms over two minutes, even at a steady speed), while this
-    # one stays within 3 ms, and keeps drum hits and sung attacks cleaner.
-    y = time_stretch(seg.T, sr, stretch_factor=speed, pitch_shift_in_semitones=job["cents"] / 100.0,
-                     high_quality=False, preserve_formants=not beat)
     want = int(round((warp[-1][0] - warp[0][0]) * sr))
-    y = y[:, :want] if y.shape[1] >= want else np.pad(y, ((0, 0), (0, want - y.shape[1])))
+    y = _stretch(seg.T, sr, mo, mi, want, job["cents"] / 100.0, keep_formants=not beat)
+    # Pitch shifting with formants kept can change the level a little: keep
+    # it as loud as it went in, so the vocal levels worked out earlier hold.
+    rin, rout = float(np.sqrt(np.mean(seg ** 2))), float(np.sqrt(np.mean(y ** 2)))
+    if rin > 1e-6 and rout > 1e-6:
+        y = y * float(np.clip(rin / rout, 0.5, 2.0))
     os.makedirs(os.path.dirname(job["out"]), exist_ok=True)
     tmp = job["out"] + ".part.flac"
     if beat:

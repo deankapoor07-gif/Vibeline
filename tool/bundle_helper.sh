@@ -7,11 +7,12 @@
 set -euo pipefail
 APP="$1"
 ID="${2:-Apple Development: Dean Kapoor (8DGBFY489S)}"
-SRC="$HOME/NoodlesBuild/helper/python"
-[ -x "$SRC/bin/python3" ] || { echo "Run tool/build_helper.sh first"; exit 1; }
+SRC="$HOME/NoodlesBuild/helper"
+[ -x "$SRC/python/bin/python3" ] && [ -x "$SRC/bin/ffmpeg" ] && [ -f "$SRC/lib/libnoodles_stretch.dylib" ] \
+  || { echo "Run tool/build_helper.sh first"; exit 1; }
 DEST="$APP/Contents/Resources/helper"
 rm -rf "$DEST"; mkdir -p "$DEST"
-ditto "$SRC" "$DEST/python"
+ditto "$SRC" "$DEST"
 OPTS=(--force --sign "$ID")
 case "$ID" in "Developer ID"*) OPTS+=(--options runtime --timestamp);; esac
 # Libraries first, then the programs that load them.

@@ -4,7 +4,6 @@ cffi==2.1.1
 click==8.5.0
 demucs==4.1.0
 einops==0.8.2
-essentia==2.1b6.dev1389
 filelock==4.1.0
 fsspec==2026.9.0
 h11==0.16.0
@@ -21,7 +20,6 @@ mpmath==1.3.0
 networkx==3.6.1
 numpy==2.4.6
 packaging==26.3
-pedalboard==0.9.26
 pycparser==3.11
 PyYAML==6.0.3
 rotary-embedding-torch==0.9.1
