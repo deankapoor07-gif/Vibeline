@@ -268,10 +268,21 @@ class MusicLibrary {
       final t = LibraryTrack.fromJson(row);
       // Searching everywhere turns up alert sounds and short clips: songs only.
       if (wholeMac && t.duration > 0 && t.duration < 60) continue;
+      // Its own saved mixes and iPhone sets are not songs to mix again.
+      if (isOwnOutput(t.path)) continue;
       t.analysis = previous[t.path];
       tracks.add(t);
     }
     await _markShazam();
+  }
+
+  /// A file this app made itself: a saved mix (under either of the app's
+  /// names) or a section of a set sent to the iPhone.
+  static bool isOwnOutput(String path) {
+    final name = path.split('/').last;
+    if (RegExp(r'^(D-Jay Noodles|Vibeline) (Mix|Mashups) – ').hasMatch(name)) return true;
+    // Sets sent to the iPhone, and the archive of old mixes and mix parts.
+    return path.contains('/D-Jay Noodles/Sets/') || path.toLowerCase().contains('/d-jay noodles archive/');
   }
 
   /// Plugged-in drives (not the Mac's own disk, and not Time Machine).
