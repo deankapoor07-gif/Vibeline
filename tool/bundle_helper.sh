@@ -24,7 +24,10 @@ echo "signed $n helper files"
 # For selling, the app gets exactly the release entitlements (Xcode's debug
 # signing adds get-task-allow, which Apple's notarisation rejects).
 case "$ID" in
-  "Developer ID"*) codesign "${OPTS[@]}" --entitlements "$(dirname "$0")/../macos/Runner/Release.entitlements" "$APP";;
+  "Developer ID"*)
+    # Flutter's frameworks first (they arrive with Xcode's development signature).
+    for fw in "$APP/Contents/Frameworks/"*; do codesign "${OPTS[@]}" "$fw"; done
+    codesign "${OPTS[@]}" --entitlements "$(dirname "$0")/../macos/Runner/Release.entitlements" "$APP";;
   *) codesign "${OPTS[@]}" --deep --preserve-metadata=entitlements,flags,runtime "$APP";;
 esac
 codesign --verify --deep --strict "$APP" && echo "app signature OK"

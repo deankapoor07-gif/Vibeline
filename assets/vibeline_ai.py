@@ -53,7 +53,23 @@ def _helper_file(*parts):
     return os.path.expanduser(dev.get("/".join(parts), p))
 
 
-def load_audio(path, sr=SR, mono=True):
+# Longer than this isn't a song (hours of rain, a whole DJ set): only the start
+# is ever read, so a 9-hour recording can't fill the Mac's memory.
+LONGEST_SONG = 20 * 60
+
+
+def audio_seconds(path):
+    """How long a file plays, read from its header without decoding it (None if
+    the file doesn't say)."""
+    import re
+    import subprocess
+    p = subprocess.run([_helper_file("bin", "ffmpeg"), "-nostdin", "-hide_banner", "-i", path],
+                       capture_output=True)
+    m = re.search(rb"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", p.stderr)
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
+
+
+def load_audio(path, sr=SR, mono=True, max_seconds=None):
     """A song as float32 samples at `sr`: (n,) mono, or (n, 2) stereo.
 
     FFmpeg decodes it: the same decoder as before, so beat times stay exactly
@@ -64,7 +80,9 @@ def load_audio(path, sr=SR, mono=True):
     import subprocess
     import numpy as np
     p = subprocess.run([_helper_file("bin", "ffmpeg"), "-nostdin", "-hide_banner", "-v", "info", "-i", path,
-                        "-map", "0:a:0", "-vn", "-ac", "2", "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"],
+                        "-map", "0:a:0", "-vn", "-ac", "2",
+                        *(["-t", str(max_seconds)] if max_seconds else []),
+                        "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"],
                        capture_output=True)
     m = re.search(rb"Audio: [^\n]*?(\d+) Hz", p.stderr)
     if not p.stdout or m is None:
@@ -628,7 +646,7 @@ def _worker_start():
 def _decode_to_file(path, out):
     """Runs in its own process: a damaged file can crash the decoder outright."""
     import numpy as np
-    np.save(out, load_audio(path))
+    np.save(out, load_audio(path, max_seconds=LONGEST_SONG + 1))
 
 
 class _Decoder:
@@ -673,6 +691,9 @@ def _track_beats(tracker, decoder, path):
     try:
         # Decoded the same way as the rest of the analysis: left to itself the
         # beat tracker can't open m4a files and some mp3s.
+        secs = audio_seconds(path)
+        if secs is not None and secs > LONGEST_SONG:
+            return None
         audio = decoder.read(path)
         if audio is None:
             return None
@@ -704,8 +725,12 @@ def analyze_file(path, bt=None):
 
     import numpy as np
 
-    audio = load_audio(path)
+    secs = audio_seconds(path)
+    audio = load_audio(path, max_seconds=LONGEST_SONG + 1)
     duration = len(audio) / SR
+    too_long = (secs or 0) > LONGEST_SONG or duration > LONGEST_SONG
+    if too_long and secs:
+        duration = secs
     result = {"type": "analysis", "path": path, "duration": duration, "ok": False}
     # Level, tuning and waveform are useful even for sounds with no beat
     # (rain, fire, ambient pads) so they can be used as samples.
@@ -721,6 +746,13 @@ def analyze_file(path, bt=None):
     result["waveform"] = [round(p / _pm, 3) for p in _peaks]
     if duration < 30:
         result["error"] = "too short"
+        return result
+    if too_long:
+        # Remembered, so hours-long recordings are only ever looked at once.
+        result["error"] = "too long to be a song"
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(cache, "w") as fh:
+            json.dump(result, fh)
         return result
 
     downbeats = []
