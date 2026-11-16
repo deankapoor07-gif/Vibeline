@@ -138,7 +138,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   // Vocals made studio-clean with Rubber Band; lays out again as each is ready.
   late final Prestretcher _pre = Prestretcher(_library)
     ..onReady = () {
-      if (mounted && _mashupMode && _mashPlan != null) _scheduleRelayout();
+      if (mounted && _mashupMode && _mashPlan != null) _scheduleRelayout(automatic: true);
       _maybeSaveNow();
     };
 
@@ -204,7 +204,10 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       setState(() => _playing = true);
     } else {
       final n = _sections.sections.length;
-      _set('Mixing your set · ${_sections.ready} of $n parts ready · it starts playing once the whole set is done',
+      _set(
+          _playingEarly
+              ? 'Mixing the start of your set · ${_sections.ready} of $n parts ready · the rest is made while it plays'
+              : 'Mixing your set · ${_sections.ready} of $n parts ready · it starts playing once the whole set is done',
           progress: n == 0 ? null : _sections.ready / n);
     }
   }
@@ -238,6 +241,8 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       'Type a vibe and press $_goLabel.',
       phase: _hasContent ? Phase.ready : Phase.idle,
     );
+    _firstSetPending ??= !File(_firstSetMarker).existsSync() && _library.tracks.where((t) => t.stems != null).length < 30;
+    _maybeWarmUp();
   }
 
   Future<void> _searchWholeMac() async {
@@ -273,6 +278,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       if (!_scanned) await _scan();
       if (_phase == Phase.error) return;
       _stopLearning();
+      await _stopWarmUp(status: 'Finishing the songs already being prepared…');
       _set('Getting your songs ready…');
       await _library.loadKnown();
       var prompt = _currentVibePrompt;
@@ -388,10 +394,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         autoplay: true);
   }
 
-  Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed, bool anchor = true}) async {
-    final maker = MashupMaker(vibe);
-    final count = maker.mashupCount;
-    final anchorOn = _anchorOn && anchor;
+  /// The songs a mashup set for [vibe] draws on, and which of them need to
+  /// be analysed before it can start.
+  (List<LibraryTrack>, List<LibraryTrack>) _mashupCandidates(VibeProfile vibe, List<LibraryTrack> ranked, int count, bool anchorOn) {
     // Long sets need a bigger pool of songs to draw from. Anchor mode needs
     // more again: every beat has to fit the anchor's tempo and key (80 songs
     // left 2–3 mashups for a 5-mashup set).
@@ -413,14 +418,38 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         : vibe.genres.isNotEmpty
             ? (t) => vibe.genres.contains(genreFamily(t.genre))
             : null;
-    final clock = ProgressClock();
-    await _library.analyze(MusicLibrary.songsToAnalyseFirst(candidates, minReady: wanted, matchMin: count * 4, matches: suits), (done, total) {
-      _set('Listening to songs for "${vibe.summary}"… $done / $total${clock.tick(done, total)}', progress: total == 0 ? null : done / total);
-    });
-    final pool = candidates.where((t) => t.analysis != null).toList();
-    fitThemeTempo(vibe, singers);
+    return (candidates, MusicLibrary.songsToAnalyseFirst(candidates, minReady: wanted, matchMin: count * 4, matches: suits));
+  }
+
+  Future<void> _makeMashups(VibeProfile vibe, List<LibraryTrack> ranked, {LibraryTrack? seed, bool anchor = true}) async {
+    // The very first set on a new Mac is made without the anchor beat: it
+    // needs a third as many songs learned and turns far fewer pairs down,
+    // so it is ready in minutes rather than a quarter of an hour.
+    final light = _firstTime && _anchorOn && anchor;
+    final anchorOn = _anchorOn && anchor && !light;
+    if (light) _themeNote = 'Your first set is made without the anchor beat so it\'s ready sooner. Your next sets use it.';
+    // The set made in the background on a new Mac, for this same vibe: carry on from it.
+    final warm = seed == null ? _takeWarmSet(vibe, anchorOn) : null;
+    final maker = warm?.maker ?? MashupMaker(vibe);
+    final count = maker.mashupCount;
+    final List<LibraryTrack> candidates;
+    final MashupSession session;
+    if (warm != null) {
+      candidates = warm.pool;
+      session = warm;
+      fitThemeTempo(vibe, ranked.where(vibe.sings).toList());
+    } else {
+      final (all, first) = _mashupCandidates(vibe, ranked, count, anchorOn);
+      candidates = all;
+      final clock = ProgressClock();
+      await _library.analyze(first, (done, total) {
+        _set('Listening to songs for "${vibe.summary}"… $done / $total${clock.tick(done, total)}', progress: total == 0 ? null : done / total);
+      });
+      final pool = candidates.where((t) => t.analysis != null).toList();
+      fitThemeTempo(vibe, ranked.where(vibe.sings).toList());
+      session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
+    }
     _set('Pairing vocals with beats…');
-    final session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
     setState(() {
       _session = session;
       _mashPlan = null;
@@ -434,21 +463,53 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         return;
       }
     }
-    // The whole set is made first and only then plays: mixing the rest behind
-    // the music made it stutter, and a theme night could start over without
-    // the anchor and swap the opening song while you listened. Parts already
-    // made are mixed meanwhile, so the wait is shorter.
+    // Normally the whole set is made first and only then plays. When that
+    // would be a long wait (songs not split yet, as on a new Mac), it starts
+    // once enough is made that the rest will be ready in time, and the rest
+    // is added behind the music only where the music hasn't got to yet: the
+    // part playing never changes, and if a mashup comes too late the set ends
+    // where it is rather than stop and catch up. Not on a theme night with
+    // the anchor beat, which may have to start again without it.
     _building = true;
+    _playingEarly = false;
+    _endedShort = false;
+    _pre.holdClean = true;
+    final mayStartEarly = !(session.anchorMode && vibe.themed);
+    final firstTime = _firstTime;
+    final fillClock = Stopwatch()..start();
+    final startBuilt = session.mashups.length;
+    // Carrying on from the background set: it may already be long enough to start.
+    if (mayStartEarly && startBuilt > 0 && _earlyStartIsSafe(session, count, _assumedSecondsPerMashup)) _startEarly();
     final filling = session.fill(_library, count, (s) {
-      if (!session.cancelled) _set('Making mashups · $s · it starts playing once the whole set is done');
+      if (session.cancelled) return;
+      if (_playingEarly) {
+        if (mounted) setState(() => _background = 'Making the rest of the set while it plays · $s');
+      } else {
+        _set('Making mashups · $s${firstTime ? ' · first set only: after this, sets start in seconds' : ''}');
+      }
     }, () {
-      if (!session.cancelled) _scheduleRelayout();
+      if (session.cancelled) return;
+      if (_playingEarly) {
+        _addWhilePlaying(session);
+      } else if (mayStartEarly &&
+          session.mashups.length > startBuilt &&
+          _earlyStartIsSafe(session, count, fillClock.elapsedMilliseconds / 1000 / (session.mashups.length - startBuilt))) {
+        _startEarly();
+      } else {
+        _scheduleRelayout();
+      }
+    }, beforeSplit: () async {
+      // Already playing: the parts coming up are mixed before more songs are split.
+      while (_playingEarly && !session.cancelled && !_sections.settled && _sections.readyAhead < 75) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
     });
     _preparing = true;
     try {
       await filling;
     } finally {
       _building = false;
+      _pre.holdClean = false;
       if (mounted) {
         setState(() {
           _preparing = false;
@@ -456,7 +517,23 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         });
       }
     }
-    if (session.cancelled) return;
+    if (session.cancelled) {
+      if (identical(_session, session)) _playingEarly = false;
+      return;
+    }
+    if (_playingEarly) {
+      _playingEarly = false;
+      setState(() => _background = _endedShort
+          ? 'This set ends after ${session.mashups.length} mashups: the next one wasn\'t ready in time'
+          : session.mashups.length < count
+              ? 'Prepared ${session.mashups.length} of $count mashups — ran out of good pairings for this vibe'
+              : null);
+      _relayout?.cancel();
+      await _relayoutMashups(automatic: true);
+      if (session.mashups.isNotEmpty) _firstSetMade();
+      if (mounted && !session.cancelled) _learnInBackground(candidates);
+      return;
+    }
     // A theme night rarely has enough songs near one tempo for the anchor
     // beat (Kiwi: 3 of 10 with it, 9 of 10 without). Make it without.
     if (session.anchorMode && vibe.themed && session.mashups.length < count * 0.6) {
@@ -470,6 +547,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     setState(() => _background = session.mashups.length < count
         ? 'Prepared ${session.mashups.length} of $count mashups — ran out of good pairings for this vibe'
         : null);
+    _firstSetMade();
     _relayout?.cancel();
     await _relayoutMashups(autoplay: true);
     // Learning more songs waits until the set is mixed, so it doesn't slow that down.
@@ -505,14 +583,176 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     if (mounted && run == _learnRun) setState(() => _learnStatus = null);
   }
 
-  void _scheduleRelayout() {
+  /// [automatic]: a change the app made on its own (a cleaner vocal ready,
+  /// the next mashup added), which never touches the part about to play.
+  /// One that you made wins if both are waiting.
+  void _scheduleRelayout({bool automatic = false}) {
+    _relayoutAutomatic = (_relayout?.isActive ?? false) ? _relayoutAutomatic && automatic : automatic;
     _relayout?.cancel();
-    _relayout = Timer(const Duration(milliseconds: 300), () => _relayoutMashups());
+    _relayout = Timer(const Duration(milliseconds: 300), () {
+      final a = _relayoutAutomatic;
+      _relayoutAutomatic = false;
+      _relayoutMashups(automatic: a);
+    });
+  }
+
+  bool _relayoutAutomatic = false;
+
+  /// Playing a set while the rest of it is still being made.
+  bool _playingEarly = false;
+  bool _endedShort = false;
+
+  /// How far back from the end of a set adding a mashup can change it
+  /// (measured: up to about 105 s), and how much ready music must stay
+  /// ahead of the playhead on top of that.
+  static const _addReach = 120.0, _addMargin = 60.0;
+
+  /// Pace assumed before any mashup has been timed: two songs to split at
+  /// about 20–40 s each, plus checking and mixing.
+  static const _assumedSecondsPerMashup = 120.0;
+
+  // ------------------------------------------------------- First-set warm-up
+  //
+  // On a Mac that has never made a set, the first one waits for songs to be
+  // learned and split. So after the songs are found, the set the vibe box
+  // already asks for is made quietly in the background; pressing the button
+  // then carries on from it (and stops it first, either way).
+
+  Future<void>? _warming;
+  MashupSession? _warmSession;
+  MashupSession? _warmSet;
+  String? _warmVibe;
+  bool _warmStop = false;
+  String? _warmStatus;
+
+  /// A new Mac whose first mashup set isn't made yet (decided once, when the
+  /// songs are first found, so the warm-up and the button agree).
+  bool? _firstSetPending;
+  bool get _firstTime => _firstSetPending ?? false;
+  static String get _firstSetMarker => '${MusicLibrary.supportDir}/first_set_done';
+
+  void _firstSetMade() {
+    if (_firstSetPending != true) return;
+    _firstSetPending = false;
+    try {
+      File(_firstSetMarker)
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('${DateTime.now()}');
+    } catch (_) {}
+  }
+
+  void _maybeWarmUp() {
+    if (_warming != null || _hasContent || !_firstTime || _library.tracks.length < 20) return;
+    _warmStop = false;
+    _warming = _warmUp().catchError((Object _) {}).whenComplete(() {
+      _warming = null;
+      _warmSession = null;
+      if (mounted) setState(() => _warmStatus = null);
+    });
+  }
+
+  Future<void> _warmUp() async {
+    final vibe = parseTheme(_currentVibePrompt, _themeController.text);
+    final rng = math.Random();
+    var pool = _library.tracks.toList();
+    if (vibe.shazamOnly) {
+      final mine = pool.where((t) => t.shazam).toList();
+      if (mine.length >= 8) pool = mine;
+    }
+    final ranked = (pool.map((t) => (t, tagScore(t, vibe, rng))).toList()..sort((a, b) => b.$2.compareTo(a.$2))).map((e) => e.$1).toList();
+    final maker = MashupMaker(vibe);
+    final count = maker.mashupCount;
+    final anchorOn = _anchorOn && !_firstTime; // see _makeMashups
+    final (candidates, first) = _mashupCandidates(vibe, ranked, count, anchorOn);
+    void say(String s) {
+      if (mounted && !_warmStop) setState(() => _warmStatus = 'Getting your first set ready in the background · $s');
+    }
+
+    await _library.analyze(first, (done, total) => say('learning your songs $done / $total'),
+        gentle: true, stop: () => _warmStop);
+    if (_warmStop || !_mashupMode) return;
+    final session = MashupSession.start(maker, candidates.where((t) => t.analysis != null).toList())..anchorMode = anchorOn;
+    _warmSession = session;
+    say('pairing vocals with beats');
+    await session.fill(_library, count, (s) => say(s.toLowerCase()), () => say('${session.mashups.length} of $count mashups ready'));
+    if (session.mashups.isNotEmpty && !session.cancelled) {
+      _warmSet = session;
+      _warmVibe = vibe.summary;
+    }
+  }
+
+  /// Stops the warm-up (the songs being split right now are finished, since
+  /// that work is kept) and waits for it.
+  Future<void> _stopWarmUp({String? status}) async {
+    _warmStop = true;
+    final s = _warmSession;
+    if (s != null) s.target = s.mashups.length;
+    final w = _warming;
+    if (w == null) return;
+    if (status != null) _set(status);
+    await w;
+  }
+
+  /// The background set, if it was made for this vibe.
+  MashupSession? _takeWarmSet(VibeProfile vibe, bool anchorOn) {
+    final w = _warmSet;
+    _warmSet = null;
+    if (w == null || w.cancelled || w.mashups.isEmpty || _warmVibe != vibe.summary || w.anchorMode != anchorOn) return null;
+    return w;
+  }
+
+  /// Whether the set can start now and still have every remaining mashup made
+  /// (at the pace so far, with room to spare) before the music gets to them.
+  /// False when the rest would be quick anyway: then the whole set comes first.
+  bool _earlyStartIsSafe(MashupSession session, int count, double secondsPerMashup) {
+    final built = session.mashups.length, left = count - built;
+    if (built == 0 || left <= 0) return false;
+    final wait = left * secondsPerMashup;
+    if (wait < 60) return false;
+    final plan = session.layout(warmth: _warmth);
+    return plan.duration - _addReach - _addMargin >= wait * 1.5 + 30;
+  }
+
+  void _startEarly() {
+    _playingEarly = true;
+    _relayout?.cancel();
+    _relayoutMashups(autoplay: true);
+  }
+
+  /// A new mashup while the set plays: it goes in only if everything it
+  /// changes is still well ahead of the music; otherwise the set ends as it is.
+  void _addWhilePlaying(MashupSession session) {
+    final before = _mashPlan;
+    if (before == null || !_playing) {
+      _scheduleRelayout();
+      return;
+    }
+    final known = before.mashups.length;
+    final plan = session.layout(warmth: _warmth);
+    if (firstChange(before.renderJson, plan.renderJson) < _position + _addMargin) {
+      session.mashups.removeRange(known, session.mashups.length);
+      session.target = known;
+      _endedShort = true;
+      session.layout(warmth: _warmth); // back to the set that is playing
+      return;
+    }
+    _scheduleRelayout(automatic: true);
+  }
+
+  /// The earliest mix time at which two render plans differ.
+  static double firstChange(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final ca = [for (final c in a['clips'] as List) jsonEncode(c)], cb = [for (final c in b['clips'] as List) jsonEncode(c)];
+    final sa = ca.toSet(), sb = cb.toSet();
+    var t = double.infinity;
+    for (final c in [...ca.where((x) => !sb.contains(x)), ...cb.where((x) => !sa.contains(x))]) {
+      t = math.min(t, ((jsonDecode(c) as Map)['outStart'] as num).toDouble());
+    }
+    return t;
   }
 
   /// Lays out the mashup set again (after any edit) and updates the sections;
   /// only the sections whose sound changed get re-rendered.
-  Future<void> _relayoutMashups({bool autoplay = false}) async {
+  Future<void> _relayoutMashups({bool autoplay = false, bool automatic = false}) async {
     final session = _session;
     if (session == null || session.mashups.isEmpty) return;
     // Remember where every beat was, to keep playing from the same musical
@@ -526,7 +766,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _duration = plan.duration;
     });
     await _publish(plan.renderJson, plan.cuts, plan.duration, plan.summary,
-        autoplay: autoplay, remap: autoplay ? null : _remapAround(p, before, beforeByIndex, plan.mashups));
+        autoplay: autoplay,
+        remap: autoplay ? null : _remapAround(p, before, beforeByIndex, plan.mashups),
+        protect: automatic && _playing);
     // Held at the end waiting for this mashup: carry on.
     if (_heldAtEnd && plan.duration > p + 1) {
       _heldAtEnd = false;
@@ -576,7 +818,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
   }
 
   Future<void> _publish(Map<String, dynamic> json, List<double> cuts, double duration, String summary,
-      {bool autoplay = false, List<List<double>>? remap}) async {
+      {bool autoplay = false, List<List<double>>? remap, bool protect = false}) async {
     if (_warmth != null) json['warmth'] = _warmth;
     if (_mashupMode) json = _pre.apply(json);
     _duration = duration;
@@ -584,7 +826,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _autoCues = _mashupMode ? mashupFx(_mashPlan?.mashups ?? const []) : (_plan == null ? const [] : blendFx(_plan!));
     await _mixer.setBeatGrid(_beatGrid);
     await _mixer.setLiveMap(_liveMap);
-    await _sections.setPlan(json, cuts, remap: remap);
+    await _sections.setPlan(json, cuts, remap: remap, protect: protect);
     _readyStatus = 'Ready · ${_clock(duration)} · $summary';
     // Still making a new set: keep its progress showing, not "Ready".
     if (!_building && !_autoplayPending) _set(_readyStatus!, phase: Phase.ready);
@@ -812,6 +1054,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       return;
     }
     _stopLearning();
+    await _stopWarmUp();
     setState(() => _analyseStatus = 'Analysing ${todo.length} songs…');
     final clock = ProgressClock();
     await _library.analyze(todo, (d, t) {
@@ -893,6 +1136,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) async {
       final (pos, playing, waiting) = await _mixer.position();
       if (!mounted) return;
+      // Playing while the set is still being made, and the music is nearly at
+      // the part a new mashup would change: end the set where it is.
+      final s = _session;
+      if (_playingEarly && _building && playing && s != null && s.target > s.mashups.length &&
+          pos > _duration - _addReach - _addMargin) {
+        s.target = s.mashups.length;
+        _endedShort = true;
+      }
       final idx = _indexAt(pos);
       setState(() {
         _position = pos;
@@ -1693,7 +1944,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final statusLine = [_status, if (_themeHint != null) _themeHint!, if (_readiness.isNotEmpty) _readiness, if (_learnStatus != null) _learnStatus!].join('   ·   ');
+    final statusLine = [_status, if (_themeHint != null) _themeHint!, if (_readiness.isNotEmpty) _readiness, if (_learnStatus != null) _learnStatus!, if (_warmStatus != null) _warmStatus!].join('   ·   ');
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 50,

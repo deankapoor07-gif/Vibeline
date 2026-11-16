@@ -2204,7 +2204,12 @@ class MashupSession {
 
   /// Keeps adding mashups until there are [count]. Calls [onAdded] after each
   /// batch so the set can start playing while the rest is prepared.
-  Future<void> fill(MusicLibrary lib, int count, void Function(String status) onStatus, void Function() onAdded) async {
+  ///
+  /// [beforeSplit] runs before each batch of songs is split, so a set that is
+  /// already playing can hold the splitting back until its next parts are
+  /// mixed. Lowering [target] meanwhile ends the set at that many.
+  Future<void> fill(MusicLibrary lib, int count, void Function(String status) onStatus, void Function() onAdded,
+      {Future<void> Function()? beforeSplit}) async {
     target = count;
     var misses = 0;
     if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
@@ -2262,6 +2267,10 @@ class MashupSession {
       if (misfit >= 0) picks.removeRange(misfit, picks.length);
       if (picks.isEmpty) continue; // those songs now can't be picked again
       final songs = {for (final p in picks) ...[p.vocal, p.beat]}.toList();
+      if (beforeSplit != null && songs.any((t) => t.stems == null)) {
+        await beforeSplit();
+        if (cancelled || mashups.length >= target) return;
+      }
       await lib.separate(songs, (d, t, c) {
         onStatus('Splitting stems for mashup ${mashups.length + 1}–${mashups.length + picks.length} of $target'
             '${c == null ? '' : ' · ${c.title}'}');
@@ -2269,6 +2278,7 @@ class MashupSession {
       if (cancelled) return;
       var added = 0;
       for (final p in picks) {
+        if (mashups.length >= target) break;
         var m = anchorMode && MashupMaker.weakBeat(p.beat) ? null : _build(p);
         if (anchorMode && m == null && MashupMaker.weakBeat(p.beat)) {
           _badBeats.add(p.beat.path);

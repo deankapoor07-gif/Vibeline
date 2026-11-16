@@ -26,6 +26,15 @@ class Prestretcher {
   bool _running = false;
   bool get busy => _running || _queue.isNotEmpty;
 
+  /// While a set is still being made, the slow clean vocals (about a minute
+  /// each) wait, so splitting the next songs gets the Mac.
+  bool _holdClean = false;
+  bool get holdClean => _holdClean;
+  set holdClean(bool v) {
+    _holdClean = v;
+    if (!v) _work();
+  }
+
   /// Vocals and beats still to be made (for "save in a moment").
   int get left => _queue.length + (_running ? 1 : 0);
 
@@ -112,7 +121,9 @@ class Prestretcher {
       while (_queue.isNotEmpty) {
         // The quick jobs first, then the clean vocals; earliest in the set first.
         num rank(Map<String, dynamic> j) => (j['at'] as num) + (j['clean'] == true ? 1e9 : 0);
-        final next = _queue.entries.reduce((a, b) => rank(a.value) <= rank(b.value) ? a : b);
+        final open = _queue.entries.where((e) => !(_holdClean && e.value['clean'] == true)).toList();
+        if (open.isEmpty) break;
+        final next = open.reduce((a, b) => rank(a.value) <= rank(b.value) ? a : b);
         _queue.remove(next.key);
         final job = File('${Directory.systemTemp.path}/vibeline-pre-${next.key}.json');
         await Directory(dir).create(recursive: true);

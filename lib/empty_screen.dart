@@ -94,8 +94,9 @@ class EmptyScreen extends StatelessWidget {
       const SizedBox(height: 4),
       Text(
         mashup
-            ? 'First set can take several minutes while your songs are analysed and their vocals and beats separated. Known songs load much quicker.'
-            : 'First set can take a few minutes while your songs are analysed. Known songs load much quicker.',
+            ? 'Your first set takes a few minutes while D-Jay Noodles learns your music and separates vocals from beats. '
+                'It plays as soon as enough is ready. After that, sets start in seconds.'
+            : 'Your first set takes a few minutes while D-Jay Noodles learns your music. After that, sets start in seconds.',
         textAlign: TextAlign.center,
         style: const TextStyle(fontSize: 11, color: Colors.white54),
       ),

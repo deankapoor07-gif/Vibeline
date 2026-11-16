@@ -74,9 +74,17 @@ class SectionEngine {
     } catch (_) {}
   }
 
+  /// How far ahead of the playhead [setPlan] keeps ready audio when protecting.
+  static const protectAhead = 45.0;
+
   /// Takes a whole-set render plan plus cut times and brings the sections up
   /// to date. Unchanged sections are reused straight from disk.
-  Future<void> setPlan(Map<String, dynamic> plan, List<double> cuts, {List<List<double>>? remap}) async {
+  ///
+  /// With [protect] (changes the app makes on its own while the music plays:
+  /// cleaner vocals arriving, the next mashup added) the part playing and the
+  /// next [protectAhead] seconds keep their ready audio rather than wait for
+  /// a new render, so playback never stops to catch up.
+  Future<void> setPlan(Map<String, dynamic> plan, List<double> cuts, {List<List<double>>? remap, bool protect = false}) async {
     _version++;
     await Directory(dir).create(recursive: true);
     final duration = (plan['duration'] as num).toDouble();
@@ -112,6 +120,19 @@ class SectionEngine {
       final f = File('$dir/$hash.m4a');
       if (f.existsSync()) s.found(f.path);
       out.add(s);
+    }
+    if (protect && remap == null) {
+      final p = playhead();
+      for (var k = 0; k < out.length; k++) {
+        final s = out[k];
+        if (s.path != null || s.end <= p || s.start > p + protectAhead) continue;
+        for (final o in sections) {
+          if (o.path != null && (o.start - s.start).abs() < 1e-3 && (o.end - s.end).abs() < 1e-3) {
+            out[k] = o;
+            break;
+          }
+        }
+      }
     }
     sections = out;
     await _pushTimeline(remap: remap);
