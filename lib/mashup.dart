@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'library.dart';
 import 'models.dart';
 import 'planner.dart';
+import 'stem_cache.dart';
 import 'tuning.dart';
 import 'vibe.dart';
 
@@ -487,7 +488,12 @@ class MashupMaker {
   }
 
   _Pair? pickNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected,
-      {LibraryTrack? after, bool looseFeel = false, double minFit = vocalFitMin}) {
+      {LibraryTrack? after, bool looseFeel = false, double minFit = vocalFitMin}) =>
+      scoredNext(ranked, prev, p, used, rejected, after: after, looseFeel: looseFeel, minFit: minFit)?.$1;
+
+  /// [pickNext] with its score, among the pairings [allow] lets through.
+  (_Pair, double)? scoredNext(List<_Pair> ranked, Mashup? prev, double p, Set<String> used, Set<String> rejected,
+      {LibraryTrack? after, bool looseFeel = false, double minFit = vocalFitMin, bool Function(_Pair)? allow}) {
     final before = after ?? prev?.beat;
     final target = targetTempo(p);
     _Pair? best;
@@ -495,6 +501,7 @@ class MashupMaker {
     var looked = 0;
     for (final x in ranked) {
       if (isUsed(used, x.vocal) || isUsed(used, x.beat) || rejected.contains(x.key)) continue;
+      if (allow != null && !allow(x)) continue;
       if (!meterOk(x.vocal, loose: looseFeel) || !meterOk(x.beat, loose: looseFeel)) continue;
       if (prev != null && (math.log(x.tempo / prev.tempo)).abs() > math.log(1.06)) continue;
       final move = moveCost(before, x.beat, loose: looseFeel);
@@ -512,8 +519,11 @@ class MashupMaker {
       }
       if (++looked > 4000) break; // ranked best-first; no need to scan everything
     }
-    return best;
+    return best == null ? null : (best, bestScore);
   }
+
+  /// How many of a pairing's songs haven't been split yet (each takes ~25 s).
+  static int unsplit(_Pair p) => (StemCache.isSplit(p.vocal) ? 0 : 1) + (StemCache.isSplit(p.beat) ? 0 : 1);
 
   /// Turns a pairing into a mashup once stems are known. Returns null if the
   /// vocal song turns out to have too little singing.
@@ -2031,6 +2041,60 @@ class MashupSession {
   bool cancelled = false;
   int target = 0;
 
+  /// Songs not split yet are slow (~25 s each), so a set draws on songs
+  /// already split first. To keep sets fresh, up to [freshSongs] new ones may
+  /// still go in, but only while [freshNow] says the wait is hidden (the set
+  /// is already playing). With nothing split that fits, new songs are used as
+  /// before: a set beats no set.
+  int freshSongs = 0;
+  bool Function()? freshNow;
+  int _freshUsed = 0;
+  int get freshLeft => math.max(0, freshSongs - _freshUsed);
+  static const _freshSlack = 1.5; // how much weaker a fresh pairing may score
+
+  /// Anchor mode on a theme night, turned off before any work because too
+  /// few of the theme's songs fit one tempo.
+  bool anchorTooThin = false;
+  /// Songs that must fit the anchor, per mashup wanted, to try it on a theme
+  /// (Kiwi: 11 fit for 10 mashups, and all 10 were made with it).
+  static double thinFactor = 1.0;
+  int? anchoredAtStart;
+
+  /// Distinct songs that could sing over the anchor beat (no splitting
+  /// needed to tell); [splitOnly]: in pairings that are split already.
+  int anchoredVocals({bool splitOnly = false}) {
+    final keys = <String>{};
+    for (final x in _ranked) {
+      if (_badBeats.contains(x.beat.path)) continue;
+      if (splitOnly && MashupMaker.unsplit(x) > 0) continue;
+      if (anchor != null && (_sameSong(x.beat, anchor!.track) || _sameSong(x.vocal, anchor!.track))) continue;
+      if (_anchoredPair(x) != null) keys.add(MashupMaker.songKey(x.vocal));
+    }
+    return keys.length;
+  }
+
+  /// New songs worth splitting in the background for next time: from the
+  /// best pairings not yet usable for want of splitting, those whose partner
+  /// is split already first (one split makes a whole new pairing).
+  List<LibraryTrack> freshCandidates(int n) {
+    final used = _used;
+    final one = <LibraryTrack>[], two = <LibraryTrack>[];
+    for (final x in _ranked.take(3000)) {
+      if (MashupMaker.isUsed(used, x.vocal) || MashupMaker.isUsed(used, x.beat) || _rejected.contains(x.key)) continue;
+      if (!MashupMaker.meterOk(x.vocal) || !MashupMaker.meterOk(x.beat)) continue;
+      final u = MashupMaker.unsplit(x);
+      if (u == 1) one.add(StemCache.isSplit(x.vocal) ? x.beat : x.vocal);
+      if (u == 2) two.addAll([x.vocal, x.beat]);
+      if (one.length >= n) break;
+    }
+    final out = <LibraryTrack>[];
+    for (final t in [...one, ...two]) {
+      if (out.length >= n) break;
+      if (!out.any((o) => _sameSong(o, t))) out.add(t);
+    }
+    return out;
+  }
+
   /// Anchor mode: one steady groove the set comes home to (null = classic).
   bool anchorMode = false;
   AnchorBeat? anchor;
@@ -2054,13 +2118,16 @@ class MashupSession {
 
   /// Best unused pairing that fits the anchor (anchor mode) and feels
   /// connected to the beat before it ([after]).
-  _Pair? _pickAnchored(double pos, Set<String> used, LibraryTrack? after) {
+  _Pair? _pickAnchored(double pos, Set<String> used, LibraryTrack? after) => _scoredAnchored(pos, used, after)?.$1;
+
+  (_Pair, double)? _scoredAnchored(double pos, Set<String> used, LibraryTrack? after, {bool Function(_Pair)? allow}) {
     _Pair? best;
     var bestScore = -1e9;
     var looked = 0;
     for (final x in _ranked) {
       if (MashupMaker.isUsed(used, x.vocal) || MashupMaker.isUsed(used, x.beat) || _rejected.contains(x.key)) continue;
       if (_badBeats.contains(x.beat.path) || _gappy.contains(x.beat.path)) continue;
+      if (allow != null && !allow(x)) continue;
       if (!_meterFits(x)) continue;
       if (anchor != null && (_sameSong(x.beat, anchor!.track) || _sameSong(x.vocal, anchor!.track))) continue;
       final move = MashupMaker.moveCost(after, x.beat, loose: _looseFeel);
@@ -2079,7 +2146,7 @@ class MashupSession {
       }
       if (++looked > 3000) break;
     }
-    return best;
+    return best == null ? null : (best, bestScore);
   }
 
   /// Opens the set with [song]: as the vocal over the best beat in [library]
@@ -2150,6 +2217,36 @@ class MashupSession {
           (best.any((p) => _sameSong(p.beat, t) || _sameSong(p.vocal, t)) ? 1.0 : 0.0);
       candidates = [...candidates]..sort((a, b) => cost(a).compareTo(cost(b)));
     }
+    // Split anchors first, and among the first few of those the one the most
+    // split songs fit: the set is then made without splitting anything.
+    if (suits == null) {
+      final ready = candidates.where(StemCache.isSplit).toList();
+      AnchorBeat? best;
+      var most = -1;
+      for (final t in ready.take(6)) {
+        await lib.meter([t]);
+        if (!MashupMaker.meterOk(t)) continue;
+        await lib.separate([t], (d, n, c) {});
+        if (!MashupMaker.solidAnchor(t)) continue;
+        final a = maker.anchorFor(t);
+        if (a == null) continue;
+        anchor = a;
+        _anchoredCache.clear();
+        final n = anchoredVocals(splitOnly: true);
+        if (n > most) {
+          most = n;
+          best = a;
+        }
+        if (n >= target * 1.5) break;
+      }
+      anchor = null;
+      _anchoredCache.clear();
+      if (best != null && most >= target) {
+        onStatus('Choosing the anchor beat · ${best.track.title}');
+        anchor = best;
+        return true;
+      }
+    }
     for (final t in candidates) {
       if (suits != null) {
         final trial = AnchorBeat(t, maker._natural(t.analysis!), 0);
@@ -2213,6 +2310,12 @@ class MashupSession {
     target = count;
     var misses = 0;
     if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
+    // A theme night rarely has enough songs near one tempo for the anchor
+    // beat. Find out now, from what's known, rather than after making the set.
+    if (anchorMode && maker.vibe.themed && (anchoredAtStart = anchoredVocals()) < count * thinFactor) {
+      anchorMode = false;
+      anchorTooThin = true;
+    }
     while (!cancelled && mashups.length < target) {
       if (misses >= (anchorMode ? 12 : 6)) {
         if (!_looseFeel) {
@@ -2236,10 +2339,25 @@ class MashupSession {
       for (var k = 0; k < batch && mashups.length + picks.length < target; k++) {
         final p = (mashups.length + picks.length) / math.max(1, target - 1);
         final after = picks.isNotEmpty ? picks.last.beat : (mashups.isNotEmpty ? mashups.last.beat : (anchorMode ? anchor?.track : null));
-        final pick = anchorMode
-            ? _pickAnchored(p, used, after)
-            : maker.pickNext(_ranked, prevSim, p, used, _rejected, after: after, looseFeel: _looseFeel, minFit: _minFit);
+        (_Pair, double)? pickWith(bool Function(_Pair)? allow) => anchorMode
+            ? _scoredAnchored(p, used, after, allow: allow)
+            : maker.scoredNext(_ranked, prevSim, p, used, _rejected,
+                after: after, looseFeel: _looseFeel, minFit: _minFit, allow: allow);
+        // Split already first; a fresh one if it's nearly as good and its
+        // splitting can be hidden; anything only if nothing split fits.
+        var scored = pickWith((x) => MashupMaker.unsplit(x) == 0);
+        final left = freshLeft;
+        if (left > 0 && (freshNow?.call() ?? false)) {
+          final f = pickWith((x) {
+            final u = MashupMaker.unsplit(x);
+            return u > 0 && u <= left;
+          });
+          if (f != null && (scored == null || f.$2 >= scored.$2 - _freshSlack)) scored = f;
+        }
+        scored ??= pickWith(null);
+        final pick = scored?.$1;
         if (pick == null) break;
+        _freshUsed += MashupMaker.unsplit(pick);
         if (!anchorMode && prevTempo > 0 && (math.log(pick.tempo / prevTempo)).abs() > math.log(1.06)) break;
         picks.add(pick);
         used

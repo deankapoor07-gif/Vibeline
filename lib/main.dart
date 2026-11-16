@@ -10,6 +10,7 @@ import 'auto_fx.dart';
 import 'deck_view.dart';
 import 'fx_deck.dart';
 import 'intros.dart';
+import 'stem_cache.dart';
 import 'library.dart';
 import 'library_panel.dart';
 import 'mashup.dart';
@@ -406,10 +407,14 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // are beats.)
     final singers = ranked.where(vibe.sings).toList();
     final wanted = anchorOn ? math.max(240, count * 6) : math.max(80, count * 4);
-    final candidates = MusicLibrary.limitPool({
+    final limited = MusicLibrary.limitPool({
       ...singers,
       ...ranked.where((t) => !vibe.themed || !vibe.sings(t)).take(wanted),
     }.toList());
+    // Songs already split are always in: a set made from them needs no
+    // waiting, so they're tried first.
+    final have = limited.toSet();
+    final candidates = [...limited, ...ranked.where((t) => t.analysis != null && !have.contains(t) && StemCache.isSplit(t))];
     // Start from songs already known; only wait for new ones if there aren't
     // enough, or not enough that suit what was asked for. The rest are learned
     // in the background once the set is made.
@@ -468,13 +473,19 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
     // once enough is made that the rest will be ready in time, and the rest
     // is added behind the music only where the music hasn't got to yet: the
     // part playing never changes, and if a mashup comes too late the set ends
-    // where it is rather than stop and catch up. Not on a theme night with
-    // the anchor beat, which may have to start again without it.
+    // where it is rather than stop and catch up. (A theme night that turns
+    // out short for the anchor beat once playing keeps what it has rather
+    // than start again without it.)
     _building = true;
     _playingEarly = false;
     _endedShort = false;
     _pre.holdClean = true;
-    final mayStartEarly = !(session.anchorMode && vibe.themed);
+    // Fresh songs (not split yet) only go in behind the music, so they never
+    // add to the wait. The background splits a couple more for next time.
+    session
+      ..freshSongs = _freshPerSet
+      ..freshNow = (() => _playingEarly);
+    const mayStartEarly = true;
     final firstTime = _firstTime;
     final fillClock = Stopwatch()..start();
     final startBuilt = session.mashups.length;
@@ -494,6 +505,11 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       } else if (mayStartEarly &&
           session.mashups.length > startBuilt &&
           _earlyStartIsSafe(session, count, fillClock.elapsedMilliseconds / 1000 / (session.mashups.length - startBuilt))) {
+        _startEarly();
+      } else if (session.freshLeft > 0 &&
+          session.mashups.length < count &&
+          _earlyStartIsSafe(session, count, _assumedSecondsPerMashup)) {
+        // Long enough already to hide new songs being split behind it.
         _startEarly();
       } else {
         _scheduleRelayout();
@@ -521,6 +537,9 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       if (identical(_session, session)) _playingEarly = false;
       return;
     }
+    if (session.anchorTooThin) {
+      _themeNote = 'Anchor beat needs more songs at one tempo than this theme has, so this set is made without it.';
+    }
     if (_playingEarly) {
       _playingEarly = false;
       setState(() => _background = _endedShort
@@ -531,7 +550,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       _relayout?.cancel();
       await _relayoutMashups(automatic: true);
       if (session.mashups.isNotEmpty) _firstSetMade();
-      if (mounted && !session.cancelled) _learnInBackground(candidates);
+      if (mounted && !session.cancelled) unawaited(_freshenThenLearn(session, candidates));
       return;
     }
     // A theme night rarely has enough songs near one tempo for the anchor
@@ -555,8 +574,34 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       while (mounted && _autoplayPending && !session.cancelled) {
         await Future<void>.delayed(const Duration(seconds: 1));
       }
-      if (mounted && !session.cancelled) _learnInBackground(candidates);
+      if (mounted && !session.cancelled) await _freshenThenLearn(session, candidates);
     }());
+  }
+
+  /// New songs a set may take, or split in the background for the next one.
+  static const _freshPerSet = 2;
+
+  /// Once the set is mixed: splits a couple of new songs that suit this
+  /// vibe, so the next set has something new without waiting, then learns
+  /// more songs. Stops if another set starts.
+  Future<void> _freshenThenLearn(MashupSession session, List<LibraryTrack> candidates) async {
+    bool current() => mounted && identical(_session, session) && !session.cancelled && !_building;
+    while (current() && !(_sections.settled || !_playing)) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    if (!current()) return;
+    final fresh = session.freshCandidates(_freshPerSet);
+    if (fresh.isNotEmpty) {
+      try {
+        await _library.meter(fresh);
+        if (!current()) return;
+        final ok = fresh.where((t) => MashupMaker.meterOk(t)).toList();
+        setState(() => _learnStatus = 'Preparing new songs for your next set…');
+        await _library.separate(ok, (d, t, c) {});
+      } catch (_) {}
+      if (mounted && _learnStatus == 'Preparing new songs for your next set…') setState(() => _learnStatus = null);
+    }
+    if (current()) _learnInBackground(candidates);
   }
 
   int _learnRun = 0;
