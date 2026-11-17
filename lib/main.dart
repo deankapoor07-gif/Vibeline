@@ -12,6 +12,8 @@ import 'fx_deck.dart';
 import 'intros.dart';
 import 'stem_cache.dart';
 import 'library.dart';
+import 'licence.dart';
+import 'licence_view.dart';
 import 'library_panel.dart';
 import 'mashup.dart';
 import 'mashup_widgets.dart';
@@ -49,7 +51,7 @@ class VibelineApp extends StatelessWidget {
         primaryColor: kPink,
         colorScheme: const ColorScheme.dark(primary: kPink, secondary: kTeal, surface: kPanel),
       )),
-      home: const TimelineWorkspaceScreen(),
+      home: const LicenceGate(child: TimelineWorkspaceScreen()),
     );
   }
 }
@@ -2037,6 +2039,21 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               color: _libraryOpen ? kRigAmber : Colors.white70,
               onPressed: () => setState(() => _libraryOpen = !_libraryOpen),
             ),
+          ListenableBuilder(
+            listenable: Licence.instance,
+            builder: (context, _) {
+              final l = Licence.instance;
+              if (!l.loaded) return const SizedBox.shrink();
+              final left = l.trialDaysLeft;
+              return _barButton(
+                icon: l.licensed ? Icons.vpn_key : Icons.timer,
+                label: l.licensed ? 'Licence' : left > 0 ? 'Trial · $left ${left == 1 ? 'day' : 'days'}' : 'Trial ended',
+                tooltip: l.licensed ? 'Your licence on this Mac' : 'Buy D-Jay Noodles, or enter your licence key',
+                color: l.licensed ? Colors.white70 : kRigAmber,
+                onPressed: () => showLicenceWindow(context),
+              );
+            },
+          ),
           _barButton(
             icon: Icons.storage,
             label: 'Storage',
