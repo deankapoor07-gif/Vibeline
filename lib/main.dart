@@ -2049,7 +2049,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
             listenable: Licence.instance,
             builder: (context, _) {
               final l = Licence.instance;
-              if (!l.loaded) return const SizedBox.shrink();
+              if (!l.loaded || _library.demoMode) return const SizedBox.shrink();
               final left = l.trialDaysLeft;
               return _barButton(
                 icon: l.licensed ? Icons.vpn_key : Icons.timer,

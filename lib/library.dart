@@ -64,6 +64,9 @@ class MusicLibrary {
   final List<LibraryTrack> tracks = [];
   String folder = defaultFolder;
   bool useMusicApp = true; // also scan the Music app's own files
+  /// For recording a demo video: hides the trial badge. Set by hand in
+  /// settings.json ("demoMode": true); there's no switch for it in the app.
+  bool demoMode = false;
   /// Look for music everywhere in your home folder and on plugged-in drives,
   /// instead of one folder.
   bool wholeMac = true;
@@ -77,6 +80,7 @@ class MusicLibrary {
         final j = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
         folder = (j['folder'] as String?) ?? folder;
         useMusicApp = (j['useMusicApp'] as bool?) ?? useMusicApp;
+        demoMode = (j['demoMode'] as bool?) ?? false;
         wholeMac = (j['wholeMac'] as bool?) ?? wholeMac;
       }
     } catch (_) {}
@@ -84,7 +88,7 @@ class MusicLibrary {
 
   Future<void> saveSettings() async {
     await Directory(supportDir).create(recursive: true);
-    await File('$supportDir/settings.json').writeAsString(jsonEncode({'folder': folder, 'useMusicApp': useMusicApp, 'wholeMac': wholeMac}));
+    await File('$supportDir/settings.json').writeAsString(jsonEncode({'folder': folder, 'useMusicApp': useMusicApp, 'wholeMac': wholeMac, if (demoMode) 'demoMode': true}));
   }
 
   /// Problems that stop Vibeline from mixing, in plain words, or null if ready.
