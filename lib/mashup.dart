@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'library.dart';
 import 'models.dart';
 import 'planner.dart';
+import 'recent_sets.dart';
 import 'stem_cache.dart';
 import 'tuning.dart';
 import 'vibe.dart';
@@ -402,7 +403,7 @@ class MashupMaker {
       if (b.analysis!.tempoDrift > 0.03) bScore -= 1.2;
       bScore -= 1.5 * (math.log(tb / vibe.targetBpm)).abs();
       for (final v in vocals) {
-        if (identical(v, b) || v.artist.toLowerCase() == b.artist.toLowerCase() || songKey(v) == songKey(b)) continue;
+        if (identical(v, b) || v.sameArtist(b) || songKey(v) == songKey(b)) continue;
         // A vocal that would have to go squeaky to fit: find another pairing.
         final vg = fitVocal(v.analysis!, tb);
         if (vg == null) continue;
@@ -428,6 +429,7 @@ class MashupMaker {
         if (v.year > 0 && b.year > 0 && (v.year - b.year).abs() >= 10) s += 0.15;
         if (v.analysis!.tempoDrift > 0.04) s -= 0.4;
         s += rng.nextDouble() * 0.5;
+        s -= RecentSets.penalty(v, b); // sound different from the last few sets
         pairs.add(_Pair(v, b, vg, bg, shift, s));
       }
     }
@@ -2312,7 +2314,7 @@ class MashupSession {
     if (anchorMode && !await _ensureAnchor(lib, onStatus)) anchorMode = false;
     // A theme night rarely has enough songs near one tempo for the anchor
     // beat. Find out now, from what's known, rather than after making the set.
-    if (anchorMode && maker.vibe.themed && (anchoredAtStart = anchoredVocals()) < count * thinFactor) {
+    if (anchorMode && (anchoredAtStart = anchoredVocals()) < count * thinFactor) {
       anchorMode = false;
       anchorTooThin = true;
     }

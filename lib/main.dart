@@ -26,6 +26,7 @@ import 'mixer_panel.dart';
 import 'phone_app.dart';
 import 'phone_set.dart';
 import 'prompt_song.dart';
+import 'recent_sets.dart';
 import 'rig.dart';
 import 'theme_picker.dart';
 import 'sections.dart';
@@ -219,6 +220,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
 
   Future<void> _startup() async {
     await _library.loadSettings();
+    RecentSets.load();
     await _scan();
   }
 
@@ -540,7 +542,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
       return;
     }
     if (session.anchorTooThin) {
-      _themeNote = 'Anchor beat needs more songs at one tempo than this theme has, so this set is made without it.';
+      _themeNote = 'Anchor beat needs more songs at one tempo than this vibe has, so this set is made without it.';
     }
     if (_playingEarly) {
       _playingEarly = false;
@@ -551,14 +553,17 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
               : null);
       _relayout?.cancel();
       await _relayoutMashups(automatic: true);
-      if (session.mashups.isNotEmpty) _firstSetMade();
+      if (session.mashups.isNotEmpty) {
+        _firstSetMade();
+        RecentSets.record(session.mashups.map((m) => (m.vocal, m.beat)));
+      }
       if (mounted && !session.cancelled) unawaited(_freshenThenLearn(session, candidates));
       return;
     }
     // A theme night rarely has enough songs near one tempo for the anchor
     // beat (Kiwi: 3 of 10 with it, 9 of 10 without). Make it without.
-    if (session.anchorMode && vibe.themed && session.mashups.length < count * 0.6) {
-      _themeNote = 'Anchor beat needs more songs at one tempo than this theme has, so this set is made without it.';
+    if (session.anchorMode && session.mashups.length < count * 0.6) {
+      _themeNote = 'Anchor beat needs more songs at one tempo than this vibe has, so this set is made without it.';
       return _makeMashups(vibe, ranked, seed: seed, anchor: false);
     }
     if (session.mashups.isEmpty) {
@@ -569,6 +574,7 @@ class _TimelineWorkspaceScreenState extends State<TimelineWorkspaceScreen> {
         ? 'Prepared ${session.mashups.length} of $count mashups — ran out of good pairings for this vibe'
         : null);
     _firstSetMade();
+    RecentSets.record(session.mashups.map((m) => (m.vocal, m.beat)));
     _relayout?.cancel();
     await _relayoutMashups(autoplay: true);
     // Learning more songs waits until the set is mixed, so it doesn't slow that down.

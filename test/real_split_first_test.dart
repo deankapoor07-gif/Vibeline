@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vibeline/library.dart';
 import 'package:vibeline/mashup.dart';
 import 'package:vibeline/models.dart';
+import 'package:vibeline/recent_sets.dart';
 import 'package:vibeline/stem_cache.dart';
 import 'package:vibeline/vibe.dart';
 
@@ -46,6 +47,8 @@ void main() {
     final pool = candidates.where((t) => t.analysis != null).toList();
     print('${t()} "${vibe.summary}" · $count mashups · ${pool.length} songs in the pool · analysed ${first.length} first');
     MashupSession.thinFactor = double.tryParse(Platform.environment['VIBELINE_THIN'] ?? '') ?? 1.0;
+    final recentDir = Platform.environment['VIBELINE_RECENT_DIR'];
+    if (recentDir != null) RecentSets.load(dir: recentDir);
     final session = MashupSession.start(maker, pool)..anchorMode = anchorOn;
     print('${t()} pairings ranked');
     String? last;
@@ -59,6 +62,7 @@ void main() {
     for (final m in session.mashups) {
       print('  ${m.vocal.title} OVER ${m.beat.title}');
     }
+    if (recentDir != null) RecentSets.record(session.mashups.map((m) => (m.vocal, m.beat)));
     if (session.anchor != null) print('anchor ${session.anchor!.track.title} · split songs that fit it: ${session.anchoredVocals(splitOnly: true)}');
     print('fresh for next time: ${session.freshCandidates(2).map((t) => t.title).join(', ')}');
   }, skip: Platform.environment['VIBELINE_REAL'] != '1', timeout: const Timeout(Duration(minutes: 60)));

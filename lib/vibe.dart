@@ -59,7 +59,11 @@ class VibeProfile {
       case 'halloween':
         if (!isSpooky(title, a)) return false;
       case final String k when cultureThemes.containsKey(k):
-        if (!cultureThemes[k]!.fits(t)) return false;
+        // "Reggae and soul": reggae OR soul, not songs that are both.
+        final inGenres = themeGenres.contains(genreFamily(t.genre));
+        if (!cultureThemes[k]!.fits(t) && !inGenres) return false;
+        if (genreText != null && !g.contains(genreText!) && !a.contains(genreText!)) return false;
+        return true;
     }
     if (themeGenres.isNotEmpty && !themeGenres.contains(genreFamily(t.genre))) return false;
     if (genreText != null && !g.contains(genreText!) && !a.contains(genreText!)) return false;

@@ -397,10 +397,12 @@ def emit(obj):
 
 # ---------------------------------------------------------------- tags
 
-def read_tags(path):
+def read_tags(path, open_file=True):
     from tinytag import TinyTag
     info = {"path": path, "title": "", "artist": "", "genre": "", "year": 0, "duration": 0.0}
     try:
+        if not open_file:
+            raise LookupError
         t = TinyTag.get(path, tags=True, duration=True, image=False)
         info["duration"] = float(t.duration or 0.0)
         info["title"] = (t.title or "").strip()
@@ -488,7 +490,16 @@ def _scan(folder, seen, old, new):
                     continue
                 key = f"{st.st_size}|{int(st.st_mtime)}"
                 hit = old.get(path)
-                info = hit[1] if hit and hit[0] == key else read_tags(path)
+                if hit and hit[0] == key:
+                    info = hit[1]
+                elif st.st_flags & 0x40000000:  # SF_DATALESS
+                    # Moved to iCloud by macOS: opening it would wait on a
+                    # download (for a whole Desktop, hours). List it by name;
+                    # it's read properly once it's back on the Mac.
+                    emit({"type": "tags", **read_tags(path, open_file=False)})
+                    continue
+                else:
+                    info = read_tags(path)
                 new[path] = [key, info]
                 emit({"type": "tags", **info})
 

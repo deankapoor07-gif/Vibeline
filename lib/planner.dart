@@ -160,7 +160,7 @@ class MixPlanner {
         _Cand? best;
         var bestScore = -1e9;
         for (final x in pool) {
-          if (used.contains(x.track.songKey) || x.track.artist.toLowerCase() == a.track.artist.toLowerCase()) continue;
+          if (used.contains(x.track.songKey) || x.track.sameArtist(a.track)) continue;
           final gA = (a.bpm / x.bpm - 1).abs(), gB = (x.bpm / b.bpm - 1).abs();
           final hA = _bestHarmony(a.grid.camelot, x.grid.camelot).score;
           final hB = _bestHarmony(x.grid.camelot, b.grid.camelot).score;

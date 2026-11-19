@@ -27,6 +27,13 @@ class LibraryTrack {
 
   /// Its title without versions ("(Rap Remix)", "[Edit]", "feat. …"), so two
   /// versions of one song are never both in a set.
+  /// Same singer or band. Songs with no artist in their details (AI-made
+  /// songs, home recordings) never count as the same artist as each other.
+  bool sameArtist(LibraryTrack o) {
+    final a = artist.trim().toLowerCase(), b = o.artist.trim().toLowerCase();
+    return a.isNotEmpty && a == b;
+  }
+
   String get songKey =>
       'song:${title.toLowerCase().replaceAll(RegExp(r'[(\[].*?[)\]]'), ' ').replaceAll(RegExp(r'\s(feat|ft)\..*$'), '').replaceAll(RegExp(r'\s-\s.*$'), '').replaceAll(RegExp(r'[^a-z0-9]'), '')}';
 
@@ -73,7 +80,7 @@ class LibraryTrack {
         path: j['path'] as String,
         title: (j['title'] as String?) ?? '',
         artist: (j['artist'] as String?) ?? '',
-        genre: (j['genre'] as String?) ?? '',
+        genre: _genreOrGuess((j['genre'] as String?) ?? '', j['path'] as String, (j['title'] as String?) ?? ''),
         year: (j['year'] as num?)?.toInt() ?? 0,
         duration: (j['duration'] as num?)?.toDouble() ?? 0,
       );
@@ -659,3 +666,29 @@ class MixPlan {
   /// Section boundaries: just after each blend (and any echo tail) is over.
   List<double> get cuts => [for (final t in transitions) t.end + 3.0];
 }
+
+/// Styles a song's folder or title can name.
+const _styleWords = {
+  'christmas': 'Christmas', 'xmas': 'Christmas', 'noel': 'Christmas', 'santa': 'Christmas', 'holiday': 'Christmas',
+  'hip hop': 'Hip Hop', 'hip-hop': 'Hip Hop', 'rap': 'Rap', 'r&b': 'R&B', 'rnb': 'R&B', 'soul': 'Soul', 'funk': 'Funk',
+  'house': 'House', 'dance': 'Dance', 'disco': 'Disco', 'techno': 'Techno', 'edm': 'EDM', 'electronic': 'Electronic',
+  'rock': 'Rock', 'metal': 'Metal', 'punk': 'Punk', 'indie': 'Indie', 'country': 'Country', 'reggae': 'Reggae',
+  'dancehall': 'Dancehall', 'afro': 'Afrobeats', 'jazz': 'Jazz', 'blues': 'Blues', 'latin': 'Latin',
+  'reggaeton': 'Reggaeton', 'pop': 'Pop',
+};
+
+/// A song with no genre in its details (AI-made songs, home recordings) gets
+/// one from the styles its folders and title name: "Reggae/Rise Up.m4a" is
+/// reggae, "Christmas/Soulfire Noel.m4a" is Christmas soul.
+String _genreOrGuess(String genre, String path, String title) {
+  if (genre.trim().isNotEmpty) return genre;
+  final parts = path.split('/');
+  final folders = parts.length > 3 ? parts.sublist(parts.length - 3, parts.length - 1) : <String>[];
+  final text = ' ${[...folders.reversed, title].join(' ').toLowerCase()} ';
+  final found = <String>[];
+  for (final e in _styleWords.entries) {
+    if (RegExp('(^|[^a-z])${RegExp.escape(e.key)}').hasMatch(text) && !found.contains(e.value)) found.add(e.value);
+  }
+  return found.join(', ');
+}
+
