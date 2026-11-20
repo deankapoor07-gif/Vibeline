@@ -16,7 +16,7 @@ void main() {
         dir: dir.path,
         now: () => now,
         trialStore: MemTrial(start),
-        post: (a, f) async => (200, <String, dynamic>{'activated': true, 'instance': {'id': 'i'}, 'meta': {'store_id': kLemonStoreId ?? 1, 'product_id': kLemonProductId ?? 2}}),
+        post: (a, f) async => (200, <String, dynamic>{'ok': true, 'instance': 'i'}),
       );
 
   testWidgets('trial ended: the screen shows, a key unlocks the app', (t) async {

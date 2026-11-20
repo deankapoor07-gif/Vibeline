@@ -1,9 +1,9 @@
-// The 7-day trial and the licence key bought through Lemon Squeezy.
+// The 7-day trial and the licence key bought through Creem.
 //
-// Keys are checked with Lemon Squeezy's licence API (no secret needed: the
-// key itself is the credential). Once a Mac is activated it keeps working
-// offline; it rechecks now and then when online, and only locks if Lemon
-// Squeezy says the key was refunded or disabled.
+// Keys are checked through our licence server (a small Cloudflare Worker that
+// holds the Creem API key, which must never ship inside the app). Once a Mac
+// is activated it keeps working offline; it rechecks now and then when online,
+// and only locks if the server says the key was refunded, disabled or is gone.
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,15 +11,14 @@ import 'package:flutter/foundation.dart';
 
 import 'library.dart';
 
-/// Our Lemon Squeezy store and product. Keys from any other store or product
-/// are refused. Set these before a release; tests fail while they're null.
-const int? kLemonStoreId = null;
-const int? kLemonProductId = null;
+/// Our licence server, e.g. `https://djn-licence.<account>.workers.dev`. It
+/// only accepts keys for the D-Jay Noodles product. Set this before a release;
+/// the release test fails while it's null.
+const String? kLicenceServer = null;
 
 const kBuyUrl = 'https://d-jaynoodles.com/#buy';
 const kTrialDays = 7;
 const _recheckEvery = Duration(days: 14);
-const _api = 'https://api.lemonsqueezy.com/v1/licenses';
 
 enum LicenceState { trial, expired, licensed }
 
@@ -29,7 +28,7 @@ class ActivationResult {
   const ActivationResult(this.ok, this.message);
 }
 
-/// One HTTP POST to the licence API: form fields in, JSON out.
+/// One HTTP POST to the licence server: JSON fields in, JSON out.
 typedef LicencePost = Future<(int, Map<String, dynamic>)> Function(String action, Map<String, String> fields);
 
 class Licence extends ChangeNotifier {
@@ -115,45 +114,40 @@ class Licence extends ChangeNotifier {
     } catch (_) {}
   }
 
-  static String? _ourProduct(Map<String, dynamic> j) {
-    final meta = j['meta'];
-    if (meta is! Map) return 'That key is for something else, not D-Jay Noodles.';
-    if (kLemonStoreId != null && meta['store_id'] != kLemonStoreId) return 'That key is for something else, not D-Jay Noodles.';
-    if (kLemonProductId != null && meta['product_id'] != kLemonProductId) return 'That key is for something else, not D-Jay Noodles.';
-    return null;
+  /// Plain words for a reason code from the licence server.
+  static String _friendly(String? reason) {
+    switch (reason) {
+      case 'limit':
+        return 'This key is already in use on 3 Macs. Open D-Jay Noodles on one you no longer use and choose "Move licence off this Mac", then try again.';
+      case 'not_found':
+      case 'missing':
+        return "That key wasn't recognised. Check it matches the one in your receipt email.";
+      case 'disabled':
+      case 'expired':
+        return "That key is no longer active. If you think that's wrong, email hello@d-jaynoodles.com.";
+      case 'wrong_product':
+        return 'That key is for something else, not D-Jay Noodles.';
+      case 'unavailable':
+        return "The licence server didn't answer. Try again in a few minutes.";
+    }
+    return "That key couldn't be activated.";
   }
 
-  static String _friendly(String? error) {
-    final e = (error ?? '').toLowerCase();
-    if (e.contains('activation limit')) {
-      return 'This key is already in use on 3 Macs. Open D-Jay Noodles on one you no longer use and choose "Move licence off this Mac", then try again.';
-    }
-    if (e.contains('not found') || e.contains('invalid')) return "That key wasn't recognised. Check it matches the one in your receipt email.";
-    if (e.contains('disabled') || e.contains('expired')) return 'That key is no longer active. If you think that\'s wrong, email hello@d-jaynoodles.com.';
-    return error == null || error.isEmpty ? "That key couldn't be activated." : error;
-  }
+  /// Reasons that mean the key really is no good any more (not just a hiccup).
+  static const _revoked = {'not_found', 'disabled', 'expired', 'wrong_product'};
 
   Future<ActivationResult> activate(String typed) async {
     final k = typed.trim();
     if (k.isEmpty) return const ActivationResult(false, 'Paste your licence key first.');
     final (int code, Map<String, dynamic> j) res;
     try {
-      res = await _post('activate', {'license_key': k, 'instance_name': await _macName()});
+      res = await _post('activate', {'key': k, 'name': await _macName()});
     } catch (_) {
       return const ActivationResult(false, "Couldn't reach the licence server. Check you're online and try again.");
     }
     final j = res.$2;
-    if (j['activated'] != true) return ActivationResult(false, _friendly(j['error'] as String?));
-    final wrong = _ourProduct(j);
-    final id = (j['instance'] as Map?)?['id'] as String?;
-    if (wrong != null || id == null) {
-      if (id != null) {
-        try {
-          await _post('deactivate', {'license_key': k, 'instance_id': id});
-        } catch (_) {}
-      }
-      return ActivationResult(false, wrong ?? "That key couldn't be activated.");
-    }
+    final id = j['instance'];
+    if (j['ok'] != true || id is! String || id.isEmpty) return ActivationResult(false, _friendly(j['reason'] as String?));
     key = k;
     instanceId = id;
     lastChecked = _now();
@@ -166,10 +160,8 @@ class Licence extends ChangeNotifier {
   Future<ActivationResult> deactivate() async {
     if (!licensed) return const ActivationResult(true, '');
     try {
-      final (_, j) = await _post('deactivate', {'license_key': key!, 'instance_id': instanceId!});
-      if (j['deactivated'] != true && !'${j['error']}'.toLowerCase().contains('not found')) {
-        return ActivationResult(false, _friendly(j['error'] as String?));
-      }
+      final (_, j) = await _post('deactivate', {'key': key!, 'instance': instanceId!});
+      if (j['ok'] != true) return ActivationResult(false, _friendly(j['reason'] as String?));
     } catch (_) {
       return const ActivationResult(false, "Couldn't reach the licence server. Check you're online and try again.");
     }
@@ -182,16 +174,17 @@ class Licence extends ChangeNotifier {
   }
 
   /// Every couple of weeks, when online: is the key still good? Offline or a
-  /// server hiccup changes nothing; only a clear "refunded / disabled" does.
+  /// server hiccup changes nothing; only a clear "refunded / disabled / gone"
+  /// does.
   Future<void> recheck() async {
     if (!licensed) return;
     final last = lastChecked;
     if (last != null && _now().difference(last) < _recheckEvery) return;
     try {
-      final (code, j) = await _post('validate', {'license_key': key!, 'instance_id': instanceId!});
-      if (j['valid'] == true && _ourProduct(j) == null) {
+      final (_, j) = await _post('validate', {'key': key!, 'instance': instanceId!});
+      if (j['valid'] == true) {
         lastChecked = _now();
-      } else if (code == 404 || '${(j['license_key'] as Map?)?['status']}' == 'disabled' || '${j['error']}'.toLowerCase().contains('not found')) {
+      } else if (_revoked.contains(j['reason'])) {
         key = null;
         instanceId = null;
         lastChecked = null;
@@ -211,12 +204,14 @@ class Licence extends ChangeNotifier {
   }
 
   static Future<(int, Map<String, dynamic>)> _httpPost(String action, Map<String, String> fields) async {
+    final server = kLicenceServer;
+    if (server == null) throw const SocketException('No licence server in this build');
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
     try {
-      final req = await client.postUrl(Uri.parse('$_api/$action'));
+      final req = await client.postUrl(Uri.parse('$server/$action'));
       req.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      req.headers.contentType = ContentType('application', 'x-www-form-urlencoded', charset: 'utf-8');
-      req.write(Uri(queryParameters: fields).query);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode(fields));
       final res = await req.close().timeout(const Duration(seconds: 20));
       final body = await res.transform(utf8.decoder).join();
       final j = body.isEmpty ? <String, dynamic>{} : jsonDecode(body);

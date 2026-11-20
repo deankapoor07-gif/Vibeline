@@ -78,12 +78,8 @@ void main() {
         store: MemTrial(day0),
         post: (a, f) async {
           calls.add(a);
-          expect(f['license_key'], 'ABCD-1234-EFGH-5678');
-          return (200, <String, dynamic>{
-            'activated': true,
-            'instance': {'id': 'inst-1'},
-            'meta': {'store_id': kLemonStoreId ?? 1, 'product_id': kLemonProductId ?? 2},
-          });
+          expect(f['key'], 'ABCD-1234-EFGH-5678');
+          return (200, <String, dynamic>{'ok': true, 'instance': 'inst-1'});
         });
     await l.load();
     expect(l.state, LicenceState.expired);
@@ -105,8 +101,8 @@ void main() {
     final l = make(
         now: () => now,
         post: (a, f) async => a == 'activate'
-            ? (200, <String, dynamic>{'activated': true, 'instance': {'id': 'i'}, 'meta': {'store_id': kLemonStoreId ?? 1, 'product_id': kLemonProductId ?? 2}})
-            : (200, <String, dynamic>{'valid': false, 'license_key': {'status': 'disabled'}}));
+            ? (200, <String, dynamic>{'ok': true, 'instance': 'i'})
+            : (200, <String, dynamic>{'valid': false, 'reason': 'disabled'}));
     await l.load();
     await l.activate('KEY-1');
     now = now.add(const Duration(days: 15));
@@ -120,7 +116,7 @@ void main() {
         now: () => day0,
         post: (a, f) async {
           calls++;
-          return (200, <String, dynamic>{'activated': true, 'instance': {'id': 'i'}, 'meta': {'store_id': kLemonStoreId ?? 1, 'product_id': kLemonProductId ?? 2}});
+          return (200, <String, dynamic>{'ok': true, 'instance': 'i'});
         });
     await l.load();
     await l.activate('KEY-1');
@@ -131,13 +127,16 @@ void main() {
   test('plain-English errors', () async {
     final l = make(
         now: () => day0,
-        post: (a, f) async => f['license_key'] == 'FULL'
-            ? (400, <String, dynamic>{'activated': false, 'error': 'This license key has reached the activation limit.'})
-            : (404, <String, dynamic>{'activated': false, 'error': 'license_key not found.'}));
+        post: (a, f) async => f['key'] == 'FULL'
+            ? (200, <String, dynamic>{'ok': false, 'reason': 'limit'})
+            : f['key'] == 'OTHER'
+                ? (200, <String, dynamic>{'ok': false, 'reason': 'wrong_product'})
+                : (400, <String, dynamic>{'ok': false, 'reason': 'not_found'}));
     await l.load();
     expect((await l.activate('')).message, contains('Paste'));
     expect((await l.activate('FULL')).message, contains('3 Macs'));
     expect((await l.activate('NOPE')).message, contains("wasn't recognised"));
+    expect((await l.activate('OTHER')).message, contains('not D-Jay Noodles'));
     expect(l.licensed, isFalse);
     final offline = make(now: () => day0, post: (a, f) async => throw const SocketException('x'));
     await offline.load();
@@ -151,8 +150,8 @@ void main() {
         post: (a, f) async {
           seen.add(a);
           return a == 'activate'
-              ? (200, <String, dynamic>{'activated': true, 'instance': {'id': 'i'}, 'meta': {'store_id': kLemonStoreId ?? 1, 'product_id': kLemonProductId ?? 2}})
-              : (200, <String, dynamic>{'deactivated': true});
+              ? (200, <String, dynamic>{'ok': true, 'instance': 'i'})
+              : (200, <String, dynamic>{'ok': true});
         });
     await l.load();
     await l.activate('KEY-1');
@@ -161,23 +160,46 @@ void main() {
     expect(seen, ['activate', 'deactivate']);
   });
 
-  test('a key from another store is refused and released', () async {
-    final seen = <String>[];
+  test('a licence server hiccup on recheck keeps the licence', () async {
+    var now = day0;
     final l = make(
-        now: () => day0,
-        post: (a, f) async {
-          seen.add(a);
-          return (200, <String, dynamic>{'activated': true, 'instance': {'id': 'i'}, 'meta': {'store_id': -5, 'product_id': -6}});
-        });
+        now: () => now,
+        post: (a, f) async => a == 'activate'
+            ? (200, <String, dynamic>{'ok': true, 'instance': 'i'})
+            : (503, <String, dynamic>{'valid': false, 'reason': 'unavailable'}));
     await l.load();
-    final r = await l.activate('OTHER');
-    if (kLemonStoreId == null) return; // can't tell stores apart until the ids are set
-    expect(r.ok, isFalse);
-    expect(seen, ['activate', 'deactivate']);
+    await l.activate('KEY-1');
+    now = now.add(const Duration(days: 15));
+    await l.recheck();
+    expect(l.licensed, isTrue);
   });
 
-  test('release: our Lemon Squeezy store and product are set', () {
-    expect(kLemonStoreId, isNotNull, reason: 'Set kLemonStoreId in lib/licence.dart');
-    expect(kLemonProductId, isNotNull, reason: 'Set kLemonProductId in lib/licence.dart');
+  test('validate and deactivate send the key and this Mac\'s instance', () async {
+    final sent = <String, Map<String, String>>{};
+    var now = day0;
+    final l = make(
+        now: () => now,
+        post: (a, f) async {
+          sent[a] = f;
+          return switch (a) {
+            'activate' => (200, <String, dynamic>{'ok': true, 'instance': 'ins_9'}),
+            'validate' => (200, <String, dynamic>{'valid': true}),
+            _ => (200, <String, dynamic>{'ok': true}),
+          };
+        });
+    await l.load();
+    await l.activate('KEY-9');
+    now = now.add(const Duration(days: 15));
+    await l.recheck();
+    await l.deactivate();
+    expect(sent['activate']!['key'], 'KEY-9');
+    expect(sent['activate']!['name'], startsWith('Mac'));
+    expect(sent['validate'], {'key': 'KEY-9', 'instance': 'ins_9'});
+    expect(sent['deactivate'], {'key': 'KEY-9', 'instance': 'ins_9'});
+  });
+
+  test('release: our licence server is set', () {
+    expect(kLicenceServer, isNotNull, reason: 'Set kLicenceServer in lib/licence.dart');
+    expect(kLicenceServer, startsWith('https://'));
   }, skip: Platform.environment['VIBELINE_RELEASE'] != '1');
 }
